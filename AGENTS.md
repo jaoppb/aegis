@@ -37,7 +37,8 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 - Close with `Closes #issue` in the pull request body and the branch's final commit; use `Refs #issue` on intermediate commits.
 - Fill in `.github/pull_request_template.md`.
 - Merge method: **merge commit only**. Squash and rebase are disabled and merged branches are deleted (`tools.toml` `[github.repository.settings]`), so every commit reaches `main`. Rebase your own branch on `origin/main` before the pull request, never rewrite it afterwards.
-- **Changelog.** `CHANGELOG.md` (Keep a Changelog, `Unreleased` on top) is created by #8 and is not present yet. Once it exists, a pull request with a consumer-visible change adds one `Unreleased` bullet ending `(#issue, #PR)`, or carries the `skip-changelog` label.
+- **Changelog.** `CHANGELOG.md` (Keep a Changelog, `Unreleased` on top) is the single place for what changed per release. A pull request that touches `crates/`, `action.yml`, `.github/actions/` or `.github/workflows/` adds one `Unreleased` bullet ending `(#issue, #PR)`, or carries the `skip-changelog` label; the `Changelog Entry` check (`just changelog-check`) fails otherwise.
+- **Releases.** `just bump-version <major|minor|patch|X.Y.Z|X.Y.Z-rc.N> --issue <n>` opens a pull request that bumps `[workspace.package].version` and rotates `Unreleased` into the new version heading (it refuses an empty one). Merging it makes `.github/workflows/tag-release.yml` tag `vX.Y.Z` (or `vX.Y.Z-rc.N`, a prerelease) and call `release.yml`, which publishes the version's changelog section as the release notes, static musl binaries for amd64 and arm64, and multi-arch `ghcr.io/jaoppb/aegis-controller` and `aegis-agent` images. The flake builds the binaries and images (`nix build .#aegis-controller-image`), so the images ship the `docker`, `sops` and `tailscale` versions pinned by `flake.lock`.
 
 ## 3. Developer setup and Git hooks
 

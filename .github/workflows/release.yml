@@ -1,0 +1,193 @@
+name: Release
+
+# Publishes a tag: the GitHub release (notes = the version's CHANGELOG section), static musl
+# binaries for amd64 and arm64, and multi-arch controller and agent images on GHCR. The binaries
+# and images are built by the flake, so the images carry exactly the docker, sops and tailscale
+# versions pinned by flake.lock. A vX.Y.Z-rc.N tag is a prerelease and gets only its own image tag.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+  # Called by tag-release.yml: tags pushed with GITHUB_TOKEN do not trigger the push event.
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z or vX.Y.Z-rc.N) to validate, release and build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  validate-version:
+    name: Validate Release Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Validate that the tag matches the Cargo.toml version
+        run: scripts/release-tag.sh verify "${RELEASE_TAG}"
+
+  create-release:
+    name: Create GitHub Release
+    needs: validate-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      # A release page resolves relative links against /releases/tag/, so point them at the tag.
+      - name: Make CHANGELOG links absolute for the release notes
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          scripts/release-notes-links.sh "${RELEASE_TAG}" "${REPO}" <CHANGELOG.md >"${RUNNER_TEMP}/CHANGELOG.md"
+          mv "${RUNNER_TEMP}/CHANGELOG.md" CHANGELOG.md
+
+      # Marks a version with a pre-release part (-rc.N) as a prerelease.
+      - name: Create GitHub Release
+        uses: taiki-e/create-gh-release-action@045e5c0ed9c50cc1f96de7e891a09ad3daea245f # v1.12.0
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  binaries:
+    name: Build Binaries (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@382a9ed9481c7c1f94f68b72ef105b3417c73877 # v32.1.0
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Build the static binaries
+        run: |
+          for bin in aegis aegis-controller aegis-agent; do
+            nix build ".#${bin}" --out-link "result-${bin}"
+          done
+
+      - name: Archive the binaries
+        run: scripts/package-binaries.sh "${RELEASE_TAG}" "${{ matrix.target }}" dist
+
+      - name: Upload the archive and its checksum to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${RELEASE_TAG}" dist/* --clobber --repo "${GITHUB_REPOSITORY}"
+
+  images:
+    name: Build Images (${{ matrix.arch }})
+    needs: validate-version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@382a9ed9481c7c1f94f68b72ef105b3417c73877 # v32.1.0
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GHCR_USER}" --password-stdin
+
+      # The per-architecture tags are the inputs of the manifest list the next job publishes.
+      - name: Build and push the images
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          version="${RELEASE_TAG#v}"
+          for name in aegis-controller aegis-agent; do
+            nix build ".#${name}-image" --out-link "image-${name}"
+            "./image-${name}" | docker load
+            docker tag "${name}:${version}" "ghcr.io/${owner}/${name}:${version}-${ARCH}"
+            docker push "ghcr.io/${owner}/${name}:${version}-${ARCH}"
+          done
+
+  manifests:
+    name: Publish Image Manifests
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GHCR_USER}" --password-stdin
+
+      # X.Y.Z, X.Y and latest for a release; only X.Y.Z-rc.N for a release candidate.
+      - name: Create the multi-arch manifests
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          version="${RELEASE_TAG#v}"
+          for name in aegis-controller aegis-agent; do
+            image="ghcr.io/${owner}/${name}"
+            tags=()
+            while IFS= read -r tag; do tags+=(--tag "${image}:${tag}"); done < <(scripts/image-tags.sh "${RELEASE_TAG}")
+            docker buildx imagetools create "${tags[@]}" "${image}:${version}-amd64" "${image}:${version}-arm64"
+            docker buildx imagetools inspect "${image}:${version}"
+          done

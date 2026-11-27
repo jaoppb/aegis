@@ -36,10 +36,15 @@ test:
 arch-check:
     cargo test -p aegis-architecture-tests
 
-# Lint the GitHub workflows and fail on unpinned or mismatched action references.
+# Lint the GitHub workflows and release scripts (with their tests) and fail on unpinned or mismatched action references.
 workflows-check:
     actionlint
     tools actions check
+    shellcheck scripts/*.sh scripts/tests/*.sh
+    scripts/tests/release-tag.test.sh
+    scripts/tests/rotate-changelog.test.sh
+    scripts/tests/release-notes-links.test.sh
+    scripts/tests/image-tags.test.sh
 
 # Run every check: format, lint, workflow lint, architecture rules and tests.
 check: fmt-check lint workflows-check arch-check test
@@ -48,15 +53,11 @@ check: fmt-check lint workflows-check arch-check test
 repo-check:
     tools repo check
 
-# Fail when the change since `base` touches crates/, action.yml, .github/actions/ or .github/workflows/ without CHANGELOG.md (waived by the skip-changelog label in `labels`, comma-separated). Skipped while CHANGELOG.md does not exist (#8 creates it).
+# Fail when the change since `base` touches crates/, action.yml, .github/actions/ or .github/workflows/ without CHANGELOG.md (waived by the skip-changelog label in `labels`, comma-separated).
 changelog-check base labels="":
     #!/usr/bin/env bash
     export BASE={{ quote(base) }} LABELS={{ quote(labels) }}
     set -euo pipefail
-    if [ ! -f CHANGELOG.md ]; then
-        echo "::notice::CHANGELOG.md does not exist yet; skipping the changelog check"
-        exit 0
-    fi
     tools changelog check --base "$BASE" --labels "$LABELS" --skip-label skip-changelog --changelog CHANGELOG.md --watch crates/ --watch action.yml --watch .github/actions/ --watch .github/workflows/
 
 # Audit open issues against the workflow rules (needs `gh` auth).
@@ -101,3 +102,7 @@ ruleset-apply:
     if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
     gh api --method "$method" "$url" --input .github/rulesets/main.json --silent
     echo "ruleset main applied to $repo"
+
+# Open a pull request that bumps the workspace version (major, minor, patch, X.Y.Z or X.Y.Z-rc.N): `just bump-version minor --issue 90 [--dry-run]`.
+bump-version target *args:
+    ./scripts/bump-version.sh {{ target }} {{ args }}
