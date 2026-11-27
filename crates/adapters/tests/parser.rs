@@ -2,7 +2,7 @@
 
 use aegis_adapters::{compose, policy};
 use aegis_application::ParseError;
-use aegis_domain::{Access, Mount, StackState, ValueError};
+use aegis_domain::{Access, Mount, RepoPath, StackState, ValueError};
 
 fn first_mount(mount: &str) -> Result<Mount, ParseError> {
     let text = format!("services:\n  app:\n    volumes:\n      - {mount}\n");
@@ -21,7 +21,7 @@ fn an_empty_document_is_an_empty_compose_file() {
 fn malformed_yaml_is_invalid() {
     assert!(matches!(
         compose::parse("services: [x"),
-        Err(ParseError::Invalid(_))
+        Err(ParseError::InvalidAt { .. } | ParseError::Invalid(_))
     ));
 }
 
@@ -156,7 +156,54 @@ fn invalid_values_are_not_unknown_keys() {
 
 #[test]
 fn malformed_toml_is_invalid() {
-    assert!(matches!(policy::parse("= ="), Err(ParseError::Invalid(_))));
+    assert!(matches!(
+        policy::parse("= ="),
+        Err(ParseError::InvalidAt { .. })
+    ));
+}
+
+#[test]
+fn malformed_toml_reports_its_line() {
+    let Err(ParseError::InvalidAt { line, .. }) = policy::parse("state = \"active\"\n= =") else {
+        panic!("expected a located error");
+    };
+    assert_eq!(line.to_string(), "2");
+}
+
+#[test]
+fn file_references_are_collected() {
+    let text = "include:\n  - ./a.yaml\n  - path: [./b.yaml, ./c.yaml]\nservices:\n  app:\n    extends:\n      file: ./base.yaml\n      service: base\n  other:\n    extends: app\nconfigs:\n  conf:\n    file: ./conf.toml\nsecrets:\n  key:\n    file: ./key.yaml\n  env:\n    environment: HOME\n";
+    let summary = compose::parse(text).unwrap();
+    let referenced: Vec<&str> = summary
+        .referenced_files()
+        .iter()
+        .map(RepoPath::as_str)
+        .collect();
+    assert_eq!(
+        referenced,
+        [
+            "./conf.toml",
+            "./a.yaml",
+            "./b.yaml",
+            "./c.yaml",
+            "./base.yaml"
+        ]
+    );
+    let secrets: Vec<&str> = summary
+        .secret_files()
+        .iter()
+        .map(RepoPath::as_str)
+        .collect();
+    assert_eq!(secrets, ["./key.yaml"]);
+}
+
+#[test]
+fn build_contexts_may_escape_the_stack_for_validation_to_report() {
+    let text = "services:\n  app:\n    build:\n      context: ../shared\n      dockerfile: /abs/Dockerfile\n";
+    let summary = compose::parse(text).unwrap();
+    let build = summary.services().as_slice()[0].source().build().unwrap();
+    assert!(build.context_inside_stack().is_none());
+    assert!(build.dockerfile_escapes());
 }
 
 #[test]

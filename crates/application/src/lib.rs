@@ -1,12 +1,14 @@
-//! Aegis application layer: the ports the adapters implement and the repository loader built on
-//! them. It does no IO.
+//! Aegis application layer: the ports the adapters implement, the repository loader and the
+//! validation rules built on them. It does no IO.
 
-pub mod error;
 pub mod loader;
+pub mod outcome;
 pub mod parse;
 pub mod source;
+pub mod validate;
 
-pub use error::LoadError;
 pub use loader::load_desired_state;
+pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
 pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
+pub use validate::{EncryptionCheck, validate_desired_state};

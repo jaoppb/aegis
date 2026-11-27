@@ -1,7 +1,7 @@
 //! Validated value types: newtypes over the primitives the desired state is made of.
 
 use std::fmt;
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroUsize};
 
 /// Why a raw value was rejected by a newtype constructor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +80,14 @@ fn validate_relative(value: &str) -> Result<(), ValueError> {
     reject_unsafe_path(value)
 }
 
+fn validate_declared(value: &str) -> Result<(), ValueError> {
+    validate_non_empty(value)?;
+    if value.contains('$') {
+        return Err(ValueError::Interpolation);
+    }
+    Ok(())
+}
+
 fn validate_absolute(value: &str) -> Result<(), ValueError> {
     if !value.starts_with('/') {
         return Err(ValueError::NotAbsolute);
@@ -156,6 +164,12 @@ string_newtype!(
     /// A path relative to the repository root, or to a stack directory, that never leaves it.
     RepoPath,
     validate_relative
+);
+string_newtype!(
+    /// A path exactly as a compose file declares it: it may be absolute or climb out of the stack
+    /// directory, which is what validation checks.
+    DeclaredPath,
+    validate_declared
 );
 string_newtype!(
     /// An absolute path on the host.
@@ -275,6 +289,75 @@ impl RepoPath {
     }
 }
 
+impl RepoPath {
+    /// The `hosts` directory that holds the user stacks.
+    #[must_use]
+    pub fn hosts_root() -> Self {
+        Self("hosts".to_owned())
+    }
+
+    /// The reserved `aegis` directory that holds Aegis's own stacks.
+    #[must_use]
+    pub fn reserved_root() -> Self {
+        Self("aegis".to_owned())
+    }
+
+    /// The path of an entry `name` read from a directory listing or fixed by the layout. Unlike
+    /// [`RepoPath::join`] it does not judge the name, so a badly named directory can still be
+    /// reported.
+    #[must_use]
+    pub fn listed(&self, name: &str) -> Self {
+        Self(format!("{}/{name}", self.0))
+    }
+
+    /// The path of `relative` inside this directory, with `.` segments dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValueError`] when the joined path is not a valid [`RepoPath`].
+    pub fn within(&self, relative: &Self) -> Result<Self, ValueError> {
+        let kept = relative
+            .as_str()
+            .split('/')
+            .filter(|segment| !matches!(*segment, "" | "."));
+        let joined = kept.fold(self.0.clone(), |path, segment| format!("{path}/{segment}"));
+        Self::new(joined)
+    }
+}
+
+impl DeclaredPath {
+    /// The path as a [`RepoPath`], or `None` when it is absolute or climbs out with `..`.
+    #[must_use]
+    pub fn inside_stack(&self) -> Option<RepoPath> {
+        RepoPath::new(self.as_str()).ok()
+    }
+}
+
+/// A 1-based line number in a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Line(NonZeroUsize);
+
+impl Line {
+    /// The line `number`, counting from 1, or `None` for zero.
+    #[must_use]
+    pub fn new(number: usize) -> Option<Self> {
+        NonZeroUsize::new(number).map(Self)
+    }
+
+    /// The first line of `text` that contains `needle`.
+    #[must_use]
+    pub fn of(text: &str, needle: &str) -> Option<Self> {
+        let index = text.lines().position(|line| line.contains(needle))?;
+        Self::new(index.saturating_add(1))
+    }
+}
+
+impl fmt::Display for Line {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
 /// A non-zero TCP port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Port(NonZeroU16);
@@ -372,6 +455,38 @@ mod tests {
         let listed: Vec<&str> = volumes.iter().map(VolumeName::as_str).collect();
         assert_eq!(listed, ["a", "b"]);
         assert_eq!(volumes.as_slice().len(), 2);
+    }
+
+    #[test]
+    fn within_joins_and_drops_dot_segments() {
+        let stack = RepoPath::new("hosts/h/s").unwrap();
+        let rel = |text| RepoPath::new(text).unwrap();
+        assert_eq!(
+            stack.within(&rel("./a/./b")).unwrap().as_str(),
+            "hosts/h/s/a/b"
+        );
+        assert_eq!(stack.within(&rel(".")).unwrap().as_str(), "hosts/h/s");
+    }
+
+    #[test]
+    fn declared_paths_may_escape_but_report_it() {
+        assert!(DeclaredPath::new("./app").unwrap().inside_stack().is_some());
+        assert!(
+            DeclaredPath::new("../app")
+                .unwrap()
+                .inside_stack()
+                .is_none()
+        );
+        assert!(DeclaredPath::new("/abs").unwrap().inside_stack().is_none());
+        assert_eq!(DeclaredPath::new(""), Err(ValueError::Empty));
+        assert_eq!(DeclaredPath::new("$X"), Err(ValueError::Interpolation));
+    }
+
+    #[test]
+    fn lines_count_from_one_and_find_the_first_match() {
+        assert_eq!(Line::of("a\nb\nb", "b"), Line::new(2));
+        assert_eq!(Line::of("a", "z"), None);
+        assert_eq!(Line::new(0), None);
     }
 
     #[test]

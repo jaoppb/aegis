@@ -5,8 +5,9 @@ use std::fmt::Display;
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Access, Build, ComposeSummary, ContainerPath, EnvFiles, HostPath, ImageRef, Mount, Mounts,
-    RepoPath, Service, ServiceName, ServiceSource, Services, ValueError, VolumeName, Volumes,
+    Access, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile, EnvFiles, HostPath,
+    ImageRef, Line, Mount, Mounts, Presence, ReferencedFiles, RepoPath, SecretFiles, Service,
+    ServiceName, ServiceSource, Services, ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
 
@@ -14,14 +15,56 @@ use serde::Deserialize;
 struct RawCompose {
     services: Option<BTreeMap<String, RawService>>,
     volumes: Option<BTreeMap<String, serde_norway::Value>>,
+    #[serde(flatten)]
+    files: RawFiles,
+}
+
+#[derive(Deserialize)]
+struct RawFiles {
+    secrets: Option<BTreeMap<String, RawFileSource>>,
+    configs: Option<BTreeMap<String, RawFileSource>>,
+    include: Option<Vec<RawInclude>>,
+}
+
+#[derive(Deserialize)]
+struct RawFileSource {
+    file: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawInclude {
+    Path(String),
+    Detailed { path: Option<RawIncludePath> },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawIncludePath {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawExtends {
+    Detailed { file: Option<String> },
+    Service(serde::de::IgnoredAny),
 }
 
 #[derive(Deserialize)]
 struct RawService {
-    image: Option<String>,
-    build: Option<RawBuild>,
+    #[serde(flatten)]
+    source: RawSource,
     env_file: Option<RawEnvFile>,
     volumes: Option<Vec<RawMount>>,
+    extends: Option<RawExtends>,
+}
+
+#[derive(Deserialize)]
+struct RawSource {
+    image: Option<String>,
+    build: Option<RawBuild>,
 }
 
 #[derive(Deserialize)]
@@ -45,29 +88,89 @@ enum RawEnvFile {
 #[serde(untagged)]
 enum RawEnvEntry {
     Path(String),
-    Detailed { path: String },
+    Detailed {
+        path: String,
+        required: Option<bool>,
+    },
 }
 
 /// Summarise `text`; an empty document is an empty compose file.
 ///
 /// # Errors
 ///
-/// Returns [`ParseError::Invalid`] when `text` is not YAML, or a service, volume, build, env file
-/// or mount is malformed.
+/// Returns [`ParseError::Invalid`] when `text` is not YAML, or a service, volume, build, env file,
+/// mount or file reference is malformed.
 pub fn parse(text: &str) -> Result<ComposeSummary, ParseError> {
-    let raw: Option<RawCompose> =
-        serde_norway::from_str(text).map_err(|error| ParseError::Invalid(error.to_string()))?;
+    let raw: Option<RawCompose> = serde_norway::from_str(text).map_err(|error| yaml(&error))?;
     let Some(raw) = raw else {
         return Ok(ComposeSummary::default());
     };
+    let secrets = secret_files(&raw)?;
+    let referenced = referenced_files(&raw)?;
     let services = raw.services.unwrap_or_default().into_iter();
     let volumes = raw.volumes.unwrap_or_default().into_keys();
-    Ok(ComposeSummary::new(
+    let summary = ComposeSummary::new(
         services
             .map(|(name, raw)| service(&name, raw))
             .collect::<Result<Services, _>>()?,
         volumes.map(volume).collect::<Result<Volumes, _>>()?,
-    ))
+    );
+    Ok(summary
+        .with_secret_files(secrets)
+        .with_referenced_files(referenced))
+}
+
+fn yaml(error: &serde_norway::Error) -> ParseError {
+    let reason = error.to_string();
+    match error.location().and_then(|place| Line::new(place.line())) {
+        Some(line) => ParseError::InvalidAt { reason, line },
+        None => ParseError::Invalid(reason),
+    }
+}
+
+fn file_paths(
+    scope: &str,
+    paths: impl Iterator<Item = String>,
+) -> Result<Vec<RepoPath>, ParseError> {
+    paths
+        .map(|path| RepoPath::new(path).map_err(|error| in_scope(scope, &error)))
+        .collect()
+}
+
+fn secret_files(raw: &RawCompose) -> Result<SecretFiles, ParseError> {
+    let sources = raw.files.secrets.iter().flat_map(BTreeMap::values);
+    let files = sources.filter_map(|source| source.file.clone());
+    Ok(SecretFiles::new(file_paths("secrets", files)?))
+}
+
+fn referenced_files(raw: &RawCompose) -> Result<ReferencedFiles, ParseError> {
+    let configs = raw.files.configs.iter().flat_map(BTreeMap::values);
+    let configs = configs.filter_map(|source| source.file.clone());
+    let includes = raw.files.include.iter().flatten().flat_map(include_paths);
+    let services = raw.services.iter().flat_map(BTreeMap::values);
+    let extends = services.filter_map(|service| match &service.extends {
+        Some(RawExtends::Detailed { file }) => file.clone(),
+        _ => None,
+    });
+    let paths = configs.chain(includes).chain(extends);
+    Ok(ReferencedFiles::new(file_paths(
+        "include, extends or configs",
+        paths,
+    )?))
+}
+
+fn include_paths(include: &RawInclude) -> Vec<String> {
+    match include {
+        RawInclude::Path(path) => vec![path.clone()],
+        RawInclude::Detailed { path } => path.as_ref().map_or_else(Vec::new, include_path_list),
+    }
+}
+
+fn include_path_list(path: &RawIncludePath) -> Vec<String> {
+    match path {
+        RawIncludePath::One(one) => vec![one.clone()],
+        RawIncludePath::Many(many) => many.clone(),
+    }
 }
 
 fn volume(name: String) -> Result<VolumeName, ParseError> {
@@ -82,8 +185,8 @@ fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
     let scope = format!("service `{name}`");
     let scoped = |error: &dyn Display| in_scope(&scope, &error);
     let mounts = raw.volumes.unwrap_or_default().into_iter();
-    let image = raw.image.map(ImageRef::new).transpose();
-    let build = raw.build.map(build).transpose();
+    let image = raw.source.image.map(ImageRef::new).transpose();
+    let build = raw.source.build.map(build).transpose();
     let source = ServiceSource::new(
         image.map_err(|error| scoped(&error))?,
         build.map_err(|error| scoped(&error))?,
@@ -128,8 +231,11 @@ fn detailed_build(
     reject_remote(&context)?;
     let invalid = |error: ValueError| ParseError::Invalid(format!("build: {error}"));
     Ok(Build::new(
-        RepoPath::new(context).map_err(invalid)?,
-        dockerfile.map(RepoPath::new).transpose().map_err(invalid)?,
+        DeclaredPath::new(context).map_err(invalid)?,
+        dockerfile
+            .map(DeclaredPath::new)
+            .transpose()
+            .map_err(invalid)?,
     ))
 }
 
@@ -139,13 +245,20 @@ fn env_files(raw: Option<RawEnvFile>) -> Result<EnvFiles, ValueError> {
         Some(RawEnvFile::One(path)) => vec![RawEnvEntry::Path(path)],
         Some(RawEnvFile::Many(entries)) => entries,
     };
-    entries.into_iter().map(env_path).collect()
+    entries.into_iter().map(env_file).collect()
 }
 
-fn env_path(entry: RawEnvEntry) -> Result<RepoPath, ValueError> {
-    match entry {
-        RawEnvEntry::Path(path) | RawEnvEntry::Detailed { path } => RepoPath::new(path),
-    }
+fn env_file(entry: RawEnvEntry) -> Result<EnvFile, ValueError> {
+    let (path, required) = match entry {
+        RawEnvEntry::Path(path) => (path, None),
+        RawEnvEntry::Detailed { path, required } => (path, required),
+    };
+    let presence = if required == Some(false) {
+        Presence::Optional
+    } else {
+        Presence::Required
+    };
+    Ok(EnvFile::new(RepoPath::new(path)?, presence))
 }
 
 // Mounts.

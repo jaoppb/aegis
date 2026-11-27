@@ -1,0 +1,6 @@
+services:
+  web:
+    image: caddy:2.10
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./conf.d:/etc/caddy/conf.d:ro

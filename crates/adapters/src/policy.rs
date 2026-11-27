@@ -2,8 +2,8 @@
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Expose, Port, ServiceName, StackPolicy, StackState, TailnetTag, TailnetTags, UpdatePolicy,
-    ValueError,
+    Expose, Line, Port, ServiceName, StackPolicy, StackState, TailnetTag, TailnetTags,
+    UpdatePolicy, ValueError,
 };
 use serde::Deserialize;
 use toml::{Table, Value};
@@ -47,7 +47,7 @@ enum RawState {
 pub fn parse(text: &str) -> Result<StackPolicy, ParseError> {
     let table: Table = text
         .parse()
-        .map_err(|error: toml::de::Error| invalid(&error.message()))?;
+        .map_err(|error: toml::de::Error| located(text, &error))?;
     if let Some(key) = unknown_key(&table) {
         return Err(ParseError::UnknownKey(key));
     }
@@ -55,6 +55,17 @@ pub fn parse(text: &str) -> Result<StackPolicy, ParseError> {
         .try_into()
         .map_err(|error: toml::de::Error| invalid(&error.message()))?;
     policy(raw).map_err(|error| invalid(&error))
+}
+
+/// A TOML error at the line of its span, when it has one.
+fn located(text: &str, error: &toml::de::Error) -> ParseError {
+    let reason = error.message().to_owned();
+    let before = error.span().and_then(|span| text.get(..span.start));
+    let line = before.and_then(|head| Line::new(head.matches('\n').count().saturating_add(1)));
+    match line {
+        Some(line) => ParseError::InvalidAt { reason, line },
+        None => ParseError::Invalid(reason),
+    }
 }
 
 fn invalid(reason: &impl ToString) -> ParseError {

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use aegis_domain::{ComposeSummary, StackPolicy};
+use aegis_domain::{ComposeSummary, Line, StackPolicy};
 
 /// A file's contents could not be turned into domain types.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,13 +11,20 @@ pub enum ParseError {
     UnknownKey(String),
     /// The file is malformed or holds an invalid value.
     Invalid(String),
+    /// The file is malformed at a known line.
+    InvalidAt {
+        /// What was wrong.
+        reason: String,
+        /// Where.
+        line: Line,
+    },
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownKey(key) => write!(formatter, "unknown key `{key}`"),
-            Self::Invalid(reason) => formatter.write_str(reason),
+            Self::Invalid(reason) | Self::InvalidAt { reason, .. } => formatter.write_str(reason),
         }
     }
 }
