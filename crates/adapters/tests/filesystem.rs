@@ -47,6 +47,7 @@ fn a_symlinked_directory_is_not_a_directory() {
     let entries = FsRepo::new(&dir)
         .list_dir(&RepoPath::new(".").unwrap())
         .unwrap();
+    assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].kind, EntryKind::Other);
 }
 
@@ -97,6 +98,26 @@ fn listing_a_file_is_an_error() {
     assert!(
         FsRepo::new(&dir)
             .list_dir(&RepoPath::new("compose.yaml").unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn a_file_of_exactly_the_cap_is_read() {
+    let dir = scratch("fs-cap").unwrap();
+    std::fs::write(dir.join("compose.yaml"), vec![b'a'; 1024 * 1024]).unwrap();
+    let text = FsRepo::new(&dir).read_file(&RepoPath::new("compose.yaml").unwrap());
+    assert_eq!(text.unwrap().len(), 1024 * 1024);
+}
+
+#[test]
+fn a_symlinked_directory_is_not_listed() {
+    let dir = scratch("fs-symlink-list").unwrap();
+    let outside = scratch("fs-symlink-list-outside").unwrap();
+    symlink(&outside, dir.join("hosts")).unwrap();
+    assert!(
+        FsRepo::new(&dir)
+            .list_dir(&RepoPath::new("hosts").unwrap())
             .is_err()
     );
 }

@@ -175,12 +175,19 @@ fn remote_build_contexts_are_rejected() {
 
 #[test]
 fn interpolated_paths_are_rejected() {
-    assert!(first_mount("/srv/${DIR}/x:/a").is_err());
-    assert!(first_mount("./${DIR}:/a").is_err());
+    for mount in ["/srv/${DIR}/x:/a", "./${DIR}:/a"] {
+        let error = first_mount(mount).unwrap_err().to_string();
+        assert!(
+            error.contains(&ValueError::Interpolation.to_string()),
+            "{mount}: {error}"
+        );
+    }
 }
 
 #[test]
 fn a_bind_mount_needs_a_source() {
     let text = "services:\n  app:\n    volumes:\n      - type: bind\n        target: /a\n";
-    assert!(compose::parse(text).is_err());
+    assert!(
+        matches!(compose::parse(text), Err(ParseError::Invalid(reason)) if reason.contains("needs a source"))
+    );
 }

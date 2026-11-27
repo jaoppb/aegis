@@ -109,7 +109,8 @@ fn build(raw: RawBuild) -> Result<Build, ParseError> {
 
 /// Builds come from the checkout, so a URL or git context is not a path inside the repository.
 fn reject_remote(context: &str) -> Result<(), ParseError> {
-    if context.contains("://") || context.starts_with("git@") {
+    if context.contains("://") || context.starts_with("git@") || context.starts_with("github.com/")
+    {
         return Err(ParseError::Invalid(
             "remote build contexts are not supported".to_owned(),
         ));

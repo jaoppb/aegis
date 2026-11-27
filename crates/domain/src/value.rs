@@ -59,7 +59,8 @@ fn validate_name(value: &str) -> Result<(), ValueError> {
     })
 }
 
-fn reject_traversal(value: &str) -> Result<(), ValueError> {
+/// Reject `..` segments, and `$` because Compose interpolates it after validation.
+fn reject_unsafe_path(value: &str) -> Result<(), ValueError> {
     if value.contains('$') {
         return Err(ValueError::Interpolation);
     }
@@ -76,14 +77,14 @@ fn validate_relative(value: &str) -> Result<(), ValueError> {
     if value.starts_with('/') {
         return Err(ValueError::NotRelative);
     }
-    reject_traversal(value)
+    reject_unsafe_path(value)
 }
 
 fn validate_absolute(value: &str) -> Result<(), ValueError> {
     if !value.starts_with('/') {
         return Err(ValueError::NotAbsolute);
     }
-    reject_traversal(value)
+    reject_unsafe_path(value)
 }
 
 fn validate_tag(value: &str) -> Result<(), ValueError> {

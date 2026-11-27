@@ -247,7 +247,7 @@ fn problems_in_hosts_and_reserved_stacks_are_both_reported() {
     assert_eq!(load(&files).unwrap_err().len(), 2);
 }
 
-/// A repository whose every read fails, to prove the failure is reported rather than swallowed.
+/// A repository whose `failing` operation errors, to prove the failure is reported, not swallowed.
 struct BrokenRepo {
     failing: &'static str,
 }

@@ -64,13 +64,24 @@ fn read_regular_file(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+/// Refuse a symlink in place of a directory, so a committed `hosts` or `aegis` link cannot walk
+/// the loader out of the checkout.
+fn require_directory(path: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        return Ok(());
+    }
+    Err(std::io::Error::other("not a directory"))
+}
+
 impl RepoSource for FsRepo {
     fn contains(&self, path: &RepoPath) -> Result<bool, SourceError> {
         self.resolve(path).try_exists().map_err(failure(path))
     }
 
     fn list_dir(&self, path: &RepoPath) -> Result<Vec<DirEntry>, SourceError> {
-        let listing = std::fs::read_dir(self.resolve(path)).map_err(failure(path))?;
+        let dir = self.resolve(path);
+        require_directory(&dir).map_err(failure(path))?;
+        let listing = std::fs::read_dir(dir).map_err(failure(path))?;
         listing
             .map(entry)
             .collect::<std::io::Result<_>>()
