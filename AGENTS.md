@@ -75,7 +75,7 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 ## 7. Repository memory and continuity
 
 - **Advisory recall.** `ai-memory` gives advisory recall: session summaries, cross-worktree handoffs, spike dead ends and gotchas. It is never authoritative. `AGENTS.md`, GitHub issues and the code win on any conflict.
-- **Opt-in.** Hook capture runs only where `.ai-memory.toml` exists at the repository root. Its `[capture] ignore_paths` keep secret material (SOPS files, age keys, `.env` files, Tailscale state, `target/`) out of memory. Sanitization is best effort: never print secrets or type them into prompts.
+- **Opt-in.** Hook capture runs only where `.ai-memory.toml` exists at the repository root. Its `[capture] ignore_paths` is the source of truth for what stays out of memory: secret material (SOPS files, age keys, `.env` files, Tailscale state, private keys) and build output. Sanitization is best effort: never print secrets or type them into prompts.
 - **Hooks.** The ai-memory hooks live in each person's user-level agent settings, not in the repository. `.claude/settings.json` holds only shared project settings.
 - **Skills.** Project-local skills live in `.agents/skills/`; `.claude/skills` is a symlink to it, so every harness reads the same skills.
 
