@@ -215,8 +215,9 @@ fn build_violations(context: &Context<'_>, service: &Service) -> Vec<Violation> 
 
 /// The build context, the Dockerfile and the extra contexts that leave the stack directory.
 fn escaping_paths(context: &Context<'_>, service: &ServiceName, build: &Build) -> Vec<Violation> {
-    let dockerfile = build.dockerfile().filter(|_| build.dockerfile_escapes());
     let context_path = Some(build.context()).filter(|path| path.inside_stack().is_none());
+    let escaping_dockerfile = context_path.is_none() && build.dockerfile_escapes();
+    let dockerfile = build.dockerfile().filter(|_| escaping_dockerfile);
     let extra = build
         .additional_contexts()
         .iter()

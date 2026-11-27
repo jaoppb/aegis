@@ -91,7 +91,7 @@ impl RawAdditionalContexts {
     fn values(self) -> Vec<String> {
         match self {
             Self::Named(named) => named.into_values().collect(),
-            Self::Listed(listed) => listed.iter().map(|entry| entry_value(entry)).collect(),
+            Self::Listed(listed) => listed.iter().map(String::as_str).map(entry_value).collect(),
         }
     }
 }
