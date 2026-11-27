@@ -1,0 +1,5 @@
+tailnet_tags = ["tag:aegis-service"]
+
+[expose]
+service = "vaultwarden"
+port = 80

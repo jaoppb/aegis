@@ -1,0 +1,3 @@
+[expose]
+service = "ai-memory"
+port = 8765
