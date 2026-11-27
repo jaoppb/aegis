@@ -16,6 +16,8 @@ pub enum ValueError {
     NotAbsolute,
     /// A path climbs out of its root with a `..` segment.
     Traversal,
+    /// A path starts with `~`, which Compose expands to the host's home directory.
+    HomeRelative,
     /// A path holds a `$`, so Compose would interpolate it after validation.
     Interpolation,
     /// A tailnet tag does not start with `tag:` or has no name after it.
@@ -32,6 +34,7 @@ impl fmt::Display for ValueError {
             Self::NotRelative => formatter.write_str("path must be relative"),
             Self::NotAbsolute => formatter.write_str("path must be absolute"),
             Self::Traversal => formatter.write_str("path must not contain `..`"),
+            Self::HomeRelative => formatter.write_str("path must not start with `~`"),
             Self::Interpolation => formatter.write_str("path must not contain `$`"),
             Self::BadTag => formatter.write_str("tailnet tag must look like `tag:<name>`"),
             Self::ZeroPort => formatter.write_str("port must not be zero"),
@@ -63,6 +66,9 @@ fn validate_name(value: &str) -> Result<(), ValueError> {
 fn reject_unsafe_path(value: &str) -> Result<(), ValueError> {
     if value.contains('$') {
         return Err(ValueError::Interpolation);
+    }
+    if value.starts_with('~') {
+        return Err(ValueError::HomeRelative);
     }
     if value.split('/').any(|segment| segment == "..") {
         return Err(ValueError::Traversal);
@@ -426,6 +432,13 @@ mod tests {
         assert_eq!(RepoPath::new("/etc"), Err(ValueError::NotRelative));
         assert_eq!(RepoPath::new("a/../b"), Err(ValueError::Traversal));
         assert_eq!(RepoPath::new(""), Err(ValueError::Empty));
+    }
+
+    #[test]
+    fn paths_reject_the_home_directory() {
+        assert_eq!(RepoPath::new("~/x"), Err(ValueError::HomeRelative));
+        assert_eq!(HostPath::new("~"), Err(ValueError::NotAbsolute));
+        assert!(DeclaredPath::new("~/x").unwrap().inside_stack().is_none());
     }
 
     #[test]

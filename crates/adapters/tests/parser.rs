@@ -284,3 +284,23 @@ fn additional_contexts_that_are_not_paths_are_skipped() {
     let entries = "\n        a: service:web\n        b: git@host:repo.git\n        c: github.com/x/y\n        d: docker-image://alpine\n        e: ./sub\n";
     assert_eq!(extra_contexts(entries).unwrap(), ["./sub"]);
 }
+
+#[test]
+fn home_directory_paths_are_rejected_everywhere_a_path_is_read() {
+    let cases = [
+        "services:\n  a:\n    env_file: ~/.env\n",
+        "secrets:\n  k:\n    file: ~/.ssh/id_rsa\n",
+        "configs:\n  k:\n    file: ~/c\n",
+        "services:\n  a:\n    volumes:\n      - type: bind\n        source: ~/data\n        target: /d\n",
+    ];
+    for text in cases {
+        assert!(compose::parse(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn a_home_directory_build_context_escapes_the_stack() {
+    let summary = compose::parse("services:\n  a:\n    build: ~/app\n").unwrap();
+    let build = summary.services().as_slice()[0].source().build().unwrap();
+    assert!(build.context_inside_stack().is_none());
+}
