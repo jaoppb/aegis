@@ -30,13 +30,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history: a stable tag must be an ancestor of origin/main.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate that the tag matches the Cargo.toml version
+      - name: Validate the tag version and, for a stable release, its main ancestry
         run: scripts/release-tag.sh verify "${RELEASE_TAG}"
 
   create-release:
@@ -144,7 +146,8 @@ jobs:
           GHCR_USER: ${{ github.actor }}
         run: echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GHCR_USER}" --password-stdin
 
-      # The per-architecture tags are the inputs of the manifest list the next job publishes.
+      # The per-architecture tags (X.Y.Z-amd64, X.Y.Z-arm64) are the inputs of the manifest list
+      # the manifests job publishes, and stay in GHCR as arch-pinned tags.
       - name: Build and push the images
         env:
           ARCH: ${{ matrix.arch }}
@@ -158,9 +161,10 @@ jobs:
             docker push "ghcr.io/${owner}/${name}:${version}-${ARCH}"
           done
 
+  # After the release and binaries, so a failed release never leaves moved floating tags behind.
   manifests:
     name: Publish Image Manifests
-    needs: images
+    needs: [create-release, binaries, images]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

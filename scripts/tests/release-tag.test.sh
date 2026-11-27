@@ -325,6 +325,43 @@ run verify 0.3.0
 expect_status 1
 expect_log "does not match 'v<major>.<minor>.<patch>[-rc.<n>]'"
 
+# A commit that never reached origin/main, with the given workspace version.
+commit_off_main() {
+  printf '[workspace]\nmembers = []\n\n[workspace.package]\nversion = "%s"\n' "$1" >Cargo.toml
+  git commit --quiet -am "off main $1"
+  git rev-parse HEAD
+}
+
+case_ "verify: a stable tag on a commit outside main fails"
+commit_version 0.3.0 >/dev/null
+commit_off_main 0.3.1 >/dev/null
+run verify v0.3.1
+expect_status 1
+expect_log "is not on origin/main"
+
+case_ "verify: a release candidate tag outside main passes"
+commit_version 0.3.0 >/dev/null
+commit_off_main 0.3.1-rc.1 >/dev/null
+run verify v0.3.1-rc.1
+expect_status 0
+
+case_ "dispatch: a stable tag is not created outside main"
+commit_version 0.3.0 >/dev/null
+head="$(commit_off_main 0.3.1)"
+run dispatch v0.3.1 "" "${head}"
+expect_status 1
+expect_no_tag v0.3.1
+expect_log "is not on origin/main"
+
+case_ "dispatch: a release candidate tag is created from a branch"
+commit_version 0.3.0 >/dev/null
+head="$(commit_off_main 0.3.1-rc.1)"
+git push --quiet origin HEAD:refs/heads/rehearsal
+run dispatch v0.3.1-rc.1 rehearsal "${head}"
+expect_status 0
+expect_output "tag=v0.3.1-rc.1"
+expect_tag_at v0.3.1-rc.1 "${head}"
+
 # --- usage ------------------------------------------------------------------------
 
 case_ "usage: unknown or incomplete commands exit 2"

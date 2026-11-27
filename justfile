@@ -41,10 +41,7 @@ workflows-check:
     actionlint
     tools actions check
     shellcheck scripts/*.sh scripts/tests/*.sh
-    scripts/tests/release-tag.test.sh
-    scripts/tests/rotate-changelog.test.sh
-    scripts/tests/release-notes-links.test.sh
-    scripts/tests/image-tags.test.sh
+    for t in scripts/tests/*.test.sh; do "$t"; done
 
 # Run every check: format, lint, workflow lint, architecture rules and tests.
 check: fmt-check lint workflows-check arch-check test

@@ -14,7 +14,8 @@
 #
 #   release-tag.sh verify <tag>
 #       Fails unless <tag> is a release tag matching the [workspace.package].version of
-#       the checked-out Cargo.toml (release.yml runs it on the tag's checkout).
+#       the checked-out Cargo.toml and, unless it is a -rc.N tag, the checked-out commit is
+#       on origin/main (release.yml runs it on the tag's checkout, with full history).
 #
 # When release.yml should run, appends `tag=<vX.Y.Z[-rc.N]>` to $GITHUB_OUTPUT (stdout when
 # unset). Messages use GitHub workflow commands. Needs git (with an `origin` remote and
@@ -50,6 +51,20 @@ except (tomllib.TOMLDecodeError, KeyError, TypeError):
 if isinstance(version, str):
     print(version)
 ' <<<"${manifest}"
+}
+
+is_rc_tag() { [[ $1 =~ -rc\.[0-9]+$ ]]; }
+
+# A stable release is cut only from a commit reachable from origin/main, so it went through the
+# pull request rules. A release candidate may come from any commit: it is a prerelease with no
+# floating image tag, which is how a release is rehearsed from a branch.
+require_on_main() {
+  local tag="$1" commit="$2"
+  is_rc_tag "${tag}" && return 0
+  git fetch --quiet origin main || die "Could not fetch origin/main to check that ${tag} is released from it"
+  git merge-base --is-ancestor "${commit}" refs/remotes/origin/main 2>/dev/null ||
+    git merge-base --is-ancestor "${commit}" FETCH_HEAD ||
+    die "Commit ${commit} is not on origin/main; a stable release (${tag}) is cut only from main"
 }
 
 is_release_tag() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; }
@@ -118,6 +133,7 @@ cmd_push() {
     notice "Tag ${tag} already exists; nothing to release"
     return 0
   fi
+  require_on_main "${tag}" "${after}"
   create_tag "${tag}" "${after}"
   release "${tag}"
 }
@@ -134,6 +150,7 @@ cmd_dispatch() {
       [[ ${commit} == "${existing}" ]] ||
         die "Tag ${tag} points at ${existing}, not at '${ref}' (${commit}); a tag is never moved"
     fi
+    require_on_main "${tag}" "${existing}"
     notice "Tag ${tag} already exists at ${existing}; releasing it"
     release "${tag}"
     return 0
@@ -143,6 +160,7 @@ cmd_dispatch() {
   version="$(workspace_version "${commit}")"
   [[ "v${version}" == "${tag}" ]] ||
     die "Cargo.toml at ${commit} has workspace version '${version}', which does not match ${tag}"
+  require_on_main "${tag}" "${commit}"
   create_tag "${tag}" "${commit}"
   release "${tag}"
 }
@@ -153,6 +171,7 @@ cmd_verify() {
   version="$(workspace_version HEAD)"
   [[ "v${version}" == "${tag}" ]] ||
     die "Tag '${tag}' does not match the Cargo.toml workspace version '${version}' (expected 'v${version}')"
+  require_on_main "${tag}" "$(git rev-parse HEAD)"
   notice "Release tag ${tag} matches the Cargo.toml workspace version ${version}"
 }
 

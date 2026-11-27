@@ -21,7 +21,6 @@
         overlays = [ rust-overlay.overlays.default ];
       };
       workspaceVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
-      rustChannel = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
       # The CLIs the adapters shell out to: pinned by flake.lock, shared by the devShell and the
       # container images so a release ships the versions CI tested against.
       runtimeClis = pkgs: with pkgs; [
@@ -35,7 +34,7 @@
         let
           pkgs = pkgsFor system;
           static = pkgs.pkgsStatic;
-          toolchain = pkgs.rust-bin.stable.${rustChannel}.minimal.override {
+          toolchain = (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
             targets = [ static.stdenv.hostPlatform.rust.rustcTarget ];
           };
           rustPlatform = static.makeRustPlatform {
@@ -83,6 +82,8 @@
           inherit name;
           tag = workspaceVersion;
           contents = [ binary pkgs.cacert ] ++ runtimeClis pkgs;
+          # sops and compose write temporary files.
+          extraCommands = "mkdir -m 1777 tmp";
           config = {
             Entrypoint = [ "/bin/${name}" ];
             Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
