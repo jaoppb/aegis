@@ -1,0 +1,4 @@
+[workspace.dependencies]
+aegis-domain = { path = "crates/domain" }
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.2.3"

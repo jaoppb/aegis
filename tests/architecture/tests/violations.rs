@@ -14,7 +14,11 @@ fn fixture_violations_are_reported() {
     )
     .and_then(Session::run)
     .expect("arch-lint runs on the fixture");
-    let fired: BTreeSet<&str> = result.violations.iter().map(|v| v.rule.as_str()).collect();
+    let fired: BTreeSet<&str> = result
+        .violations
+        .iter()
+        .map(|violation| violation.rule.as_str())
+        .collect();
     let expected = BTreeSet::from([
         "domain-is-innermost",
         "domain-is-pure",

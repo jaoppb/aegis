@@ -1,0 +1,1 @@
+struct Group { name: Name, members: Vec<Member> }

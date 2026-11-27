@@ -1,0 +1,6 @@
+fn unit() -> () {}
+fn parenthesised(item: &(dyn Store + Send)) {}
+fn callback(call: impl Fn(A, B) -> C) {}
+fn body() { let pair = (1, 2); let closure = |(first, second)| first; }
+enum Payload { Two(A, B) }
+impl Trait for Thing { fn grouped(&self) -> (A, B) { todo() } }

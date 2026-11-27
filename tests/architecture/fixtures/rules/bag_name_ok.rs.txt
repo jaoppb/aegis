@@ -1,0 +1,2 @@
+struct Argument { name: Name }
+enum ParseData { One }

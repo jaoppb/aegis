@@ -1,0 +1,2 @@
+// arch-lint: allow(no-unwrap-expect) reason="x"
+fn skipped() {}

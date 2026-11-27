@@ -1,0 +1,1 @@
+struct Holder(Vec<(A, B)>);

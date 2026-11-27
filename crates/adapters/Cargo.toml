@@ -16,6 +16,6 @@ workspace = true
 [dependencies]
 aegis-domain.workspace = true
 aegis-application.workspace = true
-serde = { version = "1.0.229", features = ["derive"] }
-serde_norway = "0.9.42"
-toml = "1.2.3"
+serde.workspace = true
+serde_norway.workspace = true
+toml.workspace = true

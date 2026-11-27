@@ -1,0 +1,2 @@
+struct Members(Vec<Member>);
+struct Group { name: Name, members: Members }
