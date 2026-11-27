@@ -315,3 +315,12 @@ impl RepoSource for Broken {
         Err(SourceError::new(path.clone(), Reason::new(&"boom")))
     }
 }
+
+#[test]
+fn an_escaping_context_and_dockerfile_report_one_violation() {
+    let found = build_problems(&[], built("../../ctx", Some("../../Dockerfile"))).unwrap();
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::BuildOutsideStack { .. }]
+    ));
+}
