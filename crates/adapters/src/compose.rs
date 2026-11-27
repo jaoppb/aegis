@@ -97,12 +97,9 @@ fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
     })
 }
 
-fn build(raw: RawBuild) -> Result<Build, ValueError> {
+fn build(raw: RawBuild) -> Result<Build, ParseError> {
     match raw {
-        RawBuild::Context(context) => Ok(Build {
-            context: RepoPath::new(context)?,
-            dockerfile: None,
-        }),
+        RawBuild::Context(context) => detailed_build(Some(context), None),
         RawBuild::Detailed {
             context,
             dockerfile,
@@ -110,13 +107,26 @@ fn build(raw: RawBuild) -> Result<Build, ValueError> {
     }
 }
 
+/// Builds come from the checkout, so a URL or git context is not a path inside the repository.
+fn reject_remote(context: &str) -> Result<(), ParseError> {
+    if context.contains("://") || context.starts_with("git@") {
+        return Err(ParseError::Invalid(
+            "remote build contexts are not supported".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn detailed_build(
     context: Option<String>,
     dockerfile: Option<String>,
-) -> Result<Build, ValueError> {
+) -> Result<Build, ParseError> {
+    let context = context.unwrap_or_else(|| ".".to_owned());
+    reject_remote(&context)?;
+    let invalid = |error: ValueError| ParseError::Invalid(format!("build: {error}"));
     Ok(Build {
-        context: RepoPath::new(context.unwrap_or_else(|| ".".to_owned()))?,
-        dockerfile: dockerfile.map(RepoPath::new).transpose()?,
+        context: RepoPath::new(context).map_err(invalid)?,
+        dockerfile: dockerfile.map(RepoPath::new).transpose().map_err(invalid)?,
     })
 }
 
@@ -202,6 +212,9 @@ fn long_form(long: RawLongMount) -> Result<Mount, ParseError> {
         }),
         ("volume" | "bind", Some(source)) => with_source(&source, &long.target, access),
         ("volume", None) => anonymous(&long.target),
+        ("bind", None) => Err(ParseError::Invalid(
+            "a bind mount needs a source".to_owned(),
+        )),
         (other, _) => Err(ParseError::Invalid(format!(
             "unsupported mount type `{other}`"
         ))),

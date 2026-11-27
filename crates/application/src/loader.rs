@@ -163,35 +163,43 @@ fn load_stack(ports: Ports<'_>, scope: &Scope, name: &str) -> Problems<Stack> {
     }
 }
 
-fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<(String, ComposeSummary)> {
-    let file = single(
-        dir.join(COMPOSE_FILE)
-            .map_err(|reason| invalid_path(dir, reason)),
-    )?;
-    if !single(ports.source.contains(&file).map_err(LoadError::Source))? {
-        return Err(vec![LoadError::MissingCompose {
-            file: file.to_string(),
-        }]);
+/// The path and text of `file` in `dir`, or `None` when the file is absent.
+fn read_optional(
+    ports: Ports<'_>,
+    dir: &RepoPath,
+    file: &str,
+) -> Problems<Option<(RepoPath, String)>> {
+    let path = single(dir.join(file).map_err(|reason| invalid_path(dir, reason)))?;
+    if !single(ports.source.contains(&path).map_err(LoadError::Source))? {
+        return Ok(None);
     }
-    let text = single(ports.source.read_file(&file).map_err(LoadError::Source))?;
+    let text = single(ports.source.read_file(&path).map_err(LoadError::Source))?;
+    Ok(Some((path, text)))
+}
+
+fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<(String, ComposeSummary)> {
+    let Some((file, text)) = read_optional(ports, dir, COMPOSE_FILE)? else {
+        return Err(vec![LoadError::MissingCompose {
+            file: format!("{dir}/{COMPOSE_FILE}"),
+        }]);
+    };
     let parsed = ports.parser.parse_compose(&text);
     let summary = parsed.map_err(|error| vec![compose_error(&file, &error)])?;
     Ok((text, summary))
 }
 
 fn read_policy(ports: Ports<'_>, dir: &RepoPath) -> Problems<StackPolicy> {
-    let file = single(
-        dir.join(POLICY_FILE)
-            .map_err(|reason| invalid_path(dir, reason)),
-    )?;
-    if !single(ports.source.contains(&file).map_err(LoadError::Source))? {
-        return Ok(StackPolicy::default());
+    match read_optional(ports, dir, POLICY_FILE)? {
+        None => Ok(StackPolicy::default()),
+        Some((file, text)) => parse_policy(ports, &file, &text),
     }
-    let text = single(ports.source.read_file(&file).map_err(LoadError::Source))?;
+}
+
+fn parse_policy(ports: Ports<'_>, file: &RepoPath, text: &str) -> Problems<StackPolicy> {
     ports
         .parser
-        .parse_policy(&text)
-        .map_err(|error| vec![policy_error(&file, error)])
+        .parse_policy(text)
+        .map_err(|error| vec![policy_error(file, error)])
 }
 
 fn invalid_path(dir: &RepoPath, reason: ValueError) -> LoadError {

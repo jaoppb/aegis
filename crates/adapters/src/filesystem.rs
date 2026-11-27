@@ -1,6 +1,8 @@
 //! Reads a repository checkout from the local filesystem.
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use aegis_application::{DirEntry, EntryKind, RepoSource, SourceError};
 use aegis_domain::RepoPath;
@@ -34,12 +36,32 @@ fn failure(path: &RepoPath) -> impl Fn(std::io::Error) -> SourceError {
 fn entry(item: std::io::Result<std::fs::DirEntry>) -> std::io::Result<DirEntry> {
     let item = item?;
     let name = item.file_name().to_string_lossy().into_owned();
-    let kind = if item.path().is_dir() {
+    let kind = if item.file_type()?.is_dir() {
         EntryKind::Directory
     } else {
         EntryKind::Other
     };
     Ok(DirEntry { name, kind })
+}
+
+/// The largest file the loader reads. Compose and policy files are small; the cap keeps a
+/// committed oversized file from exhausting memory.
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Read a regular file without following a symlink, so a committed link cannot pull in a file from
+/// outside the checkout, and refuse anything over [`MAX_FILE_BYTES`].
+fn read_regular_file(path: &Path) -> std::io::Result<String> {
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut text = String::new();
+    File::open(path)?
+        .take(MAX_FILE_BYTES.saturating_add(1))
+        .read_to_string(&mut text)?;
+    if u64::try_from(text.len()).map_or(true, |len| len > MAX_FILE_BYTES) {
+        return Err(std::io::Error::other("file is too large"));
+    }
+    Ok(text)
 }
 
 impl RepoSource for FsRepo {
@@ -56,6 +78,6 @@ impl RepoSource for FsRepo {
     }
 
     fn read_file(&self, path: &RepoPath) -> Result<String, SourceError> {
-        std::fs::read_to_string(self.resolve(path)).map_err(failure(path))
+        read_regular_file(&self.resolve(path)).map_err(failure(path))
     }
 }

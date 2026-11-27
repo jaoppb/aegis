@@ -246,3 +246,77 @@ fn problems_in_hosts_and_reserved_stacks_are_both_reported() {
     ];
     assert_eq!(load(&files).unwrap_err().len(), 2);
 }
+
+/// A repository whose every read fails, to prove the failure is reported rather than swallowed.
+struct BrokenRepo {
+    failing: &'static str,
+}
+
+impl BrokenRepo {
+    fn fail(&self, operation: &str, path: &RepoPath) -> Result<(), SourceError> {
+        let broken = SourceError {
+            path: path.to_string(),
+            message: operation.to_owned(),
+        };
+        (operation == self.failing)
+            .then_some(broken)
+            .map_or(Ok(()), Err)
+    }
+}
+
+fn host_dir_listing() -> Vec<DirEntry> {
+    vec![DirEntry {
+        name: "host".to_owned(),
+        kind: EntryKind::Directory,
+    }]
+}
+
+impl RepoSource for BrokenRepo {
+    fn contains(&self, path: &RepoPath) -> Result<bool, SourceError> {
+        self.fail("contains", path).map(|()| true)
+    }
+
+    fn list_dir(&self, path: &RepoPath) -> Result<Vec<DirEntry>, SourceError> {
+        self.fail("list_dir", path).map(|()| host_dir_listing())
+    }
+
+    fn read_file(&self, path: &RepoPath) -> Result<String, SourceError> {
+        self.fail("read_file", path).map(|()| String::new())
+    }
+}
+
+fn source_errors(failing: &'static str) -> Vec<LoadError> {
+    load_desired_state(&BrokenRepo { failing }, &FakeParser)
+        .err()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_failing_contains_is_reported() {
+    let errors = source_errors("contains");
+    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "contains"));
+}
+
+#[test]
+fn a_failing_list_dir_is_reported() {
+    let errors = source_errors("list_dir");
+    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "list_dir"));
+}
+
+#[test]
+fn a_failing_read_file_is_reported() {
+    let errors = source_errors("read_file");
+    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "read_file"));
+}
+
+#[test]
+fn an_invalid_host_name_is_a_typed_error() {
+    let expected = LoadError::InvalidName {
+        path: "hosts/bad host".to_owned(),
+        reason: ValueError::ForbiddenChar(' '),
+    };
+    assert_eq!(
+        load(&[("hosts/bad host/stack/compose.yaml", "")]),
+        Err(vec![expected])
+    );
+}

@@ -158,3 +158,29 @@ fn invalid_values_are_not_unknown_keys() {
 fn malformed_toml_is_invalid() {
     assert!(matches!(policy::parse("= ="), Err(ParseError::Invalid(_))));
 }
+
+#[test]
+fn remote_build_contexts_are_rejected() {
+    for context in [
+        "https://example.com/repo.git",
+        "git@example.com:org/repo.git",
+    ] {
+        let text = format!("services:\n  app:\n    build: {context}\n");
+        assert!(
+            matches!(compose::parse(&text), Err(ParseError::Invalid(_))),
+            "{context}"
+        );
+    }
+}
+
+#[test]
+fn interpolated_paths_are_rejected() {
+    assert!(first_mount("/srv/${DIR}/x:/a").is_err());
+    assert!(first_mount("./${DIR}:/a").is_err());
+}
+
+#[test]
+fn a_bind_mount_needs_a_source() {
+    let text = "services:\n  app:\n    volumes:\n      - type: bind\n        target: /a\n";
+    assert!(compose::parse(text).is_err());
+}
