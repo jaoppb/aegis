@@ -137,7 +137,7 @@ enum RawEnvEntry {
 /// Returns [`ParseError::Invalid`] when `text` is not YAML, or a service, volume, build, env file,
 /// mount or file reference is malformed.
 pub fn parse(text: &str) -> Result<ComposeSummary, ParseError> {
-    let raw: Option<RawCompose> = serde_norway::from_str(text).map_err(|error| yaml(&error))?;
+    let raw = read_document(text)?;
     let Some(raw) = raw else {
         return Ok(ComposeSummary::default());
     };
@@ -220,6 +220,17 @@ fn include_path_list(path: &RawIncludePath) -> Vec<String> {
     }
 }
 
+/// Read the YAML with its `<<` merge keys applied, as Compose does, so a merged service or volume
+/// is checked like any other.
+fn read_document(text: &str) -> Result<Option<RawCompose>, ParseError> {
+    let mut document: serde_norway::Value =
+        serde_norway::from_str(text).map_err(|error| yaml(&error))?;
+    document
+        .apply_merge()
+        .map_err(|error| ParseError::Invalid(error.to_string()))?;
+    serde_norway::from_value(document).map_err(|error| yaml(&error))
+}
+
 fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, ParseError> {
     let declared = raw.unwrap_or_default();
     declared
@@ -231,18 +242,31 @@ fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, 
         .collect()
 }
 
-/// A named volume whose `driver_opts` bind a device that is not an absolute host path is a bind
-/// mount of a path the repository or the home directory decides, so the mount rules cannot see it.
+/// Whether `driver_opts` mount a device as a bind: `type: none` or `o` holding `bind`.
+fn binds_a_device(options: &BTreeMap<String, serde_norway::Value>) -> bool {
+    let text = |key: &str| options.get(key).and_then(serde_norway::Value::as_str);
+    text("type") == Some("none") || text("o").is_some_and(|mount| mount.contains("bind"))
+}
+
+fn is_absolute_path(device: &serde_norway::Value) -> bool {
+    device.as_str().is_some_and(|path| path.starts_with('/'))
+}
+
+/// A named volume that binds a device that is not an absolute host path is a bind mount of a path
+/// the repository or the home directory decides, so the mount rules cannot see it. A number is
+/// not an absolute path either.
 fn reject_bind_device(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
     let options = raw.and_then(|volume| volume.driver_opts.as_ref());
-    let device = options.and_then(|options| options.get("device"));
-    let device = device.and_then(serde_norway::Value::as_str);
-    match device {
-        Some(path) if !path.starts_with('/') => Err(ParseError::Invalid(format!(
-            "volume `{name}` binds the device `{path}`: use an absolute host path"
-        ))),
-        _ => Ok(()),
+    let Some(options) = options.filter(|options| binds_a_device(options)) else {
+        return Ok(());
+    };
+    let acceptable = options.get("device").is_none_or(is_absolute_path);
+    if acceptable {
+        return Ok(());
     }
+    Err(ParseError::Invalid(format!(
+        "volume `{name}` binds a device that is not an absolute host path: use an absolute host path"
+    )))
 }
 
 fn in_scope(scope: &str, error: &impl Display) -> ParseError {

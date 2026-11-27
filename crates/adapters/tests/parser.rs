@@ -307,7 +307,7 @@ fn a_home_directory_build_context_escapes_the_stack() {
 
 #[test]
 fn a_named_volume_may_not_bind_a_relative_or_home_device() {
-    for device in ["./data", "../..", "~/x", "data"] {
+    for device in ["./data", "../..", "~/x", "data", "2024"] {
         let text = format!(
             "volumes:\n  v:\n    driver_opts:\n      type: none\n      o: bind\n      device: {device}\n"
         );
@@ -319,4 +319,23 @@ fn a_named_volume_may_not_bind_a_relative_or_home_device() {
 fn a_named_volume_may_bind_an_absolute_device_or_have_no_options() {
     let text = "volumes:\n  v:\n    driver_opts:\n      type: none\n      o: bind\n      device: /srv/data\n  w:\n  x: {}\n";
     assert_eq!(compose::parse(text).unwrap().volumes().len(), 3);
+}
+
+#[test]
+fn a_device_that_is_not_a_bind_is_left_alone() {
+    let nfs = "volumes:\n  v:\n    driver_opts:\n      type: nfs\n      o: addr=10.0.0.1\n      device: \":/export\"\n";
+    assert_eq!(compose::parse(nfs).unwrap().volumes().len(), 1);
+}
+
+#[test]
+fn merge_keys_are_applied_before_the_rules_see_the_file() {
+    let text = "x-base: &base\n  volumes:\n    - ./data:/data\nservices:\n  app:\n    <<: *base\n    image: a\n";
+    let summary = compose::parse(text).unwrap();
+    let service = &summary.services().as_slice()[0];
+    assert!(matches!(
+        &service.mounts().as_slice()[0],
+        Mount::Relative { .. }
+    ));
+    let volume = "x-vol: &v\n  driver_opts: {type: none, o: bind, device: ./data}\nvolumes:\n  d:\n    <<: *v\n";
+    assert!(compose::parse(volume).is_err());
 }
