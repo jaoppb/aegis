@@ -10,8 +10,9 @@ pub mod value;
 pub mod violation;
 
 pub use compose::{
-    Access, Build, ComposeSummary, EnvFile, EnvFiles, Mount, Mounts, Presence, ReferencedFiles,
-    SecretFiles, Service, ServiceSource, Services, Volumes,
+    Access, AdditionalContexts, Build, ComposeSummary, EnvFile, EnvFiles, FileReference, Mount,
+    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFiles, Service, ServiceSource,
+    Services, Volumes,
 };
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
 pub use state::{

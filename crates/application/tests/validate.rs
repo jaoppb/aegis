@@ -7,10 +7,11 @@ use aegis_application::{
     validate_desired_state,
 };
 use aegis_domain::{
-    Access, ComposeSource, ComposeSummary, ContainerPath, DesiredState, EnvFile, EnvFiles, Host,
-    HostName, Hosts, Mount, Mounts, Presence, Problem, Rejection, Rejections, RepoPath, Service,
-    ServiceName, ServiceSource, Services, Stack, StackDefinition, StackIdentity, StackKind,
-    StackName, StackPolicy, Stacks, Volumes,
+    Access, Build, ComposeSource, ComposeSummary, ContainerPath, DeclaredPath, DesiredState,
+    EnvFile, EnvFiles, Host, HostName, HostPath, Hosts, Mount, Mounts, Presence, Problem,
+    Rejection, Rejections, RepoPath, Service, ServiceName, ServiceSource, Services, Stack,
+    StackDefinition, StackIdentity, StackKind, StackName, StackPolicy, Stacks, Violations,
+    VolumeName, Volumes,
 };
 
 /// A repository of files; a file is "encrypted" when its text starts with `ENC`.
@@ -60,8 +61,12 @@ fn service(mounts: Vec<Option<Mount>>, env_files: Vec<Option<EnvFile>>) -> Optio
 }
 
 fn outcome_of(service: Service) -> Option<Outcome> {
+    outcome_with(service, Volumes::default())
+}
+
+fn outcome_with(service: Service, volumes: Volumes) -> Option<Outcome> {
     let services = Services::new(vec![service]);
-    let compose = ComposeSummary::new(services, Volumes::default());
+    let compose = ComposeSummary::new(services, volumes);
     let source = ComposeSource::new("a\nb\n");
     let definition = StackDefinition::new(StackPolicy::default(), source, compose);
     let identity = StackIdentity::new(StackName::new("stack").ok()?, StackKind::Host);
@@ -166,4 +171,147 @@ fn a_rejected_stack_leaves_the_state() {
     let outcome = validated(&[], vec![], vec![env("b", Presence::Required)]).unwrap();
     assert!(outcome.state().hosts().as_slice()[0].stacks().is_empty());
     assert_eq!(outcome.rejected().len(), 1);
+}
+
+fn built(context: &str, dockerfile: Option<&str>) -> Option<Service> {
+    let build = Build::new(
+        DeclaredPath::new(context).ok()?,
+        dockerfile.and_then(|file| DeclaredPath::new(file).ok()),
+    );
+    let name = ServiceName::new("app").ok()?;
+    Some(Service::new(name, ServiceSource::new(None, Some(build))))
+}
+
+fn build_problems(files: &[(&str, &str)], service: Option<Service>) -> Option<Vec<Problem>> {
+    let outcome = validate_desired_state(&outcome_of(service?)?, &Memory::with(files), &Prefix);
+    let found = outcome.rejected().iter().flat_map(Rejection::violations);
+    Some(found.map(|violation| violation.problem().clone()).collect())
+}
+
+#[test]
+fn a_build_context_that_escapes_the_stack_is_a_violation() {
+    for context in ["../shared", "/opt/src"] {
+        let found = build_problems(&[], built(context, None)).unwrap();
+        assert!(matches!(
+            found.as_slice(),
+            [Problem::BuildOutsideStack { .. }]
+        ));
+    }
+}
+
+#[test]
+fn a_missing_build_context_is_a_violation() {
+    let found = build_problems(&[], built("./app", None)).unwrap();
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::MissingBuildContext { .. }]
+    ));
+}
+
+#[test]
+fn a_dockerfile_that_leaves_the_stack_is_a_violation() {
+    let files = [("hosts/host/stack/app", "x")];
+    let found = build_problems(&files, built("./app", Some("../../Dockerfile"))).unwrap();
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::BuildOutsideStack { .. }]
+    ));
+    let inside = build_problems(&files, built("./app", Some("../Dockerfile"))).unwrap();
+    assert!(inside.is_empty());
+}
+
+fn named_mount(volume: &str) -> Option<Mount> {
+    Some(Mount::Named {
+        volume: VolumeName::new(volume).ok()?,
+        target: ContainerPath::new("/x").ok()?,
+        access: Access::ReadWrite,
+    })
+}
+
+fn mount_service(mounts: Vec<Option<Mount>>) -> Option<Service> {
+    service(mounts, vec![])
+}
+
+fn volume_problems(declared: &[&str]) -> Option<Vec<Problem>> {
+    let volumes: Option<Vec<VolumeName>> = declared
+        .iter()
+        .map(|name| VolumeName::new(*name).ok())
+        .collect();
+    let service = mount_service(vec![named_mount("data")])?;
+    let outcome = outcome_with(service, Volumes::new(volumes?))?;
+    let outcome = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    let found = outcome.rejected().iter().flat_map(Rejection::violations);
+    Some(found.map(|violation| violation.problem().clone()).collect())
+}
+
+#[test]
+fn a_named_volume_must_be_declared() {
+    let found = volume_problems(&[]).unwrap();
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::UndeclaredVolume { .. }]
+    ));
+    assert!(volume_problems(&["data"]).unwrap().is_empty());
+}
+
+#[test]
+fn host_path_anonymous_and_tmpfs_mounts_are_allowed() {
+    let mounts = vec![
+        Some(Mount::HostPath {
+            source: HostPath::new("/srv/data").unwrap(),
+            target: ContainerPath::new("/x").unwrap(),
+            access: Access::ReadWrite,
+        }),
+        Some(Mount::Anonymous {
+            target: ContainerPath::new("/a").unwrap(),
+        }),
+        Some(Mount::Tmpfs {
+            target: ContainerPath::new("/t").unwrap(),
+        }),
+    ];
+    assert!(problems(&[], mounts, vec![]).unwrap().is_empty());
+}
+
+#[test]
+fn earlier_rejections_survive_and_the_valid_stack_is_kept() {
+    let earlier = Rejection::new(
+        RepoPath::new("hosts/host/broken").unwrap(),
+        Violations::default(),
+    );
+    let outcome = outcome_of(service(vec![], vec![]).unwrap()).unwrap();
+    let outcome = Outcome::new(
+        outcome.state().clone(),
+        Rejections::new(vec![earlier.clone()]),
+    );
+    let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    assert_eq!(validated.rejected().as_slice(), [earlier]);
+    assert_eq!(validated.state().hosts().as_slice()[0].stacks().len(), 1);
+}
+
+#[test]
+fn a_failing_repository_read_is_a_violation() {
+    let outcome = outcome_of(service(vec![relative("./x", Access::ReadOnly)], vec![]).unwrap());
+    let validated = validate_desired_state(&outcome.unwrap(), &Broken, &Prefix);
+    let found = validated.rejected().iter().flat_map(Rejection::violations);
+    assert!(
+        found
+            .into_iter()
+            .any(|violation| matches!(violation.problem(), Problem::Unreadable { .. }))
+    );
+}
+
+struct Broken;
+
+impl RepoSource for Broken {
+    fn contains(&self, path: &RepoPath) -> Result<bool, SourceError> {
+        Err(SourceError::new(path.clone(), Reason::new(&"boom")))
+    }
+
+    fn list_dir(&self, path: &RepoPath) -> Result<Vec<DirEntry>, SourceError> {
+        Err(SourceError::new(path.clone(), Reason::new(&"boom")))
+    }
+
+    fn read_file(&self, path: &RepoPath) -> Result<String, SourceError> {
+        Err(SourceError::new(path.clone(), Reason::new(&"boom")))
+    }
 }

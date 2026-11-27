@@ -177,7 +177,7 @@ fn file_references_are_collected() {
     let referenced: Vec<&str> = summary
         .referenced_files()
         .iter()
-        .map(RepoPath::as_str)
+        .map(|file| file.path().as_str())
         .collect();
     assert_eq!(
         referenced,

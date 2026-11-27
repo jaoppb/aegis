@@ -139,6 +139,12 @@ pub enum Problem {
         /// The file.
         path: RepoPath,
     },
+    /// A file is merged into the stack by `include` or `extends`, and its contents are not
+    /// validated.
+    UnvalidatedInclude {
+        /// The file.
+        path: RepoPath,
+    },
     /// An env or secret file is not SOPS-encrypted.
     NotEncrypted {
         /// The file.
@@ -188,10 +194,13 @@ fn describe_file(problem: &Problem) -> String {
             format!("service `{service}` builds from `{context}`, which is not in the repository")
         }
         Problem::MissingFile { role, path } => format!("{role} `{path}` is not in the repository"),
+        Problem::UnvalidatedInclude { path } => format!(
+            "`{path}` is merged in by include or extends, and Aegis does not validate included files yet: inline it into compose.yaml"
+        ),
         Problem::NotEncrypted { path } => format!(
             "`{path}` is not SOPS-encrypted: encrypt it with `sops --encrypt` before committing"
         ),
-        _ => String::new(),
+        other => format!("{other:?}"),
     }
 }
 
@@ -265,7 +274,79 @@ impl Rejection {
 }
 
 collection!(
-    /// The stacks that are not deployed, in directory order.
+    /// The stacks that are not deployed: those the loader rejected, then those validation rejected.
     Rejections,
     Rejection
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(reason: &str) -> String {
+        reason.to_owned()
+    }
+
+    fn load_problems() -> Vec<Problem> {
+        vec![
+            Problem::Unreadable { reason: text("r") },
+            Problem::InvalidName {
+                reason: ValueError::Empty,
+            },
+            Problem::MissingCompose,
+            Problem::InvalidCompose { reason: text("r") },
+            Problem::InvalidPolicy { reason: text("r") },
+            Problem::UnknownKey { key: text("k") },
+        ]
+    }
+
+    fn rule_problems() -> Vec<Problem> {
+        let path = || RepoPath::new("a").unwrap();
+        let service = || ServiceName::new("s").unwrap();
+        vec![
+            Problem::UndeclaredVolume {
+                service: service(),
+                volume: VolumeName::new("v").unwrap(),
+            },
+            Problem::WritableRelativeMount {
+                service: service(),
+                source: path(),
+            },
+            Problem::MissingMountSource {
+                service: service(),
+                source: path(),
+            },
+            Problem::MissingFile {
+                role: FileRole::EnvFile,
+                path: path(),
+            },
+            Problem::NotEncrypted { path: path() },
+            Problem::UnvalidatedInclude { path: path() },
+        ]
+    }
+
+    fn build_problems() -> Vec<Problem> {
+        let service = || ServiceName::new("s").unwrap();
+        vec![
+            Problem::BuildOutsideStack {
+                service: service(),
+                path: DeclaredPath::new("a").unwrap(),
+            },
+            Problem::MissingBuildContext {
+                service: service(),
+                context: RepoPath::new("a").unwrap(),
+            },
+        ]
+    }
+
+    fn described(problem: &Problem) -> bool {
+        let message = problem.to_string();
+        !message.is_empty() && !message.contains('{')
+    }
+
+    #[test]
+    fn every_problem_has_a_message() {
+        let all = [load_problems(), rule_problems(), build_problems()].concat();
+        assert!(all.iter().all(described), "{all:?}");
+    }
+}

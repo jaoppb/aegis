@@ -42,9 +42,19 @@ fn has_line(text: &str, prefix: &str) -> bool {
         .any(|line| line.trim_start().starts_with(prefix))
 }
 
-/// INI: a `[sops]` section that holds the `mac`.
+/// INI: a `[sops]` section that holds the `mac` and the `version`.
 fn ini(text: &str) -> bool {
-    has_line(text, "[sops]") && has_line(text, "mac")
+    let section = text
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != "[sops]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['));
+    let keys: Vec<&str> = section
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, _)| key.trim())
+        .collect();
+    keys.contains(&"mac") && keys.contains(&"version")
 }
 
 /// Dotenv: `sops_mac=` and `sops_version=` entries.

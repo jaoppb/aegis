@@ -31,7 +31,10 @@ fn yaml_and_json_need_a_sops_mapping() {
 
 #[test]
 fn ini_needs_a_sops_section() {
-    assert!(encrypted("s.ini", "[a]\nk=ENC[x]\n[sops]\nmac = m\n"));
+    assert!(encrypted(
+        "s.ini",
+        "[a]\nk=ENC[x]\n[sops]\nmac = m\nversion = 3\n"
+    ));
     assert!(!encrypted("s.ini", "[a]\nk=v\n"));
 }
 
@@ -40,4 +43,14 @@ fn a_file_without_an_extension_may_be_dotenv_or_structured() {
     assert!(encrypted("secret", "sops_mac=m\nsops_version=3\n"));
     assert!(encrypted("secret", "sops:\n  mac: m\n  version: 3\n"));
     assert!(!encrypted("secret", "hunter2\n"));
+}
+
+#[test]
+fn partial_metadata_is_not_enough() {
+    assert!(!encrypted("s.yaml", "sops:\n  mac: m\n"));
+    assert!(!encrypted("s.yaml", "sops:\n  version: 3\n"));
+    assert!(!encrypted("s.json", r#"{"sops": {"mac": "m"}}"#));
+    assert!(!encrypted(".env", "sops_version=3\n"));
+    assert!(!encrypted("s.ini", "[sops]\nversion = 3\n"));
+    assert!(!encrypted("s.ini", "[sops]\nmachine = m\nversion = 3\n"));
 }

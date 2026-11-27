@@ -81,16 +81,30 @@ fn step_into(depth: usize, segment: &str) -> Option<usize> {
 pub struct Build {
     context: DeclaredPath,
     dockerfile: Option<DeclaredPath>,
+    additional: AdditionalContexts,
 }
 
 impl Build {
     /// A build of `context`, with `dockerfile` when it is not the default.
     #[must_use]
-    pub const fn new(context: DeclaredPath, dockerfile: Option<DeclaredPath>) -> Self {
+    pub fn new(context: DeclaredPath, dockerfile: Option<DeclaredPath>) -> Self {
         Self {
             context,
             dockerfile,
+            additional: AdditionalContexts::default(),
         }
+    }
+
+    /// The same build with `additional` named contexts.
+    #[must_use]
+    pub fn with_additional_contexts(self, additional: AdditionalContexts) -> Self {
+        Self { additional, ..self }
+    }
+
+    /// The extra named build contexts that are paths.
+    #[must_use]
+    pub const fn additional_contexts(&self) -> &AdditionalContexts {
+        &self.additional
     }
 
     /// The build context, relative to the stack directory.
@@ -199,11 +213,53 @@ collection!(
     SecretFiles,
     RepoPath
 );
+/// Why a compose file points at another file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    /// An `include` entry: Compose merges the whole file in.
+    Include,
+    /// A service `extends.file`: Compose merges the service in.
+    Extends,
+    /// A top-level `configs` file.
+    Config,
+}
+
+/// A file a compose file points at, other than env and secret files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileReference {
+    path: RepoPath,
+    kind: ReferenceKind,
+}
+
+impl FileReference {
+    /// A reference to `path` of `kind`, relative to the stack directory.
+    #[must_use]
+    pub const fn new(path: RepoPath, kind: ReferenceKind) -> Self {
+        Self { path, kind }
+    }
+
+    /// The path, relative to the stack directory.
+    #[must_use]
+    pub const fn path(&self) -> &RepoPath {
+        &self.path
+    }
+
+    /// Why the file is referenced.
+    #[must_use]
+    pub const fn kind(&self) -> ReferenceKind {
+        self.kind
+    }
+}
+
 collection!(
-    /// Other files a compose file pulls in (`include`, `extends`, `configs`), relative to the
-    /// stack directory.
+    /// The `include`, `extends` and `configs` files of a compose file.
     ReferencedFiles,
-    RepoPath
+    FileReference
+);
+collection!(
+    /// The extra named build contexts of a service (`additional_contexts`).
+    AdditionalContexts,
+    DeclaredPath
 );
 collection!(
     /// The mounts of a service.

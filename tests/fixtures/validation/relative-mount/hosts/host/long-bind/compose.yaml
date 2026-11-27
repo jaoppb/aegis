@@ -1,0 +1,10 @@
+services:
+  app:
+    image: example/app:1
+    volumes:
+      - type: bind
+        source: data
+        target: /data
+
+volumes:
+  data:

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use aegis_adapters::{FsRepo, SerdeStackParser, SopsCheck};
 use aegis_application::{Outcome, load_desired_state, validate_desired_state};
-use aegis_domain::{Host, Problem};
+use aegis_domain::Host;
 
 fn validate(name: &str) -> Outcome {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -108,7 +108,31 @@ fn env_and_secret_files_must_be_encrypted_and_present() {
 #[test]
 fn included_extended_and_config_files_must_exist() {
     let outcome = validate("validation/secret-files");
-    assert_eq!(violations_of(&outcome, "referenced").len(), 3);
+    let found = violations_of(&outcome, "referenced");
+    assert_eq!(found.len(), 3, "{found:?}");
+    for name in ["shared.yaml", "base.yaml", "app.conf"] {
+        assert!(
+            found.iter().any(|line| line.contains(name)),
+            "{name}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn an_optional_env_file_that_is_present_must_still_be_encrypted() {
+    let outcome = validate("validation/secret-files");
+    let found = violations_of(&outcome, "optional-plaintext");
+    assert!(found[0].contains("not SOPS-encrypted"), "{found:?}");
+}
+
+#[test]
+fn a_missing_secret_file_is_a_violation() {
+    let outcome = validate("validation/secret-files");
+    let found = violations_of(&outcome, "missing-secret");
+    assert!(
+        found[0].contains("secret file `./secrets/db.yaml`"),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -134,10 +158,46 @@ fn the_hand_written_jao_server_layout_is_rejected_with_actionable_messages() {
 fn an_invalid_stack_is_skipped_while_the_others_stay() {
     let outcome = validate("validation/relative-mount");
     assert_eq!(kept(&outcome), ["pass"]);
-    assert_eq!(outcome.rejected().len(), 2);
-    let problem = &outcome.rejected().as_slice()[0].violations().as_slice()[0];
-    assert!(matches!(
-        problem.problem(),
-        Problem::MissingMountSource { .. }
-    ));
+    assert_eq!(outcome.rejected().len(), 3);
+    let missing = violations_of(&outcome, "missing");
+    assert!(missing[0].contains("not in the repository"), "{missing:?}");
+}
+
+#[test]
+fn a_long_form_bind_of_a_bare_name_is_a_relative_mount() {
+    let outcome = validate("validation/relative-mount");
+    let found = violations_of(&outcome, "long-bind");
+    assert!(
+        found.iter().any(|line| line.contains("must be `:ro`")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn an_additional_build_context_stays_inside_the_stack() {
+    let outcome = validate("validation/build");
+    let found = violations_of(&outcome, "extra-context");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("../shared"), "{found:?}");
+}
+
+#[test]
+fn an_unreferenced_dotenv_must_be_encrypted() {
+    let outcome = validate("validation/secret-files");
+    let found = violations_of(&outcome, "implicit-env");
+    assert!(found[0].contains("not SOPS-encrypted"), "{found:?}");
+}
+
+#[test]
+fn included_and_extended_files_are_not_accepted_unvalidated() {
+    let outcome = validate("validation/secret-files");
+    let found = violations_of(&outcome, "referenced");
+    assert!(
+        found
+            .iter()
+            .filter(|line| line.contains("inline it"))
+            .count()
+            == 2,
+        "{found:?}"
+    );
 }

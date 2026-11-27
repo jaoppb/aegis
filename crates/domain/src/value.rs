@@ -333,6 +333,18 @@ impl DeclaredPath {
     }
 }
 
+/// Whether `needle` occurs in `line` with no path or name character on either side.
+fn holds_token(line: &str, needle: &str) -> bool {
+    let joins = |character: Option<char>| {
+        character.is_some_and(|found| is_name_char(found) || found == '/')
+    };
+    line.match_indices(needle).any(|(start, found)| {
+        let before = line.get(..start).and_then(|head| head.chars().next_back());
+        let after = line.get(start.saturating_add(found.len())..);
+        !joins(before) && !joins(after.and_then(|tail| tail.chars().next()))
+    })
+}
+
 /// A 1-based line number in a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Line(NonZeroUsize);
@@ -344,10 +356,15 @@ impl Line {
         NonZeroUsize::new(number).map(Self)
     }
 
-    /// The first line of `text` that contains `needle`.
+    /// The best line of `text` for `needle`: the first list item (`- ...`) that holds it as a
+    /// whole token, else the first line that does, else `None`. It is a guess, not a parse.
     #[must_use]
     pub fn of(text: &str, needle: &str) -> Option<Self> {
-        let index = text.lines().position(|line| line.contains(needle))?;
+        let holds = |line: &&str| holds_token(line, needle);
+        let item = text
+            .lines()
+            .position(|line| line.trim_start().starts_with("- ") && holds(&line));
+        let index = item.or_else(|| text.lines().position(|line| holds(&line)))?;
         Self::new(index.saturating_add(1))
     }
 }
@@ -485,6 +502,9 @@ mod tests {
     #[test]
     fn lines_count_from_one_and_find_the_first_match() {
         assert_eq!(Line::of("a\nb\nb", "b"), Line::new(2));
+        assert_eq!(Line::of("x: ./data.env\n- .env\n", ".env"), Line::new(2));
+        let shared = "postgres:\n  image: postgres:16\n  volumes:\n    - postgres:/data\n";
+        assert_eq!(Line::of(shared, "postgres"), Line::new(4));
         assert_eq!(Line::of("a", "z"), None);
         assert_eq!(Line::new(0), None);
     }

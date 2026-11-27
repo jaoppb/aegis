@@ -5,9 +5,10 @@ use std::fmt::Display;
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Access, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile, EnvFiles, HostPath,
-    ImageRef, Line, Mount, Mounts, Presence, ReferencedFiles, RepoPath, SecretFiles, Service,
-    ServiceName, ServiceSource, Services, ValueError, VolumeName, Volumes,
+    Access, AdditionalContexts, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile,
+    EnvFiles, FileReference, HostPath, ImageRef, Line, Mount, Mounts, Presence, ReferenceKind,
+    ReferencedFiles, RepoPath, SecretFiles, Service, ServiceName, ServiceSource, Services,
+    ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
 
@@ -74,7 +75,37 @@ enum RawBuild {
     Detailed {
         context: Option<String>,
         dockerfile: Option<String>,
+        additional_contexts: Option<RawAdditionalContexts>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawAdditionalContexts {
+    Named(BTreeMap<String, String>),
+    Listed(Vec<String>),
+}
+
+impl RawAdditionalContexts {
+    /// The values of the contexts, which are paths, URLs or `service:` references.
+    fn values(self) -> Vec<String> {
+        match self {
+            Self::Named(named) => named.into_values().collect(),
+            Self::Listed(listed) => listed.iter().map(|entry| entry_value(entry)).collect(),
+        }
+    }
+}
+
+/// The value of a `name=value` entry; an entry without `=` is all value.
+fn entry_value(entry: &str) -> String {
+    let (_, value) = entry.split_once('=').unwrap_or(("", entry));
+    value.to_owned()
+}
+
+/// Whether an additional build context is a path in the checkout, not an image, URL or service.
+fn is_path_context(value: &str) -> bool {
+    let reference = value.contains("://") || value.starts_with("service:");
+    !reference && !value.starts_with("git@") && !value.starts_with("github.com/")
 }
 
 #[derive(Deserialize)]
@@ -143,6 +174,19 @@ fn secret_files(raw: &RawCompose) -> Result<SecretFiles, ParseError> {
     Ok(SecretFiles::new(file_paths("secrets", files)?))
 }
 
+fn reference_paths(
+    kind: ReferenceKind,
+    paths: impl Iterator<Item = String>,
+) -> Result<Vec<FileReference>, ParseError> {
+    let scope = "include, extends or configs";
+    paths
+        .map(|path| {
+            let path = RepoPath::new(path).map_err(|error| in_scope(scope, &error))?;
+            Ok(FileReference::new(path, kind))
+        })
+        .collect()
+}
+
 fn referenced_files(raw: &RawCompose) -> Result<ReferencedFiles, ParseError> {
     let configs = raw.files.configs.iter().flat_map(BTreeMap::values);
     let configs = configs.filter_map(|source| source.file.clone());
@@ -152,11 +196,10 @@ fn referenced_files(raw: &RawCompose) -> Result<ReferencedFiles, ParseError> {
         Some(RawExtends::Detailed { file }) => file.clone(),
         _ => None,
     });
-    let paths = configs.chain(includes).chain(extends);
-    Ok(ReferencedFiles::new(file_paths(
-        "include, extends or configs",
-        paths,
-    )?))
+    let mut found = reference_paths(ReferenceKind::Config, configs)?;
+    found.extend(reference_paths(ReferenceKind::Include, includes)?);
+    found.extend(reference_paths(ReferenceKind::Extends, extends)?);
+    Ok(ReferencedFiles::new(found))
 }
 
 fn include_paths(include: &RawInclude) -> Vec<String> {
@@ -204,11 +247,12 @@ fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
 
 fn build(raw: RawBuild) -> Result<Build, ParseError> {
     match raw {
-        RawBuild::Context(context) => detailed_build(Some(context), None),
+        RawBuild::Context(context) => detailed_build(Some(context), None, None),
         RawBuild::Detailed {
             context,
             dockerfile,
-        } => detailed_build(context, dockerfile),
+            additional_contexts,
+        } => detailed_build(context, dockerfile, additional_contexts),
     }
 }
 
@@ -226,17 +270,25 @@ fn reject_remote(context: &str) -> Result<(), ParseError> {
 fn detailed_build(
     context: Option<String>,
     dockerfile: Option<String>,
+    additional: Option<RawAdditionalContexts>,
 ) -> Result<Build, ParseError> {
     let context = context.unwrap_or_else(|| ".".to_owned());
     reject_remote(&context)?;
     let invalid = |error: ValueError| ParseError::Invalid(format!("build: {error}"));
-    Ok(Build::new(
-        DeclaredPath::new(context).map_err(invalid)?,
-        dockerfile
-            .map(DeclaredPath::new)
-            .transpose()
-            .map_err(invalid)?,
-    ))
+    let extra = additional
+        .map(RawAdditionalContexts::values)
+        .unwrap_or_default();
+    let extra = extra.into_iter().filter(|value| is_path_context(value));
+    let extra = extra
+        .map(DeclaredPath::new)
+        .collect::<Result<AdditionalContexts, _>>()
+        .map_err(invalid)?;
+    let dockerfile = dockerfile
+        .map(DeclaredPath::new)
+        .transpose()
+        .map_err(invalid)?;
+    let context = DeclaredPath::new(context).map_err(invalid)?;
+    Ok(Build::new(context, dockerfile).with_additional_contexts(extra))
 }
 
 fn env_files(raw: Option<RawEnvFile>) -> Result<EnvFiles, ValueError> {
@@ -326,7 +378,8 @@ fn long_form(long: RawLongMount) -> Result<Mount, ParseError> {
         ("tmpfs", _) => Ok(Mount::Tmpfs {
             target: container(&long.target)?,
         }),
-        ("volume" | "bind", Some(source)) => with_source(&source, &long.target, access),
+        ("volume", Some(source)) => with_source(&source, &long.target, access),
+        ("bind", Some(source)) => bind_source(&source, &long.target, access),
         ("volume", None) => anonymous(&long.target),
         ("bind", None) => Err(ParseError::Invalid(
             "a bind mount needs a source".to_owned(),
@@ -349,6 +402,16 @@ fn with_source(source: &str, target: &str, access: Access) -> Result<Mount, Pars
         Some('.') => relative(source, target, access),
         _ => named(source, target, access),
     }
+}
+
+/// A bind mount is a host path when absolute and a path in the repository otherwise, however the
+/// source starts: Compose resolves `data` against the project directory.
+fn bind_source(source: &str, target: &str, access: Access) -> Result<Mount, ParseError> {
+    let target = container(target)?;
+    if source.starts_with('/') {
+        return host_path(source, target, access);
+    }
+    relative(source, target, access)
 }
 
 fn host_path(source: &str, target: ContainerPath, access: Access) -> Result<Mount, ParseError> {

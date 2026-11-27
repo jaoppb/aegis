@@ -1,8 +1,9 @@
 //! The validation rules for a loaded stack: mounts, builds and encrypted secret files.
 
 use aegis_domain::{
-    Access, DesiredState, EnvFile, FileRole, Host, Hosts, Line, Location, Mount, Presence, Problem,
-    Rejection, Rejections, RepoPath, Service, ServiceName, Stack, Stacks, Violation, Violations,
+    Access, Build, DeclaredPath, DesiredState, EnvFile, FileReference, FileRole, Host, Hosts, Line,
+    Location, Mount, Presence, Problem, ReferenceKind, Rejection, Rejections, RepoPath, Service,
+    ServiceName, Stack, Stacks, ValueError, Violation, Violations,
 };
 
 use crate::loader::unreadable;
@@ -115,11 +116,27 @@ impl Context<'_> {
         Violation::new(Location::file(file).at(Line::of(text, needle)), problem)
     }
 
-    /// Whether `relative`, a path from the compose file, exists in the repository.
+    /// `relative`, a path from the compose file, resolved inside the stack directory.
+    fn resolve(&self, relative: &RepoPath) -> Result<RepoPath, Violation> {
+        let invalid =
+            |reason: ValueError| self.violation(relative.as_str(), invalid_compose_path(&reason));
+        self.dir.within(relative).map_err(invalid)
+    }
+
+    fn lookup(&self, full: &RepoPath) -> Result<bool, Violation> {
+        let found = self.ports.source.contains(full);
+        found.map_err(|error| unreadable(&error))
+    }
+
+    /// Whether `relative` exists in the repository.
     fn present(&self, relative: &RepoPath) -> Result<bool, Violation> {
-        let source = self.ports.source;
-        let contains = |full: RepoPath| source.contains(&full).map_err(|error| unreadable(&error));
-        self.dir.within(relative).map_or(Ok(false), contains)
+        self.lookup(&self.resolve(relative)?)
+    }
+}
+
+fn invalid_compose_path(reason: &ValueError) -> Problem {
+    Problem::InvalidCompose {
+        reason: reason.to_string(),
     }
 }
 
@@ -191,27 +208,41 @@ fn build_violations(context: &Context<'_>, service: &Service) -> Vec<Violation> 
     let Some(build) = service.source().build() else {
         return Vec::new();
     };
-    let name = service.name();
-    let outside = |path: &aegis_domain::DeclaredPath| {
+    let mut found = escaping_paths(context, service.name(), build);
+    found.extend(missing_context(context, service.name(), build));
+    found
+}
+
+/// The build context, the Dockerfile and the extra contexts that leave the stack directory.
+fn escaping_paths(context: &Context<'_>, service: &ServiceName, build: &Build) -> Vec<Violation> {
+    let dockerfile = build.dockerfile().filter(|_| build.dockerfile_escapes());
+    let context_path = Some(build.context()).filter(|path| path.inside_stack().is_none());
+    let extra = build
+        .additional_contexts()
+        .iter()
+        .filter(|path| path.inside_stack().is_none());
+    let outside = |path: &DeclaredPath| {
         let problem = Problem::BuildOutsideStack {
-            service: name.clone(),
+            service: service.clone(),
             path: path.clone(),
         };
         context.violation(path.as_str(), problem)
     };
-    let Some(inside) = build.context_inside_stack() else {
-        return vec![outside(build.context())];
-    };
-    let mut found = Vec::new();
-    let missing = Problem::MissingBuildContext {
-        service: name.clone(),
+    let paths = context_path.into_iter().chain(dockerfile).chain(extra);
+    paths.map(outside).collect()
+}
+
+fn missing_context(
+    context: &Context<'_>,
+    service: &ServiceName,
+    build: &Build,
+) -> Option<Violation> {
+    let inside = build.context_inside_stack()?;
+    let problem = Problem::MissingBuildContext {
+        service: service.clone(),
         context: inside.clone(),
     };
-    found.extend(absent(context, &inside, missing));
-    if let (true, Some(dockerfile)) = (build.dockerfile_escapes(), build.dockerfile()) {
-        found.push(outside(dockerfile));
-    }
-    found
+    absent(context, &inside, problem)
 }
 
 fn file_violations(context: &Context<'_>) -> Vec<Violation> {
@@ -219,6 +250,7 @@ fn file_violations(context: &Context<'_>) -> Vec<Violation> {
     let mut found = Vec::new();
     let env_files = compose.services().iter().flat_map(Service::env_files);
     found.extend(env_files.filter_map(|file| secret_violation(context, &env_reference(file))));
+    found.extend(implicit_env_violation(context));
     for path in compose.secret_files() {
         let reference = Reference {
             path,
@@ -227,14 +259,26 @@ fn file_violations(context: &Context<'_>) -> Vec<Violation> {
         };
         found.extend(secret_violation(context, &reference));
     }
-    for path in compose.referenced_files() {
-        let problem = Problem::MissingFile {
-            role: FileRole::Referenced,
-            path: path.clone(),
-        };
-        found.extend(absent(context, path, problem));
-    }
+    found.extend(
+        compose
+            .referenced_files()
+            .iter()
+            .filter_map(|file| reference_violation(context, file)),
+    );
     found
+}
+
+fn reference_violation(context: &Context<'_>, file: &FileReference) -> Option<Violation> {
+    let path = file.path();
+    if file.kind() != ReferenceKind::Config {
+        let problem = Problem::UnvalidatedInclude { path: path.clone() };
+        return Some(context.violation(path.as_str(), problem));
+    }
+    let problem = Problem::MissingFile {
+        role: FileRole::Referenced,
+        path: path.clone(),
+    };
+    absent(context, path, problem)
 }
 
 const fn env_reference(env_file: &EnvFile) -> Reference<'_> {
@@ -247,9 +291,12 @@ const fn env_reference(env_file: &EnvFile) -> Reference<'_> {
 
 /// A violation when the file is missing (and required) or readable but not SOPS-encrypted.
 fn secret_violation(context: &Context<'_>, reference: &Reference<'_>) -> Option<Violation> {
-    let full = context.dir.within(reference.path).ok()?;
     let needle = reference.path.as_str();
-    let present = match context.present(reference.path) {
+    let full = match context.resolve(reference.path) {
+        Ok(full) => full,
+        Err(violation) => return Some(violation),
+    };
+    let present = match context.lookup(&full) {
         Ok(present) => present,
         Err(violation) => return Some(violation),
     };
@@ -269,4 +316,26 @@ fn secret_violation(context: &Context<'_>, reference: &Reference<'_>) -> Option<
         path: reference.path.clone(),
     };
     (!context.ports.check.is_encrypted(&full, &text)).then(|| context.violation(needle, problem))
+}
+
+/// Compose reads a `.env` next to the compose file on its own, so it must be encrypted too unless
+/// a service already lists it.
+fn implicit_env_violation(context: &Context<'_>) -> Option<Violation> {
+    let path = RepoPath::new(".env").ok()?;
+    let listed = context
+        .stack
+        .compose()
+        .services()
+        .iter()
+        .flat_map(Service::env_files)
+        .any(|file| file.path().as_str().trim_start_matches("./") == ".env");
+    if listed {
+        return None;
+    }
+    let reference = Reference {
+        path: &path,
+        role: FileRole::EnvFile,
+        presence: Presence::Optional,
+    };
+    secret_violation(context, &reference)
 }

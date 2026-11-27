@@ -35,6 +35,15 @@ struct Partial<T> {
     rejected: Rejections,
 }
 
+impl<T> Partial<T> {
+    fn clean(loaded: T) -> Self {
+        Self {
+            loaded,
+            rejected: Rejections::default(),
+        }
+    }
+}
+
 /// A validated directory name together with the path it was validated under.
 struct Named<T> {
     value: T,
@@ -193,10 +202,8 @@ fn load_stacks(ports: Ports<'_>, scope: &Scope) -> Partial<Stacks> {
     let mut stacks = Vec::new();
     let mut rejected = Vec::new();
     for name in &names {
-        match load_stack(ports, scope, name) {
-            Ok(stack) => stacks.push(stack),
-            Err(rejection) => rejected.push(rejection),
-        }
+        let attempt = load_stack(ports, scope, name).map(Partial::clean);
+        absorb(&mut stacks, &mut rejected, attempt);
     }
     Partial {
         loaded: Stacks::new(stacks),
