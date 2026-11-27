@@ -79,7 +79,9 @@ latest_major = true
 pin_format = "sha-with-comment"
 sha_matches_comment = true
 
-# A `[github.project]` table is added by #5.
+[github.project]
+number = 9
+title = "Aegis"
 
 [workflow]
 extends = "builtin:tools"

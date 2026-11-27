@@ -1,0 +1,34 @@
+name: Sync project
+
+# Moves cards on the Aegis GitHub Project (v2) to the Status the issue workflow in tools.toml
+# prescribes. Writing Projects v2 needs a token with Projects write: the default GITHUB_TOKEN
+# cannot, so PROJECT_TOKEN (a fine-grained PAT) is used for the sync step only.
+on:
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned, assigned, unassigned]
+  pull_request:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: sync-project
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jaoppb/tools@42e8d50a8c01711073c1ea1b1d505a7c82fdc725 # v0.3.1
+        with:
+          config-path: tools.toml
+          sync-project: "true"
+          github-token: ${{ secrets.PROJECT_TOKEN }}
