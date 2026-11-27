@@ -1,0 +1,15 @@
+# Hooks call just recipes only. Install with `just setup`.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: fmt-check
+      glob: "*.{rs,md}"
+      run: just fmt-check
+    - name: lint
+      glob: "*.{rs,md,toml}"
+      run: just lint
+
+pre-push:
+  jobs:
+    - name: check
+      run: just check
