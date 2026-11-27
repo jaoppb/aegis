@@ -70,7 +70,7 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 
 ## 6. Product truth versus rules
 
-`PRODUCT.md` is intended to hold product truth: what Aegis does and why, and its scope. It is not in the repository yet. This file holds coding and workflow rules. When they disagree about behaviour or scope, `PRODUCT.md` wins; about process, code style or tooling, `AGENTS.md` wins. Neither overrides code or GitHub issues without a pull request that changes them.
+`PRODUCT.md` holds product truth: what Aegis does and why, and its scope. This file holds coding and workflow rules. When they disagree about behaviour or scope, `PRODUCT.md` wins; about process, code style or tooling, `AGENTS.md` wins. Neither overrides code or GitHub issues without a pull request that changes them.
 
 ## 7. Repository memory and continuity
 
