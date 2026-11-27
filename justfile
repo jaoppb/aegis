@@ -48,15 +48,16 @@ check: fmt-check lint workflows-check arch-check test
 repo-check:
     tools repo check
 
-# Fail when the change since `base` touches crates/, action.yml or .github/workflows/ without CHANGELOG.md (waived by the skip-changelog label in `labels`, comma-separated). Skipped while CHANGELOG.md does not exist (#8 creates it).
+# Fail when the change since `base` touches crates/, action.yml, .github/actions/ or .github/workflows/ without CHANGELOG.md (waived by the skip-changelog label in `labels`, comma-separated). Skipped while CHANGELOG.md does not exist (#8 creates it).
 changelog-check base labels="":
     #!/usr/bin/env bash
+    export BASE={{ quote(base) }} LABELS={{ quote(labels) }}
     set -euo pipefail
     if [ ! -f CHANGELOG.md ]; then
         echo "::notice::CHANGELOG.md does not exist yet; skipping the changelog check"
         exit 0
     fi
-    tools changelog check --base "{{ base }}" --labels "{{ labels }}" --skip-label skip-changelog --changelog CHANGELOG.md --watch crates/ --watch action.yml --watch .github/workflows/
+    tools changelog check --base "$BASE" --labels "$LABELS" --skip-label skip-changelog --changelog CHANGELOG.md --watch crates/ --watch action.yml --watch .github/actions/ --watch .github/workflows/
 
 # Audit open issues against the workflow rules (needs `gh` auth).
 issues-check:
