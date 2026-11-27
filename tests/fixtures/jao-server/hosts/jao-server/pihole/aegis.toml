@@ -1,0 +1,2 @@
+state = "active"
+tailnet_tags = ["tag:aegis-service", "tag:dns"]

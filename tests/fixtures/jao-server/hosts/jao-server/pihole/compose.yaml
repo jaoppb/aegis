@@ -1,0 +1,7 @@
+services:
+  pihole:
+    image: pihole/pihole:2025.07.1
+    env_file: .env
+    volumes:
+      - /srv/pihole/etc:/etc/pihole
+      - /srv/pihole/dnsmasq.d:/etc/dnsmasq.d

@@ -1,0 +1,6 @@
+services:
+  sharefile:
+    build: ./app
+    volumes:
+      - /srv/sharefile:/files
+      - ./app/config.toml:/etc/sharefile/config.toml:ro

@@ -95,3 +95,9 @@ deny = [
 ]
 message = "application declares ports (traits); IO belongs in an adapter"
 severity = "error"
+
+# The local-checkout reader is the one place that reads files, and it is deliberately blocking: the
+# loader is synchronous, and async callers wrap it in `spawn_blocking`. Everything else stays under
+# the rule.
+[rules.no-sync-io]
+exclude_files = ["crates/adapters/src/filesystem.rs"]

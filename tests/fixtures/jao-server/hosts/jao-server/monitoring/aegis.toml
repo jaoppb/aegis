@@ -1,0 +1,5 @@
+update = "manual"
+
+[expose]
+service = "grafana"
+port = 3000
