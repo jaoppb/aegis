@@ -1,0 +1,80 @@
+name: Tag Release
+
+# A merged version bump (see scripts/bump-version.sh) changes the workspace version on
+# main. This workflow tags that commit and publishes the release. scripts/release-tag.sh
+# tags only when the push itself changed [workspace.package].version, so a later unrelated
+# Cargo.toml change never releases under a version an earlier commit bumped.
+# workflow_dispatch is the recovery path: it tags and releases exactly the requested ref.
+# Tags pushed with GITHUB_TOKEN do not trigger release.yml, so it is called directly.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z or vX.Y.Z-rc.N). Created at ref when missing; released as it is when it exists.
+        required: true
+        type: string
+      ref:
+        description: Commit, branch or tag to tag when the tag is missing (default the commit this run uses). When the tag exists, leave empty or give its commit.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag the workspace version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # Only the tagging is serialized: a run waiting behind a whole release build could be
+    # replaced by a newer pending run and drop a version bump.
+    concurrency:
+      group: tag-release
+    outputs:
+      tag: ${{ steps.push.outputs.tag || steps.dispatch.outputs.tag }}
+    steps:
+      # Full history: the push path compares with the commit before the push and the
+      # dispatch path may tag an older ref. The token stays for `git push` of the tag.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag a version bump pushed to main
+        id: push
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: scripts/release-tag.sh push "${BEFORE}" "${AFTER}"
+
+      - name: Tag or verify the requested release
+        id: dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+          DEFAULT_REF: ${{ github.sha }}
+        run: scripts/release-tag.sh dispatch "${TAG}" "${REF}" "${DEFAULT_REF}"
+
+  release:
+    name: Release
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    concurrency:
+      group: release-${{ needs.tag.outputs.tag }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    permissions:
+      contents: write
+      packages: write
