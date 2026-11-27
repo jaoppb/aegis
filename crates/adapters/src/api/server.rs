@@ -134,7 +134,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`ServeError::Serve`] when the server stops on an IO error.
+/// Returns [`ServeError::Serve`] when the server stops on an IO error, and [`ServeError::Tag`] if
+/// the built-in ACL tag were invalid.
 pub async fn serve<Lookup>(
     listener: TcpListener,
     role: Role,
