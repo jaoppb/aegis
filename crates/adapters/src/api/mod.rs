@@ -5,4 +5,4 @@ mod client;
 mod server;
 
 pub use client::{ApiClient, BaseUrl, ClientError};
-pub use server::{ListenAddress, ServeError, router, serve, serve_blocking};
+pub use server::{ListenAddress, ServeError, serve, serve_from_env};

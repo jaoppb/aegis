@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 
-use aegis_domain::{PeerIdentity, TailnetTag};
+use aegis_domain::{AegisRole, PeerIdentity, TailnetTag, ValueError};
 
 use crate::source::Reason;
 
@@ -91,6 +91,15 @@ impl<Lookup: WhoIs + Sync> Authorizer<Lookup> {
     #[must_use]
     pub const fn new(whois: Lookup, required: TailnetTag) -> Self {
         Self { whois, required }
+    }
+
+    /// An authorizer for a server with `role`, which admits only the other side's tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValueError`] only if the built-in tag name were invalid.
+    pub fn for_server(whois: Lookup, role: AegisRole) -> Result<Self, ValueError> {
+        Ok(Self::new(whois, role.caller_tag()?))
     }
 
     /// Check that `peer` carries the required tag.

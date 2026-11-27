@@ -27,9 +27,7 @@ impl TailscaleWhois {
         Self::with_program("tailscale")
     }
 
-    /// The adapter that runs `program` in place of `tailscale`.
-    #[must_use]
-    pub fn with_program(program: impl Into<String>) -> Self {
+    fn with_program(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
         }
@@ -148,6 +146,33 @@ mod tests {
         ));
         assert!(matches!(
             parse_identity(b"not json"),
+            Err(WhoIsError::Unavailable(_))
+        ));
+    }
+
+    fn finished(code: i32, stdout: &[u8], stderr: &[u8]) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_successful_exit_is_read_as_an_identity() {
+        let output = finished(0, br#"{"Node":{"Tags":["tag:aegis-agent"]}}"#, b"");
+        assert!(interpret(&output).unwrap().has_tag(&tag("tag:aegis-agent")));
+    }
+
+    #[test]
+    fn a_failed_exit_ignores_stdout() {
+        let tagged = br#"{"Node":{"Tags":["tag:aegis-agent"]}}"#;
+        let unknown = finished(1, tagged, b"no match for 1.2.3.4");
+        let broken = finished(1, tagged, b"daemon down");
+        assert_eq!(interpret(&unknown), Err(WhoIsError::Unknown));
+        assert!(matches!(
+            interpret(&broken),
             Err(WhoIsError::Unavailable(_))
         ));
     }

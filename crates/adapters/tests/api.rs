@@ -1,18 +1,33 @@
 //! The `/v1` API over a real socket, with a scripted `WhoIs` standing in for Tailscale.
 
 use std::future::{Future, ready};
+use std::sync::{Arc, Mutex};
 
 use aegis_application::{PeerAddress, WhoIs, WhoIsError};
 use aegis_domain::PeerIdentity;
 
-struct Scripted(Result<PeerIdentity, WhoIsError>);
+struct Scripted {
+    answer: Result<PeerIdentity, WhoIsError>,
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl Scripted {
+    fn answering(answer: Result<PeerIdentity, WhoIsError>) -> Self {
+        Self {
+            answer,
+            seen: Arc::default(),
+        }
+    }
+}
 
 impl WhoIs for Scripted {
     fn identify(
         &self,
-        _peer: &PeerAddress,
+        peer: &PeerAddress,
     ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
-        ready(self.0.clone())
+        let record = |mut seen: std::sync::MutexGuard<'_, Vec<String>>| seen.push(peer.to_string());
+        self.seen.lock().into_iter().for_each(record);
+        ready(self.answer.clone())
     }
 }
 
@@ -22,21 +37,26 @@ mod cases {
     use aegis_adapters::api::{ApiClient, BaseUrl, ClientError, serve};
     use aegis_api::version_1::{Health, Role};
     use aegis_application::{Authorizer, Reason, WhoIsError};
-    use aegis_domain::{PeerIdentity, TailnetTag, TailnetTags};
+    use std::sync::Arc;
+
+    use aegis_domain::{AegisRole, PeerIdentity, TailnetTag, TailnetTags};
     use reqwest::StatusCode;
     use tokio::net::TcpListener;
 
     fn tagged(names: &[&str]) -> Scripted {
         let tags = names.iter().map(|name| TailnetTag::new(*name).unwrap());
-        Scripted(Ok(PeerIdentity::new(tags.collect::<TailnetTags>())))
+        Scripted::answering(Ok(PeerIdentity::new(tags.collect::<TailnetTags>())))
+    }
+
+    const fn role_of(role: Role) -> AegisRole {
+        match role {
+            Role::Agent => AegisRole::Agent,
+            Role::Controller => AegisRole::Controller,
+        }
     }
 
     async fn call(role: Role, lookup: Scripted) -> Result<Health, ClientError> {
-        let required = match role {
-            Role::Agent => "tag:aegis-controller",
-            Role::Controller => "tag:aegis-agent",
-        };
-        let authorizer = Authorizer::new(lookup, TailnetTag::new(required).unwrap());
+        let authorizer = Authorizer::for_server(lookup, role_of(role)).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = BaseUrl::new(format!("http://{}/", listener.local_addr().unwrap()));
         tokio::spawn(serve(listener, role, authorizer));
@@ -96,15 +116,51 @@ mod cases {
 
     #[test]
     fn an_unknown_address_is_forbidden() {
-        let unknown = Scripted(Err(WhoIsError::Unknown));
+        let unknown = Scripted::answering(Err(WhoIsError::Unknown));
         let status = status_of(health_of(Role::Agent, unknown));
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn a_failed_lookup_fails_closed() {
-        let failed = Scripted(Err(WhoIsError::Unavailable(Reason::new(&"daemon down"))));
+        let failed = Scripted::answering(Err(WhoIsError::Unavailable(Reason::new(&"daemon down"))));
         let status = status_of(health_of(Role::Agent, failed));
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    async fn peers_seen_by_whois() -> (Vec<String>, u16) {
+        let lookup = tagged(&["tag:aegis-controller"]);
+        let seen = Arc::clone(&lookup.seen);
+        let authorizer = Authorizer::for_server(lookup, AegisRole::Agent).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = BaseUrl::new(format!("http://127.0.0.1:{port}"));
+        tokio::spawn(serve(listener, Role::Agent, authorizer));
+        ApiClient::new(base).unwrap().health().await.unwrap();
+        let recorded = seen.lock().unwrap().clone();
+        (recorded, port)
+    }
+
+    #[test]
+    fn whois_receives_the_tcp_source_address_of_the_caller() {
+        let (peers, port) = runtime().block_on(peers_seen_by_whois());
+        assert_eq!(peers.len(), 1);
+        let address: std::net::SocketAddr = peers[0].parse().unwrap();
+        assert!(address.ip().is_loopback());
+        assert_ne!(address.port(), port);
+    }
+
+    async fn status_of_get(path: &str) -> StatusCode {
+        let authorizer = Authorizer::for_server(tagged(&[]), AegisRole::Agent).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}{path}", listener.local_addr().unwrap());
+        tokio::spawn(serve(listener, Role::Agent, authorizer));
+        reqwest::get(url).await.unwrap().status()
+    }
+
+    #[test]
+    fn a_denied_peer_gets_no_answer_on_any_path() {
+        let unknown = runtime().block_on(status_of_get("/v1/other"));
+        assert_eq!(unknown, StatusCode::FORBIDDEN);
     }
 }

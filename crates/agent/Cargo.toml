@@ -16,4 +16,3 @@ workspace = true
 [dependencies]
 aegis-adapters.workspace = true
 aegis-api.workspace = true
-thiserror.workspace = true

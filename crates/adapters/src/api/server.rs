@@ -3,13 +3,14 @@
 //! Every request goes through [`Admitted`], which resolves the peer's tailnet identity and checks
 //! its ACL tag before any handler runs.
 
+use std::env::VarError;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use aegis_api::version_1::{HEALTH_PATH, Health, Role};
 use aegis_application::{AccessError, Authorizer, PeerAddress, WhoIs};
-use aegis_domain::{TailnetTag, ValueError};
+use aegis_domain::{AegisRole, ValueError};
 use axum::extract::{ConnectInfo, FromRequestParts, Request};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
@@ -20,6 +21,9 @@ use axum::{Json, Router};
 use tokio::net::TcpListener;
 
 use crate::whois::TailscaleWhois;
+
+/// The environment variable that names the address to listen on, normally a tailnet address.
+const LISTEN_VAR: &str = "AEGIS_LISTEN";
 
 /// A server could not start or stopped.
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +42,12 @@ pub enum ServeError {
     /// The server stopped on an IO error.
     #[error("the server failed: {0}")]
     Serve(std::io::Error),
+    /// `AEGIS_LISTEN` is not set.
+    #[error("{LISTEN_VAR} is not set")]
+    NotConfigured,
+    /// `AEGIS_LISTEN` is not a socket address such as `100.64.0.7:7480`.
+    #[error("{LISTEN_VAR} is not a socket address: {0}")]
+    BadAddress(#[from] std::net::AddrParseError),
     /// The required ACL tag is not valid.
     #[error("invalid ACL tag: {0}")]
     Tag(#[from] ValueError),
@@ -55,22 +65,15 @@ impl FromStr for ListenAddress {
     }
 }
 
-/// The tag a caller must carry to reach a server with `role`: the other side of the API.
-fn caller_tag(role: Role) -> Result<TailnetTag, ValueError> {
+const fn role_of(role: Role) -> AegisRole {
     match role {
-        Role::Agent => TailnetTag::new("tag:aegis-controller"),
-        Role::Controller => TailnetTag::new("tag:aegis-agent"),
+        Role::Agent => AegisRole::Agent,
+        Role::Controller => AegisRole::Controller,
     }
 }
 
 /// The shared state of the guard: the authorizer every request goes through.
-struct Gate<Lookup>(Arc<Authorizer<Lookup>>);
-
-impl<Lookup> Clone for Gate<Lookup> {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
+type Gate<Lookup> = Arc<Authorizer<Lookup>>;
 
 /// Proof that the peer of a request carries the required tag.
 struct Admitted;
@@ -86,8 +89,7 @@ where
         gate: &Gate<Lookup>,
     ) -> Result<Self, Self::Rejection> {
         let peer = peer_of(parts)?;
-        gate.0
-            .authorize(&peer)
+        gate.authorize(&peer)
             .await
             .map_err(|error| status_of(&error))?;
         Ok(Self)
@@ -114,11 +116,11 @@ async fn admit(_admitted: Admitted, request: Request, next: Next) -> Response {
 }
 
 /// The `/v1` routes of a server with `role`, behind the tag check of `authorizer`.
-pub fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>) -> Router
+fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>) -> Router
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
-    let gate = Gate(Arc::new(authorizer));
+    let gate = Arc::new(authorizer);
     Router::new()
         .route(
             HEALTH_PATH,
@@ -147,7 +149,7 @@ where
 }
 
 async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
-    let authorizer = Authorizer::new(TailscaleWhois::new(), caller_tag(role)?);
+    let authorizer = Authorizer::for_server(TailscaleWhois::new(), role_of(role))?;
     let listener = TcpListener::bind(listen.0)
         .await
         .map_err(|cause| ServeError::Bind {
@@ -157,14 +159,20 @@ async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
     serve(listener, role, authorizer).await
 }
 
-/// Run a server with `role` on its own runtime until it fails. It resolves peers with the
-/// `tailscale` CLI and admits only the other side's tag.
+fn listen_from(variable: Result<String, VarError>) -> Result<ListenAddress, ServeError> {
+    let text = variable.map_err(|_| ServeError::NotConfigured)?;
+    Ok(text.parse()?)
+}
+
+/// Run a server with `role` on its own runtime until it fails, listening on the address in
+/// `AEGIS_LISTEN`. It resolves peers with the `tailscale` CLI and admits only the other side's tag.
 ///
 /// # Errors
 ///
-/// Returns a [`ServeError`] when the runtime cannot start, the address cannot be bound or the
-/// server fails.
-pub fn serve_blocking(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
+/// Returns a [`ServeError`] when `AEGIS_LISTEN` is missing or invalid, the runtime cannot start,
+/// the address cannot be bound or the server fails.
+pub fn serve_from_env(role: Role) -> Result<(), ServeError> {
+    let listen = listen_from(std::env::var(LISTEN_VAR))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -177,11 +185,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_server_admits_the_other_side_only() {
-        let agent_wants = caller_tag(Role::Agent).unwrap();
-        let controller_wants = caller_tag(Role::Controller).unwrap();
-        assert_eq!(agent_wants.as_str(), "tag:aegis-controller");
-        assert_eq!(controller_wants.as_str(), "tag:aegis-agent");
+    fn a_missing_variable_is_not_configured() {
+        let result = listen_from(Err(VarError::NotPresent));
+        assert!(matches!(result, Err(ServeError::NotConfigured)));
+    }
+
+    #[test]
+    fn a_bad_variable_is_a_bad_address() {
+        let result = listen_from(Ok("nowhere".to_owned()));
+        assert!(matches!(result, Err(ServeError::BadAddress(_))));
+    }
+
+    #[test]
+    fn a_good_variable_is_a_listen_address() {
+        let result = listen_from(Ok("100.64.0.7:7480".to_owned()));
+        assert!(result.is_ok());
     }
 
     #[test]

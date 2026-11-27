@@ -13,7 +13,7 @@ pub use compose::{
     Access, Build, ComposeSummary, EnvFiles, Mount, Mounts, Service, ServiceSource, Services,
     Volumes,
 };
-pub use peer::PeerIdentity;
+pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
 pub use state::{
     DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,
