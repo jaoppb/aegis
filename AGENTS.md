@@ -59,6 +59,7 @@ The workspace follows clean architecture. Dependencies point inward: `domain` <-
 - `domain` depends on no other layer and is pure: no IO, process, environment, async runtime, HTTP, CLI, logging or serialization wire formats.
 - `application` depends only on `domain`. It declares ports (traits) and does no IO.
 - `adapters` implement application ports and never depend on a binary.
+- `api` (`crates/api`) holds the versioned HTTP wire types (`serde` only). It depends on no other Aegis crate and on no IO or HTTP stack; `adapters` and binaries may depend on it, and `domain` and `application` may not.
 - Binaries only wire things together, hold no logic, and never depend on each other.
 
 New IO goes behind a port in `application` and an adapter in `adapters`. The same crate also runs the structural checks of §5. Changing a rule means editing `arch-lint.toml` (layering) or the checks in `tests/architecture/src/checks` (structure) in a pull request that explains why.

@@ -15,3 +15,6 @@ workspace = true
 
 [dependencies]
 aegis-domain.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
