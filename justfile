@@ -73,32 +73,49 @@ project-check:
 project-sync:
     tools project sync
 
-# Fail when the live `main` ruleset differs from .github/rulesets/main.json (needs `gh` auth with admin read).
+# Fail when a live ruleset differs from its file under .github/rulesets/ (needs `gh` auth with admin read).
 ruleset-check:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-    id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')
-    if [ -z "$id" ]; then echo "no ruleset named main on $repo"; exit 1; fi
     norm='{name, target, enforcement, conditions, bypass_actors, rules} | walk(if type == "array" then sort_by(tostring) else . end)'
-    live=$(gh api "repos/$repo/rulesets/$id" | jq -S "$norm")
-    want=$(jq -S "$norm" .github/rulesets/main.json)
-    if [ "$live" != "$want" ]; then
-        diff <(echo "$want") <(echo "$live") || true
-        echo "live ruleset differs from .github/rulesets/main.json"
-        exit 1
-    fi
-    echo "ruleset main matches .github/rulesets/main.json"
+    list=$(gh api "repos/$repo/rulesets")
+    status=0
+    for file in .github/rulesets/*.json; do
+        name=$(jq -r .name "$file")
+        id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<<"$list")
+        if [ -z "$id" ]; then echo "no ruleset named $name on $repo"; status=1; continue; fi
+        live=$(gh api "repos/$repo/rulesets/$id" | jq -S "$norm")
+        want=$(jq -S "$norm" "$file")
+        if [ "$live" != "$want" ]; then
+            diff <(echo "$want") <(echo "$live") || true
+            echo "live ruleset $name differs from $file"
+            status=1
+        else
+            echo "ruleset $name matches $file"
+        fi
+    done
+    exit "$status"
 
-# Create or update the `main` ruleset from .github/rulesets/main.json. Changes how every pull request merges.
+# Create or update every ruleset under .github/rulesets/. Changes how pull requests merge and who may create release tags.
 ruleset-apply:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-    id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')
-    if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
-    gh api --method "$method" "$url" --input .github/rulesets/main.json --silent
-    echo "ruleset main applied to $repo"
+    for file in .github/rulesets/*.json; do
+        if jq -e '.bypass_actors[]? | select(.actor_id == 0)' "$file" >/dev/null; then
+            echo "$file has a bypass actor with actor_id 0: set the release GitHub App id first"
+            exit 1
+        fi
+    done
+    list=$(gh api "repos/$repo/rulesets")
+    for file in .github/rulesets/*.json; do
+        name=$(jq -r .name "$file")
+        id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<<"$list")
+        if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
+        gh api --method "$method" "$url" --input "$file" --silent
+        echo "ruleset $name applied to $repo"
+    done
 
 # Open a pull request that bumps the workspace version (major, minor, patch, X.Y.Z or X.Y.Z-rc.N): `just bump-version minor --issue 90 [--dry-run]`.
 bump-version target *args:
