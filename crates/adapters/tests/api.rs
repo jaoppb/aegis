@@ -36,10 +36,10 @@ mod cases {
     use super::Scripted;
     use aegis_adapters::api::{ApiClient, BaseUrl, ClientError, serve};
     use aegis_api::version_1::{Health, Role};
-    use aegis_application::{Authorizer, Reason, WhoIsError};
+    use aegis_application::{Reason, WhoIsError};
     use std::sync::Arc;
 
-    use aegis_domain::{AegisRole, PeerIdentity, TailnetTag, TailnetTags};
+    use aegis_domain::{PeerIdentity, TailnetTag, TailnetTags};
     use reqwest::StatusCode;
     use tokio::net::TcpListener;
 
@@ -48,18 +48,10 @@ mod cases {
         Scripted::answering(Ok(PeerIdentity::new(tags.collect::<TailnetTags>())))
     }
 
-    const fn role_of(role: Role) -> AegisRole {
-        match role {
-            Role::Agent => AegisRole::Agent,
-            Role::Controller => AegisRole::Controller,
-        }
-    }
-
     async fn call(role: Role, lookup: Scripted) -> Result<Health, ClientError> {
-        let authorizer = Authorizer::for_server(lookup, role_of(role)).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = BaseUrl::new(format!("http://{}/", listener.local_addr().unwrap()));
-        tokio::spawn(serve(listener, role, authorizer));
+        tokio::spawn(serve(listener, role, lookup));
         ApiClient::new(base).unwrap().health().await
     }
 
@@ -131,11 +123,10 @@ mod cases {
     async fn peers_seen_by_whois() -> (Vec<String>, u16) {
         let lookup = tagged(&["tag:aegis-controller"]);
         let seen = Arc::clone(&lookup.seen);
-        let authorizer = Authorizer::for_server(lookup, AegisRole::Agent).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let base = BaseUrl::new(format!("http://127.0.0.1:{port}"));
-        tokio::spawn(serve(listener, Role::Agent, authorizer));
+        tokio::spawn(serve(listener, Role::Agent, lookup));
         ApiClient::new(base).unwrap().health().await.unwrap();
         let recorded = seen.lock().unwrap().clone();
         (recorded, port)
@@ -151,10 +142,9 @@ mod cases {
     }
 
     async fn status_of_get(path: &str) -> StatusCode {
-        let authorizer = Authorizer::for_server(tagged(&[]), AegisRole::Agent).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
-        tokio::spawn(serve(listener, Role::Agent, authorizer));
+        tokio::spawn(serve(listener, Role::Agent, tagged(&[])));
         reqwest::get(url).await.unwrap().status()
     }
 

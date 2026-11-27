@@ -44,11 +44,11 @@ Both binaries read one environment variable and fail at start-up when it is miss
 AEGIS_LISTEN=100.64.0.7:7480 aegis-agent
 ```
 
-Bind to the node's tailnet address, not `0.0.0.0`; nothing checks the address, so a wrong one exposes the plain-HTTP port on every interface. The transport is plain HTTP inside the WireGuard tunnel, and a peer outside the tailnet is not a tailnet node, so whois finds no match and it gets `403`. Do not share an Aegis node with another tailnet. The `tailscale` CLI must be on the `PATH` and the Tailscale daemon must be running on the host.
+Bind to the node's tailnet address, not `0.0.0.0`; nothing checks the address, so a wildcard or LAN address exposes the plain-HTTP port beyond the tailnet. The transport is plain HTTP inside the WireGuard tunnel, and a peer outside the tailnet is not a tailnet node, so whois finds no match and it gets `403`. Do not share an Aegis node with another tailnet. The `tailscale` CLI must be on the `PATH` and the Tailscale daemon must be running on the host.
 
 ## Checking it
 
-`GET /v1/health` answers `{"version":"v1","role":"agent"}` (or `controller`) to an allowed caller. Run the check from a node that carries the other side's tag (the controller node for an agent); an untagged machine gets `403`, and `503` means the Tailscale daemon is not reachable:
+`GET /v1/health` answers `{"version":"v1","role":"agent"}` (or `controller`) to an allowed caller. Run the check from a node that carries the other side's tag (the controller node for an agent); an untagged machine gets `403`, and `503` means the whois lookup failed (the `tailscale` CLI is missing or the daemon is not reachable):
 
 ```sh
 curl http://100.64.0.7:7480/v1/health

@@ -129,7 +129,8 @@ where
         .layer(from_fn_with_state(gate, admit))
 }
 
-/// Serve the API on `listener` until the server fails.
+/// Serve the API of a server with `role` on `listener` until it fails. Peers are resolved with
+/// `whois`, and only the other side's tag is admitted.
 ///
 /// # Errors
 ///
@@ -137,11 +138,12 @@ where
 pub async fn serve<Lookup>(
     listener: TcpListener,
     role: Role,
-    authorizer: Authorizer<Lookup>,
+    whois: Lookup,
 ) -> Result<(), ServeError>
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
+    let authorizer = Authorizer::for_server(whois, role_of(role))?;
     let service = router(role, authorizer).into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, service)
         .await
@@ -149,14 +151,13 @@ where
 }
 
 async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
-    let authorizer = Authorizer::for_server(TailscaleWhois::new(), role_of(role))?;
     let listener = TcpListener::bind(listen.0)
         .await
         .map_err(|cause| ServeError::Bind {
             address: listen.0,
             cause,
         })?;
-    serve(listener, role, authorizer).await
+    serve(listener, role, TailscaleWhois::new()).await
 }
 
 fn listen_from(variable: Result<String, VarError>) -> Result<ListenAddress, ServeError> {
@@ -185,6 +186,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_server_takes_the_domain_role_of_its_side() {
+        assert_eq!(role_of(Role::Agent), AegisRole::Agent);
+        assert_eq!(role_of(Role::Controller), AegisRole::Controller);
+    }
+
+    #[test]
     fn a_missing_variable_is_not_configured() {
         let result = listen_from(Err(VarError::NotPresent));
         assert!(matches!(result, Err(ServeError::NotConfigured)));
@@ -199,7 +206,7 @@ mod tests {
     #[test]
     fn a_good_variable_is_a_listen_address() {
         let result = listen_from(Ok("100.64.0.7:7480".to_owned()));
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "100.64.0.7:7480".parse().unwrap());
     }
 
     #[test]
