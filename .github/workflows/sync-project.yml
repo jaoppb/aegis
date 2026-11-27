@@ -1,6 +1,7 @@
 name: Sync project
 
 # Moves cards on the Aegis GitHub Project (v2) to the Status the issue workflow in tools.toml
+# prescribes.
 # Writing Projects v2 needs a token with Projects write: the default GITHUB_TOKEN cannot, so
 # PROJECT_TOKEN (a classic PAT with the `project` scope; fine-grained PATs do not support
 # user-owned Projects v2) is used for the sync step only.
