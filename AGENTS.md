@@ -47,14 +47,14 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 - **`pre-commit`**: `just fmt-check` (Rust and Markdown files) and `just lint` (Rust, TOML and lock files).
 - **`pre-push`**: `just check`, `just issues-check` and `just repo-check`. The last two need network access and `gh` authentication.
 - **Offline push.** When offline or unauthenticated, skip only the network audits: `LEFTHOOK_EXCLUDE=issues-check,repo-check git push`. Keep `check`, and run the skipped audits once you are back online. `git push --no-verify` is a last resort. Local hook overrides go in `lefthook-local.yml` (git-ignored).
-- **Recipes.** `just fmt` formats Rust and Markdown (rumdl); `just lint` runs Clippy with warnings as errors; `just test` runs `cargo nextest`; `just arch-check` runs the architecture rules; `just check` runs `fmt-check`, `lint`, `arch-check` and `test`.
+- **Recipes.** `just fmt` formats Rust and Markdown (rumdl); `just lint` runs Clippy with warnings as errors; `just test` runs `cargo nextest`; `just arch-check` runs the architecture rules (arch-lint layering plus the structural checks in §5); `just check` runs `fmt-check`, `lint`, `arch-check` and `test`.
 - **Repository sync.** `just repo-sync` applies `tools.toml` to live GitHub settings, labels and milestones and deletes deprecated labels. Run it only from an up-to-date `main` checkout, after the person asks for it.
 - **Ruleset.** `.github/rulesets/main.json` is the `main` branch ruleset: pull request, merge commit only, strict required checks, no bypass. `just ruleset-check` diffs it against the live one and `just ruleset-apply` writes it; run the latter only after the person asks for it. The `tags-create` ruleset lets only the release GitHub App create `v*` tags (the `APP_ID` and `APP_PRIVATE_KEY` secrets of the `release` environment, limited to `main`, used by `tag-release.yml`), and `tags-immutable` lets nobody update or delete them. Both recipes handle every file in `.github/rulesets/`.
 - **CI.** CI runs `just check` and the audits (`.github/workflows/ci.yml`, `changelog.yml`) in the flake devShell. Workflows live in `.github/workflows/` and must call `just` recipes through the devShell; do not duplicate check logic in a workflow: add a recipe and call it.
 
 ## 4. Architecture
 
-The workspace follows clean architecture. Dependencies point inward: `domain` <- `application` <- `adapters` <- binaries (`cli`, `controller`, `agent`). `arch-lint.toml` declares the layers and `just arch-check` (the `tests/architecture` crate, part of `just check`) enforces them:
+The workspace follows clean architecture. Dependencies point inward: `domain` <- `application` <- `adapters` <- binaries (`cli`, `controller`, `agent`). `arch-lint.toml` declares the layers and `just arch-check` (the `tests/architecture` crate, part of `just check`) enforces them. The same crate also runs the structural checks of §5:
 
 - `domain` depends on no other layer and is pure: no IO, process, environment, async runtime, HTTP, CLI, logging or serialization wire formats.
 - `application` depends only on `domain`. It declares ports (traits) and does no IO.
@@ -69,6 +69,49 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 - **No `#[allow]`.** `#[allow]` is forbidden (`allow_attributes` and `allow_attributes_without_reason`); do not suppress a lint, fix the code.
 - **Tests.** Run with `just test` (`cargo nextest`). Unit tests sit beside the code, cross-crate and architecture tests under `tests/`. Tests may use `unwrap`, `expect`, `panic` and printing. A bug fix starts with a failing test.
 - **Formatting.** `rustfmt.toml` and `.rumdl.toml` are authoritative; run `just fmt`.
+
+### Object Calisthenics for Rust
+
+These are the classic rules adapted to Rust and to the layers. `tests/architecture` (`just arch-check`) is the enforcer named "architecture"; it reports every violation with its rule name. It reads `crates/*/src` and the checker's own `src`, skipping `#[cfg(test)]` modules, integration tests and fixtures, except `file-size` and `lint-exception`, which read every `.rs` file.
+
+| Rule | Rust adaptation | Enforcer | Status |
+|------|-----------------|----------|--------|
+| One level of indentation per function | Early returns, `?` and `let ... else`; one block level inside a free function, none inside a method (the `impl` block counts as a level) | clippy `excessive_nesting` (2), `cognitive_complexity` (8) | enforced now |
+| Do not use `else` | Early returns and `match`; no redundant `else` after a return | clippy `redundant_else` | enforced now (partial: only an `else` after a return) |
+| Wrap all primitives | In `domain` and `application`, a struct with two or more fields has no primitive field (`String`, integers, `bool`, `char`, `PathBuf`, also inside `Option`, `Vec` and `Box`); a single-field struct is the newtype that wraps the primitive | architecture `primitive-field` | enforced now in `domain` and `application`; review-only elsewhere |
+| First-class collections | In `domain` and `application`, a struct with a collection field has no other field | architecture `collection-field` | enforced now in `domain` and `application`; review-only elsewhere |
+| One dot per line | Short method chains; iterator adapter chains are allowed | none | review-only: clippy has no chain-length lint |
+| Do not abbreviate | Names of three or more characters; only `'_` is shorter | clippy `min_ident_chars` (2), `many_single_char_names` | enforced now |
+| Keep entities small | Functions at most 25 lines and 3 parameters, `self` included; files at most 1000 lines | clippy `too_many_lines` (25), `too_many_arguments` (3); architecture `file-size` (1000) | enforced now |
+| At most four fields per struct | Group the rest into value objects | architecture `struct-fields` | enforced now |
+| No `pub` fields, no getters or setters | Fields are private, including `pub(crate)` and tuple-struct fields; behaviour methods instead of accessors, and read accessors only where a caller must see the value. The one exception is an adapter wire struct that derives `Serialize` or `Deserialize` | architecture `pub-field` | enforced now for the field visibility; accessor intent is review-only |
+| No tuple groupings | No tuple type or pattern in a function parameter or return type (nested ones included, such as `Option<(A, B)>`), no tuple type alias and no tuple-typed struct field. Closures, `()`, parenthesised types such as `&(dyn Trait + Send)`, `Fn(A, B) -> C` lists, enum variant payloads, tuple expressions in bodies and the methods of a trait impl are not groupings | architecture `tuple-signature`, `tuple-alias` and `tuple-field` | enforced now |
+| Names say what the thing is | No struct name ending in `Args`, `Params`, `Dto`, `Data`, `Info` or `Bag` | architecture `bag-name` | enforced now |
+
+Parameter ladder: when a function would take a 4th parameter (a 3rd beside `self`), take the first step that fits, and never a tuple or a bag-named struct.
+
+1. Method in disguise: move it onto the type that owns the data.
+2. Values that travel together and mean something: a value object in `domain` with a validating constructor.
+3. Stable dependencies: a service struct holds them and the call takes only the request.
+4. Use-case input: a named command in `application`.
+5. Third-party glue: a borrowed context struct in the adapter, built once and nested to respect the four-field limit.
+
+A grouping that cannot be named is a sign that the function does too much. A constructor for a struct of four fields takes a value object, or a `with_*` method, for the part that would be its 4th parameter.
+
+### Rust practices
+
+| Practice | Enforcer | Status |
+|----------|----------|--------|
+| One `thiserror` error enum per layer boundary; adapter errors are mapped, never leaked upward | code review | review-only: mapping quality needs judgement |
+| No `unwrap`, `expect`, `panic!`, indexing or `as` outside tests | clippy `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `as_conversions` and related; arch-lint `no-unwrap-expect` | enforced now |
+| `unsafe` is forbidden | rustc `unsafe_code` at forbid | enforced now |
+| Docs on public items and modules | rustc `missing_docs` | enforced now |
+| `#[must_use]` on constructors and pure functions | clippy `must_use_candidate`, `double_must_use` | enforced now |
+| No printing or debug macros, no `todo!` or `unimplemented!` | clippy `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented` | enforced now |
+| No float or unchecked integer arithmetic | clippy `float_arithmetic`, `arithmetic_side_effects` | enforced now |
+| No lint exceptions in any form | clippy `allow_attributes`, `allow_attributes_without_reason`; architecture `lint-exception` (`allow` and `expect` as outer, inner and `cfg_attr` attributes, `arch_lint::allow`) and `suppression-comment` (arch-lint suppression comments), tests included | enforced now, except attributes generated by macros (review-only) |
+| Dependencies only through `[workspace.dependencies]`, with exact `=` versions | architecture `manifest-dependency` (a crate dependency without `workspace = true`) and `manifest-version` (a workspace registry dependency without `=`) | enforced now |
+| Never log secrets | code review | review-only: content cannot be linted |
 
 ## 6. Product truth versus rules
 

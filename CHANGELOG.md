@@ -15,4 +15,6 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 - Release tags are protected: the `tags-create` and `tags-immutable` rulesets on `refs/tags/v*` let only the release GitHub App create them and let nobody update or delete them, `release.yml` is only called by `tag-release.yml`, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #52)
 
+- Architecture checks beyond layering, run by `just arch-check`: struct field count, private fields, wrapped primitives and first-class collections in `domain` and `application`, no tuple groupings, no bag names, a 1000-line file limit, no lint exceptions and exact workspace dependency pins. The domain, application and adapters crates now expose private fields through constructors and accessors, with value objects and collection types in place of primitives (#53, #54)
+
 [Unreleased]: https://github.com/jaoppb/aegis/commits/main
