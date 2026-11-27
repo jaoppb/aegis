@@ -262,3 +262,25 @@ fn an_empty_image_is_rejected() {
         Err(ParseError::Invalid(reason)) if reason.contains("value is empty")
     ));
 }
+
+fn extra_contexts(entries: &str) -> Vec<String> {
+    let text = format!(
+        "services:\n  app:\n    build:\n      context: ./app\n      additional_contexts:{entries}\n"
+    );
+    let summary = compose::parse(&text).unwrap();
+    let build = summary.services().as_slice()[0].source().build().unwrap();
+    let extra = build.additional_contexts().iter();
+    extra.map(|path| path.as_str().to_owned()).collect()
+}
+
+#[test]
+fn additional_contexts_in_list_form_keep_their_paths() {
+    let found = extra_contexts("\n        - shared=../shared\n        - ./bare\n");
+    assert_eq!(found, ["../shared", "./bare"]);
+}
+
+#[test]
+fn additional_contexts_that_are_not_paths_are_skipped() {
+    let entries = "\n        a: service:web\n        b: git@host:repo.git\n        c: github.com/x/y\n        d: docker-image://alpine\n        e: ./sub\n";
+    assert_eq!(extra_contexts(entries), ["./sub"]);
+}
