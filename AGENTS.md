@@ -48,6 +48,7 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 - **Offline push.** When offline or unauthenticated, skip only the network audits: `LEFTHOOK_EXCLUDE=issues-check,repo-check git push`. Keep `check`, and run the skipped audits once you are back online. `git push --no-verify` is a last resort. Local hook overrides go in `lefthook-local.yml` (git-ignored).
 - **Recipes.** `just fmt` formats Rust and Markdown (rumdl); `just lint` runs Clippy with warnings as errors; `just test` runs `cargo nextest`; `just arch-check` runs the architecture rules; `just check` runs `fmt-check`, `lint`, `arch-check` and `test`.
 - **Repository sync.** `just repo-sync` applies `tools.toml` to live GitHub settings, labels and milestones and deletes deprecated labels. Run it only from an up-to-date `main` checkout, after the person asks for it.
+- **Ruleset.** `.github/rulesets/main.json` is the `main` branch ruleset: pull request, merge commit only, strict required checks, no bypass. `just ruleset-check` diffs it against the live one and `just ruleset-apply` writes it; run the latter only after the person asks for it.
 - **CI.** The check workflows arrive with #6. Workflows live in `.github/workflows/` and must call `just` recipes through the devShell; do not duplicate check logic in a workflow: add a recipe and call it.
 
 ## 4. Architecture
