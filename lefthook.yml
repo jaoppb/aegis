@@ -13,3 +13,7 @@ pre-push:
   jobs:
     - name: check
       run: just check
+    - name: issues-check
+      run: just issues-check
+    - name: repo-check
+      run: just repo-check

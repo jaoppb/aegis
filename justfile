@@ -34,3 +34,15 @@ test:
 
 # Run every check: format, lint and tests.
 check: fmt-check lint test
+
+# Audit the live GitHub repository settings, labels and milestones against tools.toml.
+repo-check:
+    tools repo check
+
+# Audit open issues against the workflow rules (needs `gh` auth).
+issues-check:
+    tools issues check
+
+# Apply tools.toml to the live repository. Changes GitHub settings and deletes deprecated labels.
+repo-sync:
+    tools repo sync
