@@ -45,7 +45,7 @@ jobs:
     outputs:
       tag: ${{ steps.push.outputs.tag || steps.dispatch.outputs.tag }}
     steps:
-      # The `tags` ruleset (.github/rulesets/tags.json) only lets the release GitHub App create
+      # The `tags-create` ruleset (.github/rulesets/tags-create.json) only lets the release GitHub App create
       # `v*` tags, so the tag is pushed with a short-lived token of that App, not GITHUB_TOKEN.
       - name: Create the release App token
         id: app-token

@@ -108,9 +108,10 @@ ruleset-apply:
             exit 1
         fi
     done
+    list=$(gh api "repos/$repo/rulesets")
     for file in .github/rulesets/*.json; do
         name=$(jq -r .name "$file")
-        id=$(gh api "repos/$repo/rulesets" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id')
+        id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<<"$list")
         if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
         gh api --method "$method" "$url" --input "$file" --silent
         echo "ruleset $name applied to $repo"
