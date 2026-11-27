@@ -15,7 +15,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct RawCompose {
     services: Option<BTreeMap<String, RawService>>,
-    volumes: Option<BTreeMap<String, serde_norway::Value>>,
+    volumes: Option<BTreeMap<String, Option<RawVolume>>>,
     #[serde(flatten)]
     files: RawFiles,
 }
@@ -25,6 +25,11 @@ struct RawFiles {
     secrets: Option<BTreeMap<String, RawFileSource>>,
     configs: Option<BTreeMap<String, RawFileSource>>,
     include: Option<Vec<RawInclude>>,
+}
+
+#[derive(Deserialize)]
+struct RawVolume {
+    driver_opts: Option<BTreeMap<String, serde_norway::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -139,12 +144,11 @@ pub fn parse(text: &str) -> Result<ComposeSummary, ParseError> {
     let secrets = secret_files(&raw)?;
     let referenced = referenced_files(&raw)?;
     let services = raw.services.unwrap_or_default().into_iter();
-    let volumes = raw.volumes.unwrap_or_default().into_keys();
     let summary = ComposeSummary::new(
         services
             .map(|(name, raw)| service(&name, raw))
             .collect::<Result<Services, _>>()?,
-        volumes.map(volume).collect::<Result<Volumes, _>>()?,
+        volumes(raw.volumes)?,
     );
     Ok(summary
         .with_secret_files(secrets)
@@ -216,8 +220,29 @@ fn include_path_list(path: &RawIncludePath) -> Vec<String> {
     }
 }
 
-fn volume(name: String) -> Result<VolumeName, ParseError> {
-    VolumeName::new(name).map_err(|error| in_scope("volumes", &error))
+fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, ParseError> {
+    let declared = raw.unwrap_or_default();
+    declared
+        .into_iter()
+        .map(|(name, volume)| {
+            reject_bind_device(&name, volume.as_ref())?;
+            VolumeName::new(name).map_err(|error| in_scope("volumes", &error))
+        })
+        .collect()
+}
+
+/// A named volume whose `driver_opts` bind a device that is not an absolute host path is a bind
+/// mount of a path the repository or the home directory decides, so the mount rules cannot see it.
+fn reject_bind_device(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
+    let options = raw.and_then(|volume| volume.driver_opts.as_ref());
+    let device = options.and_then(|options| options.get("device"));
+    let device = device.and_then(serde_norway::Value::as_str);
+    match device {
+        Some(path) if !path.starts_with('/') => Err(ParseError::Invalid(format!(
+            "volume `{name}` binds the device `{path}`: use an absolute host path"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 fn in_scope(scope: &str, error: &impl Display) -> ParseError {

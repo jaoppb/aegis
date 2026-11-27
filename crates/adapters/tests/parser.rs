@@ -304,3 +304,19 @@ fn a_home_directory_build_context_escapes_the_stack() {
     let build = summary.services().as_slice()[0].source().build().unwrap();
     assert!(build.context_inside_stack().is_none());
 }
+
+#[test]
+fn a_named_volume_may_not_bind_a_relative_or_home_device() {
+    for device in ["./data", "../..", "~/x", "data"] {
+        let text = format!(
+            "volumes:\n  v:\n    driver_opts:\n      type: none\n      o: bind\n      device: {device}\n"
+        );
+        assert!(compose::parse(&text).is_err(), "{device}");
+    }
+}
+
+#[test]
+fn a_named_volume_may_bind_an_absolute_device_or_have_no_options() {
+    let text = "volumes:\n  v:\n    driver_opts:\n      type: none\n      o: bind\n      device: /srv/data\n  w:\n  x: {}\n";
+    assert_eq!(compose::parse(text).unwrap().volumes().len(), 3);
+}
