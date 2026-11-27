@@ -1,0 +1,192 @@
+//! The server side of the `/v1` API.
+//!
+//! Every request goes through [`Admitted`], which resolves the peer's tailnet identity and checks
+//! its ACL tag before any handler runs.
+
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use aegis_api::version_1::{HEALTH_PATH, Health, Role};
+use aegis_application::{AccessError, Authorizer, PeerAddress, WhoIs};
+use aegis_domain::{TailnetTag, ValueError};
+use axum::extract::{ConnectInfo, FromRequestParts, Request};
+use axum::http::StatusCode;
+use axum::http::request::Parts;
+use axum::middleware::{Next, from_fn_with_state};
+use axum::response::Response;
+use axum::routing::get;
+use axum::{Json, Router};
+use tokio::net::TcpListener;
+
+use crate::whois::TailscaleWhois;
+
+/// A server could not start or stopped.
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError {
+    /// The async runtime could not be built.
+    #[error("cannot start the async runtime: {0}")]
+    Runtime(std::io::Error),
+    /// The listen address could not be bound.
+    #[error("cannot listen on {address}: {cause}")]
+    Bind {
+        /// The address that was asked for.
+        address: SocketAddr,
+        /// Why the bind failed.
+        cause: std::io::Error,
+    },
+    /// The server stopped on an IO error.
+    #[error("the server failed: {0}")]
+    Serve(std::io::Error),
+    /// The required ACL tag is not valid.
+    #[error("invalid ACL tag: {0}")]
+    Tag(#[from] ValueError),
+}
+
+/// The address a server listens on, normally an address of the tailnet interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListenAddress(SocketAddr);
+
+impl FromStr for ListenAddress {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        text.parse().map(Self)
+    }
+}
+
+/// The tag a caller must carry to reach a server with `role`: the other side of the API.
+fn caller_tag(role: Role) -> Result<TailnetTag, ValueError> {
+    match role {
+        Role::Agent => TailnetTag::new("tag:aegis-controller"),
+        Role::Controller => TailnetTag::new("tag:aegis-agent"),
+    }
+}
+
+/// The shared state of the guard: the authorizer every request goes through.
+struct Gate<Lookup>(Arc<Authorizer<Lookup>>);
+
+impl<Lookup> Clone for Gate<Lookup> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+/// Proof that the peer of a request carries the required tag.
+struct Admitted;
+
+impl<Lookup> FromRequestParts<Gate<Lookup>> for Admitted
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        gate: &Gate<Lookup>,
+    ) -> Result<Self, Self::Rejection> {
+        let peer = peer_of(parts)?;
+        gate.0
+            .authorize(&peer)
+            .await
+            .map_err(|error| status_of(&error))?;
+        Ok(Self)
+    }
+}
+
+/// The peer address the transport recorded. A request without one means the server was wired
+/// without connection info, and it is refused.
+fn peer_of(parts: &Parts) -> Result<PeerAddress, StatusCode> {
+    let connection = parts.extensions.get::<ConnectInfo<SocketAddr>>();
+    let ConnectInfo(address) = connection.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(PeerAddress::new(address.to_string()))
+}
+
+const fn status_of(error: &AccessError) -> StatusCode {
+    match error {
+        AccessError::Denied => StatusCode::FORBIDDEN,
+        AccessError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+async fn admit(_admitted: Admitted, request: Request, next: Next) -> Response {
+    next.run(request).await
+}
+
+/// The `/v1` routes of a server with `role`, behind the tag check of `authorizer`.
+pub fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>) -> Router
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let gate = Gate(Arc::new(authorizer));
+    Router::new()
+        .route(
+            HEALTH_PATH,
+            get(move || async move { Json(Health::of(role)) }),
+        )
+        .layer(from_fn_with_state(gate, admit))
+}
+
+/// Serve the API on `listener` until the server fails.
+///
+/// # Errors
+///
+/// Returns [`ServeError::Serve`] when the server stops on an IO error.
+pub async fn serve<Lookup>(
+    listener: TcpListener,
+    role: Role,
+    authorizer: Authorizer<Lookup>,
+) -> Result<(), ServeError>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let service = router(role, authorizer).into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, service)
+        .await
+        .map_err(ServeError::Serve)
+}
+
+async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
+    let authorizer = Authorizer::new(TailscaleWhois::new(), caller_tag(role)?);
+    let listener = TcpListener::bind(listen.0)
+        .await
+        .map_err(|cause| ServeError::Bind {
+            address: listen.0,
+            cause,
+        })?;
+    serve(listener, role, authorizer).await
+}
+
+/// Run a server with `role` on its own runtime until it fails. It resolves peers with the
+/// `tailscale` CLI and admits only the other side's tag.
+///
+/// # Errors
+///
+/// Returns a [`ServeError`] when the runtime cannot start, the address cannot be bound or the
+/// server fails.
+pub fn serve_blocking(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(ServeError::Runtime)?;
+    runtime.block_on(run(role, listen))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_server_admits_the_other_side_only() {
+        let agent_wants = caller_tag(Role::Agent).unwrap();
+        let controller_wants = caller_tag(Role::Controller).unwrap();
+        assert_eq!(agent_wants.as_str(), "tag:aegis-controller");
+        assert_eq!(controller_wants.as_str(), "tag:aegis-agent");
+    }
+
+    #[test]
+    fn listen_addresses_parse_socket_addresses() {
+        assert!("100.64.0.7:7480".parse::<ListenAddress>().is_ok());
+        assert!("not-an-address".parse::<ListenAddress>().is_err());
+    }
+}
