@@ -164,6 +164,7 @@ fn remote_build_contexts_are_rejected() {
     for context in [
         "https://example.com/repo.git",
         "git@example.com:org/repo.git",
+        "github.com/org/repo",
     ] {
         let text = format!("services:\n  app:\n    build: {context}\n");
         assert!(
@@ -189,5 +190,19 @@ fn a_bind_mount_needs_a_source() {
     let text = "services:\n  app:\n    volumes:\n      - type: bind\n        target: /a\n";
     assert!(
         matches!(compose::parse(text), Err(ParseError::Invalid(reason)) if reason.contains("needs a source"))
+    );
+}
+
+#[test]
+fn a_local_context_that_looks_like_a_host_is_still_a_path() {
+    let text = "services:\n  app:\n    build: ./github.com/x\n";
+    assert_eq!(
+        compose::parse(text).unwrap().services[0]
+            .build
+            .as_ref()
+            .unwrap()
+            .context
+            .as_str(),
+        "./github.com/x"
     );
 }
