@@ -1,0 +1,2 @@
+struct Name(String);
+struct Pair { name: Name, label: Label }

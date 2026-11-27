@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use aegis_application::{DirEntry, EntryKind, RepoSource, SourceError};
+use aegis_application::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
 use aegis_domain::RepoPath;
 
 /// A [`RepoSource`] over a directory on disk.
@@ -26,22 +26,19 @@ impl FsRepo {
 }
 
 fn failure(path: &RepoPath) -> impl Fn(std::io::Error) -> SourceError {
-    let path = path.to_string();
-    move |error| SourceError {
-        path: path.clone(),
-        message: error.to_string(),
-    }
+    let path = path.clone();
+    move |error| SourceError::new(path.clone(), Reason::new(&error))
 }
 
 fn entry(item: std::io::Result<std::fs::DirEntry>) -> std::io::Result<DirEntry> {
     let item = item?;
-    let name = item.file_name().to_string_lossy().into_owned();
+    let name = EntryName::new(item.file_name().to_string_lossy());
     let kind = if item.file_type()?.is_dir() {
         EntryKind::Directory
     } else {
         EntryKind::Other
     };
-    Ok(DirEntry { name, kind })
+    Ok(DirEntry::new(name, kind))
 }
 
 /// The largest file the loader reads. Compose and policy files are small; the cap keeps a

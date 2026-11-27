@@ -25,7 +25,13 @@ publish = false
 aegis-domain = { path = "crates/domain" }
 aegis-application = { path = "crates/application" }
 aegis-adapters = { path = "crates/adapters" }
-arch-lint = "0.11"
+arch-lint = "=0.11.0"
+proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_norway = "=0.9.42"
+syn = { version = "=2.0.119", features = ["extra-traits", "full", "visit"] }
+thiserror = "=2.0.21"
+toml = "=1.2.3"
 
 [workspace.lints.rust]
 unused = { level = "deny", priority = -1 }

@@ -1,0 +1,1 @@
+use other::Thing; // arch-lint: allow(no-sync-io) reason="x"

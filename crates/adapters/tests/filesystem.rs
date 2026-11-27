@@ -25,10 +25,10 @@ fn entries_are_directories_or_other() {
     let mut entries = FsRepo::new(&dir)
         .list_dir(&RepoPath::new(".").unwrap())
         .unwrap();
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.sort_by(|left, right| left.name().cmp(right.name()));
     let kinds: Vec<(&str, EntryKind)> = entries
         .iter()
-        .map(|entry| (entry.name.as_str(), entry.kind))
+        .map(|entry| (entry.name().as_str(), entry.kind()))
         .collect();
     assert_eq!(
         kinds,
@@ -48,7 +48,7 @@ fn a_symlinked_directory_is_not_a_directory() {
         .list_dir(&RepoPath::new(".").unwrap())
         .unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].kind, EntryKind::Other);
+    assert_eq!(entries[0].kind(), EntryKind::Other);
 }
 
 #[test]

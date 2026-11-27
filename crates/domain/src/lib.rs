@@ -8,10 +8,15 @@ pub mod policy;
 pub mod state;
 pub mod value;
 
-pub use compose::{Access, Build, ComposeSummary, Mount, Service};
-pub use policy::{Expose, StackPolicy, StackState, UpdatePolicy};
-pub use state::{DesiredState, Host, Stack, StackKind};
+pub use compose::{
+    Access, Build, ComposeSummary, EnvFiles, Mount, Mounts, Service, ServiceSource, Services,
+    Volumes,
+};
+pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
+pub use state::{
+    DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,
+};
 pub use value::{
-    ContainerPath, HostName, HostPath, Port, RepoPath, ServiceName, StackName, TailnetTag,
-    ValueError, VolumeName,
+    ComposeSource, ContainerPath, HostName, HostPath, ImageRef, Port, RepoPath, ServiceName,
+    StackName, TailnetTag, ValueError, VolumeName,
 };

@@ -32,7 +32,7 @@ lint:
 test:
     cargo nextest run --workspace --all-features --no-tests=pass
 
-# Fail if a crate breaks the clean-architecture layering declared in arch-lint.toml.
+# Fail if a crate breaks the layering in arch-lint.toml or a structural rule of AGENTS.md section 5.
 arch-check:
     cargo test -p aegis-architecture-tests
 

@@ -1,0 +1,2 @@
+#[arch_lint_macros::allow(x)]
+fn skipped() {}

@@ -1,0 +1,8 @@
+fn vec_of(items: Vec<(A, B)>) {}
+fn optional(item: Option<(A, B)>) {}
+fn borrowed(item: &(A, B)) {}
+fn array(items: [(A, B); 2]) {}
+fn slice(items: &[(A, B)]) {}
+fn boxed() -> Box<dyn Fn() -> (A, B)> { todo() }
+fn pointer(call: fn((A, B))) {}
+fn iterator() -> impl Iterator<Item = (A, B)> { todo() }

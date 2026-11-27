@@ -1,0 +1,6 @@
+struct Fine { name: Name }
+#[cfg(test)]
+mod tests {
+    struct Loose { pub name: String, pub label: String }
+    fn pair() -> (A, B) { todo() }
+}

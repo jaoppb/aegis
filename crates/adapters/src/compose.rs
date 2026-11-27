@@ -5,8 +5,8 @@ use std::fmt::Display;
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Access, Build, ComposeSummary, ContainerPath, HostPath, Mount, RepoPath, Service, ServiceName,
-    ValueError, VolumeName,
+    Access, Build, ComposeSummary, ContainerPath, EnvFiles, HostPath, ImageRef, Mount, Mounts,
+    RepoPath, Service, ServiceName, ServiceSource, Services, ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
 
@@ -62,12 +62,12 @@ pub fn parse(text: &str) -> Result<ComposeSummary, ParseError> {
     };
     let services = raw.services.unwrap_or_default().into_iter();
     let volumes = raw.volumes.unwrap_or_default().into_keys();
-    Ok(ComposeSummary {
-        services: services
+    Ok(ComposeSummary::new(
+        services
             .map(|(name, raw)| service(&name, raw))
-            .collect::<Result<_, _>>()?,
-        volumes: volumes.map(volume).collect::<Result<_, _>>()?,
-    })
+            .collect::<Result<Services, _>>()?,
+        volumes.map(volume).collect::<Result<Volumes, _>>()?,
+    ))
 }
 
 fn volume(name: String) -> Result<VolumeName, ParseError> {
@@ -80,21 +80,23 @@ fn in_scope(scope: &str, error: &impl Display) -> ParseError {
 
 fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
     let scope = format!("service `{name}`");
+    let scoped = |error: &dyn Display| in_scope(&scope, &error);
     let mounts = raw.volumes.unwrap_or_default().into_iter();
-    Ok(Service {
-        name: ServiceName::new(name).map_err(|error| in_scope(&scope, &error))?,
-        image: raw.image,
-        build: raw
-            .build
-            .map(build)
-            .transpose()
-            .map_err(|error| in_scope(&scope, &error))?,
-        env_files: env_files(raw.env_file).map_err(|error| in_scope(&scope, &error))?,
-        mounts: mounts
-            .map(mount)
-            .collect::<Result<_, _>>()
-            .map_err(|error| in_scope(&scope, &error))?,
-    })
+    let image = raw.image.map(ImageRef::new).transpose();
+    let build = raw.build.map(build).transpose();
+    let source = ServiceSource::new(
+        image.map_err(|error| scoped(&error))?,
+        build.map_err(|error| scoped(&error))?,
+    );
+    let name = ServiceName::new(name).map_err(|error| scoped(&error))?;
+    Ok(Service::new(name, source)
+        .with_env_files(env_files(raw.env_file).map_err(|error| scoped(&error))?)
+        .with_mounts(
+            mounts
+                .map(mount)
+                .collect::<Result<Mounts, _>>()
+                .map_err(|error| scoped(&error))?,
+        ))
 }
 
 fn build(raw: RawBuild) -> Result<Build, ParseError> {
@@ -125,13 +127,13 @@ fn detailed_build(
     let context = context.unwrap_or_else(|| ".".to_owned());
     reject_remote(&context)?;
     let invalid = |error: ValueError| ParseError::Invalid(format!("build: {error}"));
-    Ok(Build {
-        context: RepoPath::new(context).map_err(invalid)?,
-        dockerfile: dockerfile.map(RepoPath::new).transpose().map_err(invalid)?,
-    })
+    Ok(Build::new(
+        RepoPath::new(context).map_err(invalid)?,
+        dockerfile.map(RepoPath::new).transpose().map_err(invalid)?,
+    ))
 }
 
-fn env_files(raw: Option<RawEnvFile>) -> Result<Vec<RepoPath>, ValueError> {
+fn env_files(raw: Option<RawEnvFile>) -> Result<EnvFiles, ValueError> {
     let entries = match raw {
         None => Vec::new(),
         Some(RawEnvFile::One(path)) => vec![RawEnvEntry::Path(path)],

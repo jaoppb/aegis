@@ -1,0 +1,2 @@
+#[arch_lint::allow(no_unwrap)]
+fn skipped() {}

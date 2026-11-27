@@ -1,0 +1,2 @@
+#[derive(Debug, Serialize)]
+struct Wire { pub name: String }

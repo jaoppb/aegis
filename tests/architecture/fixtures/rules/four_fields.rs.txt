@@ -1,0 +1,1 @@
+struct Four { first: A, second: B, third: C, fourth: D }
