@@ -7,9 +7,13 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    tools = {
+      url = "github:jaoppb/tools";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, rust-overlay }:
+  outputs = { self, nixpkgs, rust-overlay, tools }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
     in
@@ -31,6 +35,8 @@
               lefthook
               rumdl
               gh
+              # Issue workflow and repository config (tools.toml).
+              tools.packages.${system}.tools
               jq
               git
               # The CLIs the adapters shell out to; pinned to guard against output drift.
