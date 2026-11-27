@@ -98,14 +98,24 @@ version_key() {
     [[ "$1" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-rc\.([0-9]+))?$ ]] || die "Version '$1' is not X.Y.Z or X.Y.Z-rc.N."
     printf '%010d%010d%010d%010d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]:-9999999999}"
 }
-if [[ ! "$(version_key "$NEW_VERSION")" > "$(version_key "$CURRENT_VERSION")" ]]; then
+# The same version is allowed once, for the first release: the workspace starts at the version it
+# will release, so only the changelog rotates. The tag check below refuses it after that.
+SAME_VERSION=0
+if [ "$NEW_VERSION" = "$CURRENT_VERSION" ]; then
+    SAME_VERSION=1
+elif [[ ! "$(version_key "$NEW_VERSION")" > "$(version_key "$CURRENT_VERSION")" ]]; then
     die "New version $NEW_VERSION must be greater than the current version $CURRENT_VERSION."
 fi
 
 TAG="v$NEW_VERSION"
 BUMP_BRANCH="chore/$ISSUE"
 TITLE="chore: bump version to $NEW_VERSION (#$ISSUE)"
-BODY="Bumps the workspace version from $CURRENT_VERSION to $NEW_VERSION. Merging this PR tags $TAG and publishes the release.
+if [ "$SAME_VERSION" = "1" ]; then
+    EFFECT="Releases the workspace version $NEW_VERSION: only the changelog rotates. Merging this PR does not tag it; run the Tag Release workflow with tag $TAG afterwards."
+else
+    EFFECT="Bumps the workspace version from $CURRENT_VERSION to $NEW_VERSION. Merging this PR tags $TAG and publishes the release."
+fi
+BODY="$EFFECT
 
 Closes #$ISSUE"
 
@@ -140,7 +150,7 @@ cp CHANGELOG.md "$ROTATION_PREVIEW"
 
 if [ "$DRY_RUN" = "1" ]; then
     echo "Dry run: all preconditions pass, including the CHANGELOG rotation (cargo check, just check and just issues-check are not run), and nothing is changed."
-    echo "Version: $CURRENT_VERSION -> $NEW_VERSION (tag $TAG is created after the PR merges)"
+    echo "Version: $CURRENT_VERSION -> $NEW_VERSION (see the PR body for how $TAG is created)"
     echo "Branch:  $BUMP_BRANCH"
     echo "Commit:  $TITLE"
     printf 'PR title: %s\nPR body:\n%s\n' "$TITLE" "$BODY"
@@ -148,6 +158,9 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 echo "Bumping version: $CURRENT_VERSION -> $NEW_VERSION"
+if [ "$SAME_VERSION" = "1" ]; then
+    echo "The workspace already is at $NEW_VERSION, so merging does not tag it: run the Tag Release workflow manually with tag $TAG afterwards."
+fi
 
 START_SHA="$(git rev-parse HEAD)"
 # Roll back to the starting branch with a clean tree if a step before the push fails
@@ -168,7 +181,9 @@ trap cleanup ERR
 # Portable in-place replacement (works across GNU and BSD/macOS sed)
 sed "/\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
 
-git diff --quiet Cargo.toml && die "Cargo.toml has no [workspace.package] version line to update."
+if [ "$SAME_VERSION" = "0" ]; then
+    git diff --quiet Cargo.toml && die "Cargo.toml has no [workspace.package] version line to update."
+fi
 
 cargo check --workspace
 
