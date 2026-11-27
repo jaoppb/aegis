@@ -50,3 +50,11 @@ issues-check:
 # Apply tools.toml to the live repository. Changes GitHub settings and deletes deprecated labels.
 repo-sync:
     tools repo sync
+
+# Print the planned Project Status moves without writing (exits 1 when there are any).
+project-check:
+    tools project check
+
+# Write the planned Project Status moves (needs a token with Projects write).
+project-sync:
+    tools project sync
