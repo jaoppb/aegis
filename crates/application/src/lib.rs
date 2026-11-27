@@ -9,4 +9,4 @@ pub mod source;
 pub use error::LoadError;
 pub use loader::load_desired_state;
 pub use parse::{ParseError, StackParser};
-pub use source::{DirEntry, EntryKind, RepoSource, SourceError};
+pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};

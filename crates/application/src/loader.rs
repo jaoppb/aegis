@@ -1,13 +1,13 @@
 //! Turns a repository checkout into the typed desired state.
 
 use aegis_domain::{
-    ComposeSummary, DesiredState, Host, HostName, RepoPath, Stack, StackKind, StackName,
-    StackPolicy, ValueError,
+    ComposeSource, ComposeSummary, DesiredState, Host, HostName, Hosts, RepoPath, Stack,
+    StackDefinition, StackIdentity, StackKind, StackName, StackPolicy, Stacks, ValueError,
 };
 
 use crate::error::LoadError;
 use crate::parse::{ParseError, StackParser};
-use crate::source::{EntryKind, RepoSource};
+use crate::source::{DirEntry, EntryName, RepoSource};
 
 const HOSTS_DIR: &str = "hosts";
 const RESERVED_DIR: &str = "aegis";
@@ -29,6 +29,27 @@ struct Scope {
 
 type Problems<T> = Result<T, Vec<LoadError>>;
 
+/// A validated directory name together with the path it was validated under.
+struct Named<T> {
+    value: T,
+    path: RepoPath,
+}
+
+/// The text of a file read from the repository.
+struct FileText(String);
+
+/// A file that exists in the repository, with its text.
+struct Located {
+    file: RepoPath,
+    text: FileText,
+}
+
+/// A `compose.yaml` kept as written and summarised.
+struct ComposeFile {
+    source: ComposeSource,
+    summary: ComposeSummary,
+}
+
 /// Load `hosts/<host>/<stack>/` and the reserved `aegis/<stack>/` directories.
 ///
 /// A problem in one stack does not stop the others: the result is either the whole desired state
@@ -45,7 +66,7 @@ pub fn load_desired_state(
     let hosts = load_hosts(ports);
     let reserved = load_reserved(ports);
     match (hosts, reserved) {
-        (Ok(hosts), Ok(reserved)) => Ok(DesiredState { hosts, reserved }),
+        (Ok(hosts), Ok(reserved)) => Ok(DesiredState::new(hosts, reserved)),
         (hosts, reserved) => Err(failures(hosts.err(), reserved.err())),
     }
 }
@@ -87,8 +108,11 @@ fn named<T>(
     parent: &RepoPath,
     name: &str,
     make: fn(&str) -> Result<T, ValueError>,
-) -> Result<(T, RepoPath), LoadError> {
-    let joined = make(name).and_then(|value| parent.join(name).map(|path| (value, path)));
+) -> Result<Named<T>, LoadError> {
+    let joined = make(name).and_then(|value| {
+        let path = parent.join(name)?;
+        Ok(Named { value, path })
+    });
     joined.map_err(|reason| LoadError::InvalidName {
         path: format!("{parent}/{name}"),
         reason,
@@ -96,42 +120,37 @@ fn named<T>(
 }
 
 /// The visible subdirectories of `dir`, sorted. A missing `dir` has none.
-fn subdirectories(ports: Ports<'_>, dir: &RepoPath) -> Result<Vec<String>, LoadError> {
+fn subdirectories(ports: Ports<'_>, dir: &RepoPath) -> Result<Vec<EntryName>, LoadError> {
     if !ports.source.contains(dir).map_err(LoadError::Source)? {
         return Ok(Vec::new());
     }
     let entries = ports.source.list_dir(dir).map_err(LoadError::Source)?;
-    let mut names: Vec<String> = entries
+    let mut names: Vec<EntryName> = entries
         .into_iter()
-        .filter(|entry| entry.kind == EntryKind::Directory && !entry.name.starts_with('.'))
-        .map(|entry| entry.name)
+        .filter(DirEntry::is_visible_directory)
+        .map(|entry| entry.name().clone())
         .collect();
     names.sort();
     Ok(names)
 }
 
-fn load_hosts(ports: Ports<'_>) -> Problems<Vec<Host>> {
+fn load_hosts(ports: Ports<'_>) -> Problems<Hosts> {
     let hosts_dir = single(root(HOSTS_DIR))?;
     let names = single(subdirectories(ports, &hosts_dir))?;
-    gather(names.iter().map(|name| load_host(ports, &hosts_dir, name)))
+    let hosts = gather(names.iter().map(|name| load_host(ports, &hosts_dir, name)))?;
+    Ok(Hosts::new(hosts))
 }
 
-fn load_host(ports: Ports<'_>, hosts_dir: &RepoPath, name: &str) -> Problems<Host> {
-    let (host_name, dir) = single(named(hosts_dir, name, |raw| HostName::new(raw)))?;
-    let stacks = load_stacks(
-        ports,
-        &Scope {
-            dir,
-            kind: StackKind::Host,
-        },
-    )?;
-    Ok(Host {
-        name: host_name,
-        stacks,
-    })
+fn load_host(ports: Ports<'_>, hosts_dir: &RepoPath, name: &EntryName) -> Problems<Host> {
+    let host = single(named(hosts_dir, name.as_str(), |raw| HostName::new(raw)))?;
+    let scope = Scope {
+        dir: host.path,
+        kind: StackKind::Host,
+    };
+    Ok(Host::new(host.value, load_stacks(ports, &scope)?))
 }
 
-fn load_reserved(ports: Ports<'_>) -> Problems<Vec<Stack>> {
+fn load_reserved(ports: Ports<'_>) -> Problems<Stacks> {
     let dir = single(root(RESERVED_DIR))?;
     load_stacks(
         ports,
@@ -142,56 +161,57 @@ fn load_reserved(ports: Ports<'_>) -> Problems<Vec<Stack>> {
     )
 }
 
-fn load_stacks(ports: Ports<'_>, scope: &Scope) -> Problems<Vec<Stack>> {
+fn load_stacks(ports: Ports<'_>, scope: &Scope) -> Problems<Stacks> {
     let names = single(subdirectories(ports, &scope.dir))?;
-    gather(names.iter().map(|name| load_stack(ports, scope, name)))
+    let stacks = gather(names.iter().map(|name| load_stack(ports, scope, name)))?;
+    Ok(Stacks::new(stacks))
 }
 
-fn load_stack(ports: Ports<'_>, scope: &Scope, name: &str) -> Problems<Stack> {
-    let (stack_name, dir) = single(named(&scope.dir, name, |raw| StackName::new(raw)))?;
-    let compose = read_compose(ports, &dir);
-    let policy = read_policy(ports, &dir);
+fn load_stack(ports: Ports<'_>, scope: &Scope, name: &EntryName) -> Problems<Stack> {
+    let stack = single(named(&scope.dir, name.as_str(), |raw| StackName::new(raw)))?;
+    let compose = read_compose(ports, &stack.path);
+    let policy = read_policy(ports, &stack.path);
     match (compose, policy) {
-        (Ok((compose_source, compose)), Ok(policy)) => Ok(Stack {
-            name: stack_name,
-            kind: scope.kind,
-            policy,
-            compose_source,
-            compose,
-        }),
+        (Ok(compose), Ok(policy)) => {
+            let identity = StackIdentity::new(stack.value, scope.kind);
+            let definition = StackDefinition::new(policy, compose.source, compose.summary);
+            Ok(Stack::new(identity, definition))
+        }
         (compose, policy) => Err(failures(compose.err(), policy.err())),
     }
 }
 
 /// The path and text of `file` in `dir`, or `None` when the file is absent.
-fn read_optional(
-    ports: Ports<'_>,
-    dir: &RepoPath,
-    file: &str,
-) -> Problems<Option<(RepoPath, String)>> {
+fn read_optional(ports: Ports<'_>, dir: &RepoPath, file: &str) -> Problems<Option<Located>> {
     let path = single(dir.join(file).map_err(|reason| invalid_path(dir, reason)))?;
     if !single(ports.source.contains(&path).map_err(LoadError::Source))? {
         return Ok(None);
     }
     let text = single(ports.source.read_file(&path).map_err(LoadError::Source))?;
-    Ok(Some((path, text)))
+    Ok(Some(Located {
+        file: path,
+        text: FileText(text),
+    }))
 }
 
-fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<(String, ComposeSummary)> {
-    let Some((file, text)) = read_optional(ports, dir, COMPOSE_FILE)? else {
+fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<ComposeFile> {
+    let Some(located) = read_optional(ports, dir, COMPOSE_FILE)? else {
         return Err(vec![LoadError::MissingCompose {
             file: format!("{dir}/{COMPOSE_FILE}"),
         }]);
     };
-    let parsed = ports.parser.parse_compose(&text);
-    let summary = parsed.map_err(|error| vec![compose_error(&file, &error)])?;
-    Ok((text, summary))
+    let parsed = ports.parser.parse_compose(&located.text.0);
+    let summary = parsed.map_err(|error| vec![compose_error(&located.file, &error)])?;
+    Ok(ComposeFile {
+        source: ComposeSource::new(located.text.0),
+        summary,
+    })
 }
 
 fn read_policy(ports: Ports<'_>, dir: &RepoPath) -> Problems<StackPolicy> {
     match read_optional(ports, dir, POLICY_FILE)? {
         None => Ok(StackPolicy::default()),
-        Some((file, text)) => parse_policy(ports, &file, &text),
+        Some(located) => parse_policy(ports, &located.file, &located.text.0),
     }
 }
 

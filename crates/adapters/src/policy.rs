@@ -2,7 +2,8 @@
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Expose, Port, ServiceName, StackPolicy, StackState, TailnetTag, UpdatePolicy, ValueError,
+    Expose, Port, ServiceName, StackPolicy, StackState, TailnetTag, TailnetTags, UpdatePolicy,
+    ValueError,
 };
 use serde::Deserialize;
 use toml::{Table, Value};
@@ -24,7 +25,7 @@ struct RawExpose {
     port: u16,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 enum RawUpdate {
     Manual,
@@ -73,23 +74,25 @@ fn unknown_key(table: &Table) -> Option<String> {
 
 fn policy(raw: RawPolicy) -> Result<StackPolicy, ValueError> {
     let tags = raw.tailnet_tags.unwrap_or_default().into_iter();
-    Ok(StackPolicy {
-        expose: raw.expose.map(expose).transpose()?,
-        update: raw
-            .update
-            .map_or(UpdatePolicy::Manual, |RawUpdate::Manual| {
-                UpdatePolicy::Manual
-            }),
-        tailnet_tags: tags.map(TailnetTag::new).collect::<Result<_, _>>()?,
-        state: raw.state.map_or(StackState::Active, state),
-    })
+    let update = raw.update.map_or(UpdatePolicy::Manual, update);
+    let tags = tags
+        .map(TailnetTag::new)
+        .collect::<Result<TailnetTags, _>>()?;
+    let state = raw.state.map_or(StackState::Active, state);
+    Ok(StackPolicy::new(raw.expose.map(expose).transpose()?, tags, state).with_update(update))
 }
 
 fn expose(raw: RawExpose) -> Result<Expose, ValueError> {
-    Ok(Expose {
-        service: ServiceName::new(raw.service)?,
-        port: Port::new(raw.port)?,
-    })
+    Ok(Expose::new(
+        ServiceName::new(raw.service)?,
+        Port::new(raw.port)?,
+    ))
+}
+
+const fn update(raw: RawUpdate) -> UpdatePolicy {
+    match raw {
+        RawUpdate::Manual => UpdatePolicy::Manual,
+    }
 }
 
 const fn state(raw: RawState) -> StackState {

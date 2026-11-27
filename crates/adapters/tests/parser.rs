@@ -7,14 +7,14 @@ use aegis_domain::{Access, Mount, StackState, ValueError};
 fn first_mount(mount: &str) -> Result<Mount, ParseError> {
     let text = format!("services:\n  app:\n    volumes:\n      - {mount}\n");
     let summary = compose::parse(&text)?;
-    let service = summary.services.into_iter().next();
-    let found = service.and_then(|service| service.mounts.into_iter().next());
+    let service = summary.services().iter().next();
+    let found = service.and_then(|service| service.mounts().iter().next().cloned());
     found.ok_or_else(|| ParseError::Invalid("no mount".to_owned()))
 }
 
 #[test]
 fn an_empty_document_is_an_empty_compose_file() {
-    assert_eq!(compose::parse("").unwrap().services.len(), 0);
+    assert_eq!(compose::parse("").unwrap().services().len(), 0);
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn unsupported_mount_types_are_rejected() {
 fn unrelated_compose_keys_are_ignored() {
     let text =
         "name: demo\nservices:\n  app:\n    image: x\n    ports: ['1:1']\n    healthcheck: {}\n";
-    assert_eq!(compose::parse(text).unwrap().services.len(), 1);
+    assert_eq!(compose::parse(text).unwrap().services().len(), 1);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn an_empty_policy_is_the_default() {
 #[test]
 fn the_state_is_read() {
     assert_eq!(
-        policy::parse("state = \"purged\"").unwrap().state,
+        policy::parse("state = \"purged\"").unwrap().state(),
         StackState::Purged
     );
 }
@@ -197,11 +197,11 @@ fn a_bind_mount_needs_a_source() {
 fn a_local_context_that_looks_like_a_host_is_still_a_path() {
     let text = "services:\n  app:\n    build: ./github.com/x\n";
     assert_eq!(
-        compose::parse(text).unwrap().services[0]
-            .build
-            .as_ref()
+        compose::parse(text).unwrap().services().as_slice()[0]
+            .source()
+            .build()
             .unwrap()
-            .context
+            .context()
             .as_str(),
         "./github.com/x"
     );

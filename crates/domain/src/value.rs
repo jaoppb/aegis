@@ -87,6 +87,13 @@ fn validate_absolute(value: &str) -> Result<(), ValueError> {
     reject_unsafe_path(value)
 }
 
+const fn validate_non_empty(value: &str) -> Result<(), ValueError> {
+    if value.is_empty() {
+        return Err(ValueError::Empty);
+    }
+    Ok(())
+}
+
 fn validate_tag(value: &str) -> Result<(), ValueError> {
     let name = value.strip_prefix("tag:").ok_or(ValueError::BadTag)?;
     validate_name(name).map_err(|_| ValueError::BadTag)
@@ -165,6 +172,96 @@ string_newtype!(
     TailnetTag,
     validate_tag
 );
+
+string_newtype!(
+    /// The image reference of a service, such as `ghcr.io/jaoppb/aegis-agent:1.2`.
+    ImageRef,
+    validate_non_empty
+);
+/// The text of a `compose.yaml` exactly as written in the repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeSource(String);
+
+impl ComposeSource {
+    /// Wrap `text` unchanged.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A sequence of `$item` values that is a type of its own, so no struct mixes a collection with
+/// other fields.
+macro_rules! collection {
+    ($(#[$meta:meta])* $name:ident, $item:ty) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Default, PartialEq, Eq)]
+        pub struct $name(Vec<$item>);
+
+        impl $name {
+            /// Wrap `items`, keeping their order.
+            #[must_use]
+            pub const fn new(items: Vec<$item>) -> Self {
+                Self(items)
+            }
+
+            /// The items in order.
+            pub fn iter(&self) -> std::slice::Iter<'_, $item> {
+                self.0.iter()
+            }
+
+            /// The items as a slice.
+            #[must_use]
+            pub fn as_slice(&self) -> &[$item] {
+                &self.0
+            }
+
+            /// The number of items.
+            #[must_use]
+            pub const fn len(&self) -> usize {
+                self.0.len()
+            }
+
+            /// Whether there are no items.
+            #[must_use]
+            pub const fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl IntoIterator for $name {
+            type Item = $item;
+            type IntoIter = std::vec::IntoIter<$item>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.0.into_iter()
+            }
+        }
+
+        impl<'items> IntoIterator for &'items $name {
+            type Item = &'items $item;
+            type IntoIter = std::slice::Iter<'items, $item>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.0.iter()
+            }
+        }
+
+        impl FromIterator<$item> for $name {
+            fn from_iter<Source: IntoIterator<Item = $item>>(source: Source) -> Self {
+                Self(source.into_iter().collect())
+            }
+        }
+    };
+}
+
+pub(crate) use collection;
 
 impl RepoPath {
     /// Append one directory or file name to this path.

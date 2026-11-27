@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use aegis_application::{
-    DirEntry, EntryKind, LoadError, ParseError, RepoSource, SourceError, StackParser,
-    load_desired_state,
+    DirEntry, EntryKind, EntryName, LoadError, ParseError, Reason, RepoSource, SourceError,
+    StackParser, load_desired_state,
 };
 use aegis_domain::{
-    ComposeSummary, DesiredState, RepoPath, Stack, StackKind, StackPolicy, StackState,
-    UpdatePolicy, ValueError,
+    ComposeSummary, DesiredState, RepoPath, StackKind, StackPolicy, StackState, Stacks,
+    TailnetTags, UpdatePolicy, ValueError,
 };
 
 struct MemoryRepo {
@@ -50,15 +50,12 @@ impl RepoSource for MemoryRepo {
             .collect();
         Ok(entries
             .into_iter()
-            .map(|(name, kind)| DirEntry { name, kind })
+            .map(|(name, kind)| DirEntry::new(EntryName::new(name), kind))
             .collect())
     }
 
     fn read_file(&self, path: &RepoPath) -> Result<String, SourceError> {
-        let missing = || SourceError {
-            path: path.to_string(),
-            message: "not found".to_owned(),
-        };
+        let missing = || SourceError::new(path.clone(), Reason::new(&"not found"));
         self.files.get(path.as_str()).cloned().ok_or_else(missing)
     }
 }
@@ -70,10 +67,11 @@ fn fake_policy(text: &str) -> Result<StackPolicy, ParseError> {
     match text {
         "unknown" => Err(ParseError::UnknownKey("bogus".to_owned())),
         "garbage" => Err(ParseError::Invalid("bad toml".to_owned())),
-        "purged" => Ok(StackPolicy {
-            state: StackState::Purged,
-            ..StackPolicy::default()
-        }),
+        "purged" => Ok(StackPolicy::new(
+            None,
+            TailnetTags::default(),
+            StackState::Purged,
+        )),
         _ => Ok(StackPolicy::default()),
     }
 }
@@ -99,14 +97,17 @@ fn load(files: &[(&str, &str)]) -> Result<DesiredState, Vec<LoadError>> {
     load_desired_state(&MemoryRepo::with(files), &FakeParser)
 }
 
-fn stack_names(stacks: &[Stack]) -> Vec<String> {
-    stacks.iter().map(|stack| stack.name.to_string()).collect()
+fn stack_names(stacks: &Stacks) -> Vec<String> {
+    stacks
+        .iter()
+        .map(|stack| stack.name().to_string())
+        .collect()
 }
 
 fn layout(state: &DesiredState) -> Vec<(String, Vec<String>)> {
-    let hosts = state.hosts.iter();
+    let hosts = state.hosts().iter();
     hosts
-        .map(|host| (host.name.to_string(), stack_names(&host.stacks)))
+        .map(|host| (host.name().to_string(), stack_names(host.stacks())))
         .collect()
 }
 
@@ -136,17 +137,17 @@ fn hosts_and_stacks_are_loaded_in_name_order() {
 #[test]
 fn the_compose_file_is_kept_verbatim() {
     let state = load(&[("hosts/host/stack/compose.yaml", "services: {}\n")]).unwrap();
-    let stack = &state.hosts[0].stacks[0];
-    assert_eq!(stack.compose_source, "services: {}\n");
-    assert_eq!(stack.kind, StackKind::Host);
+    let stack = &state.hosts().as_slice()[0].stacks().as_slice()[0];
+    assert_eq!(stack.compose_source().as_str(), "services: {}\n");
+    assert_eq!(stack.kind(), StackKind::Host);
 }
 
 #[test]
 fn a_missing_policy_file_means_defaults() {
     let state = load(&[("hosts/host/stack/compose.yaml", "")]).unwrap();
-    let policy = &state.hosts[0].stacks[0].policy;
-    assert_eq!(policy.update, UpdatePolicy::Manual);
-    assert_eq!(policy.state, StackState::Active);
+    let policy = state.hosts().as_slice()[0].stacks().as_slice()[0].policy();
+    assert_eq!(policy.update(), UpdatePolicy::Manual);
+    assert_eq!(policy.state(), StackState::Active);
 }
 
 #[test]
@@ -156,15 +157,17 @@ fn the_policy_file_is_read() {
         ("hosts/host/stack/aegis.toml", "purged"),
     ];
     let state = load(&files).unwrap();
-    assert_eq!(state.hosts[0].stacks[0].policy.state, StackState::Purged);
+    let stack = &state.hosts().as_slice()[0].stacks().as_slice()[0];
+    assert_eq!(stack.policy().state(), StackState::Purged);
 }
 
 #[test]
 fn reserved_stacks_are_not_a_host() {
     let state = load(&[("aegis/controller/compose.yaml", "")]).unwrap();
-    assert!(state.hosts.is_empty());
-    assert_eq!(state.reserved[0].name.as_str(), "controller");
-    assert_eq!(state.reserved[0].kind, StackKind::Reserved);
+    assert!(state.hosts().is_empty());
+    let stack = &state.reserved().as_slice()[0];
+    assert_eq!(stack.name().as_str(), "controller");
+    assert_eq!(stack.kind(), StackKind::Reserved);
 }
 
 #[test]
@@ -254,10 +257,7 @@ struct BrokenRepo {
 
 impl BrokenRepo {
     fn fail(&self, operation: &str, path: &RepoPath) -> Result<(), SourceError> {
-        let broken = SourceError {
-            path: path.to_string(),
-            message: operation.to_owned(),
-        };
+        let broken = SourceError::new(path.clone(), Reason::new(&operation));
         (operation == self.failing)
             .then_some(broken)
             .map_or(Ok(()), Err)
@@ -265,10 +265,7 @@ impl BrokenRepo {
 }
 
 fn host_dir_listing() -> Vec<DirEntry> {
-    vec![DirEntry {
-        name: "host".to_owned(),
-        kind: EntryKind::Directory,
-    }]
+    vec![DirEntry::new(EntryName::new("host"), EntryKind::Directory)]
 }
 
 impl RepoSource for BrokenRepo {
@@ -294,19 +291,25 @@ fn source_errors(failing: &'static str) -> Vec<LoadError> {
 #[test]
 fn a_failing_contains_is_reported() {
     let errors = source_errors("contains");
-    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "contains"));
+    assert!(
+        matches!(&errors[0], LoadError::Source(error) if error.reason().to_string() == "contains")
+    );
 }
 
 #[test]
 fn a_failing_list_dir_is_reported() {
     let errors = source_errors("list_dir");
-    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "list_dir"));
+    assert!(
+        matches!(&errors[0], LoadError::Source(error) if error.reason().to_string() == "list_dir")
+    );
 }
 
 #[test]
 fn a_failing_read_file_is_reported() {
     let errors = source_errors("read_file");
-    assert!(matches!(&errors[0], LoadError::Source(error) if error.message == "read_file"));
+    assert!(
+        matches!(&errors[0], LoadError::Source(error) if error.reason().to_string() == "read_file")
+    );
 }
 
 #[test]
