@@ -27,7 +27,7 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 - `accessibility`
 - `skip-changelog`
 <!-- labels:end -->
-- **Creation and triage.** File issues from the matching template (it applies the `type:` label and title prefix), set the `area:` label(s), assign the release milestone, and link dependencies with native GitHub blocked-by links (also listed under `Dependencies`).
+- **Creation and triage.** File issues from the matching template (it applies the `type:` label and title prefix), set the `area:` label(s), assign the release milestone, and link dependencies with native GitHub blocked-by links (also listed in the template's `Dependencies` field).
 - **Project board.** `tools.toml` `[workflow]` defines the statuses and the Ready gate, and `[github.project]` points at the Aegis GitHub Project. The `Sync project` workflow (`.github/workflows/sync-project.yml`) moves cards on issue and pull request events and every six hours, using the `PROJECT_TOKEN` secret (a classic PAT with the `project` scope). `just project-check` shows the planned moves and `just project-sync` writes them; the latter needs a token with Projects write.
 
 ## 2. Branches, commits and pull requests
@@ -48,7 +48,7 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 - **Offline push.** When offline or unauthenticated, skip only the network audits: `LEFTHOOK_EXCLUDE=issues-check,repo-check git push`. Keep `check`, and run the skipped audits once you are back online. `git push --no-verify` is a last resort. Local hook overrides go in `lefthook-local.yml` (git-ignored).
 - **Recipes.** `just fmt` formats Rust and Markdown (rumdl); `just lint` runs Clippy with warnings as errors; `just test` runs `cargo nextest`; `just arch-check` runs the architecture rules; `just check` runs `fmt-check`, `lint`, `arch-check` and `test`.
 - **Repository sync.** `just repo-sync` applies `tools.toml` to live GitHub settings, labels and milestones and deletes deprecated labels. Run it only from an up-to-date `main` checkout, after the person asks for it.
-- **CI.** Continuous integration runs the same `just` recipes through the devShell; its workflows live in `.github/workflows/`. Do not duplicate check logic in a workflow: add a recipe and call it.
+- **CI.** The check workflows arrive with #6. Workflows live in `.github/workflows/` and must call `just` recipes through the devShell; do not duplicate check logic in a workflow: add a recipe and call it.
 
 ## 4. Architecture
 
@@ -63,8 +63,8 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 
 ## 5. Code and test conventions
 
-- **Lints.** The workspace lint policy in `Cargo.toml` (`[workspace.lints]`) and `clippy.toml` is strict: Clippy `all`, `pedantic`, `nursery` and `cargo` are denied, and `unsafe`, `unwrap`/`expect`/`panic`, indexing, `as` conversions, printing, `todo!` and `dbg!` are forbidden outside tests, as are missing docs and `unreachable_pub`. Functions stay small, flat and low in complexity (see the thresholds in `clippy.toml`). Every crate opts in with `[lints] workspace = true`.
-- **No `#[allow]`.** `allow_attributes` is forbidden; do not suppress a lint, fix the code.
+- **Lints.** The workspace lint policy in `Cargo.toml` (`[workspace.lints]`) and `clippy.toml` is strict: Clippy `all`, `pedantic`, `nursery` and `cargo` are denied, and `unsafe`, `unwrap`/`expect`/`panic`, indexing, `as` conversions, printing, `todo!` and `dbg!` are forbidden outside tests, as are missing docs and `unreachable_pub`. Functions stay small, flat and low in complexity (see the thresholds in `clippy.toml`). Every crate under `crates/` opts in with `[lints] workspace = true`.
+- **No `#[allow]`.** `#[allow]` is forbidden (`allow_attributes` and `allow_attributes_without_reason`); do not suppress a lint, fix the code.
 - **Tests.** Run with `just test` (`cargo nextest`). Unit tests sit beside the code, cross-crate and architecture tests under `tests/`. Tests may use `unwrap`, `expect`, `panic` and printing. A bug fix starts with a failing test.
 - **Formatting.** `rustfmt.toml` and `.rumdl.toml` are authoritative; run `just fmt`.
 
