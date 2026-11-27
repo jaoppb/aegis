@@ -7,3 +7,4 @@ result-*
 lefthook-local.yml
 .lefthook-local.yml
 .direnv/
+.rumdl_cache/
