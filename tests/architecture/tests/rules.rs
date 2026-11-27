@@ -283,7 +283,7 @@ mod cases {
         let place = |file, line| Location::new(Path::new(file), line);
         let report = Report::new(vec![
             Violation::new(Rule::TupleField, place("b.rs", 1), "b"),
-            Violation::new(Rule::BagName, place("a.rs", 9), "nine"),
+            Violation::new(Rule::BagName, place("a.rs", 10), "ten"),
             Violation::new(Rule::TupleAlias, place("a.rs", 5), "five"),
             Violation::new(Rule::BagName, place("a.rs", 5), "five"),
         ]);
