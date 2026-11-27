@@ -1,0 +1,8 @@
+services:
+  controller:
+    image: ghcr.io/jaoppb/aegis-controller:0.1.0
+    volumes:
+      - aegis-controller-state:/var/lib/aegis
+
+volumes:
+  aegis-controller-state:

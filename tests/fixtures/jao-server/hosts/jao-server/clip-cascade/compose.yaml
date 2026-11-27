@@ -1,0 +1,12 @@
+services:
+  clip-cascade:
+    image: ghcr.io/example/clip-cascade:2.4.1
+    env_file:
+      - .env
+    volumes:
+      - clip-cascade-data:/var/lib/clip-cascade
+    tmpfs:
+      - /tmp
+
+volumes:
+  clip-cascade-data:

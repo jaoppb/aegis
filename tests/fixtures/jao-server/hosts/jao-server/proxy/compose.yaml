@@ -1,0 +1,17 @@
+services:
+  caddy:
+    image: caddy:2.10
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - type: volume
+        source: caddy-data
+        target: /data
+      - type: bind
+        source: /srv/www
+        target: /srv/www
+        read_only: true
+
+volumes:
+  caddy-data:

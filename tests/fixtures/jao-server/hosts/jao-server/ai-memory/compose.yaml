@@ -1,0 +1,9 @@
+services:
+  ai-memory:
+    image: ghcr.io/akitaonrails/ai-memory:latest
+    env_file: .env
+    volumes:
+      - ai-memory-data:/data
+
+volumes:
+  ai-memory-data:
