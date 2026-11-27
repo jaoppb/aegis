@@ -1,5 +1,7 @@
-//! Zero lint exceptions: no `allow` or `expect` attribute in any form (outer, inner or inside
-//! `cfg_attr`), no `arch_lint::allow` or `arch_lint_macros::allow` and no arch-lint suppression comment. Tests are included.
+//! Zero lint exceptions, tests included.
+//!
+//! No `allow` or `expect` attribute in any form (outer, inner or inside `cfg_attr`), no
+//! `arch_lint::allow` or `arch_lint_macros::allow`, and no arch-lint suppression comment.
 
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
