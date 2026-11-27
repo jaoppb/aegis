@@ -12,7 +12,3 @@ publish.workspace = true
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "aegis-agent"
-path = "src/main.rs"

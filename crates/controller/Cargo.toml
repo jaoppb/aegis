@@ -12,7 +12,3 @@ publish.workspace = true
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "aegis-controller"
-path = "src/main.rs"

@@ -6,7 +6,7 @@ pre-commit:
       glob: "*.{rs,md}"
       run: just fmt-check
     - name: lint
-      glob: "*.{rs,md,toml}"
+      glob: "*.{rs,toml,lock}"
       run: just lint
 
 pre-push:
