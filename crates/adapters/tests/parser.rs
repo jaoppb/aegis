@@ -339,3 +339,21 @@ fn merge_keys_are_applied_before_the_rules_see_the_file() {
     let volume = "x-vol: &v\n  driver_opts: {type: none, o: bind, device: ./data}\nvolumes:\n  d:\n    <<: *v\n";
     assert!(compose::parse(volume).is_err());
 }
+
+#[test]
+fn chained_merge_keys_are_refused_rather_than_silently_dropped() {
+    let service = "x-b: &b\n  volumes: [\"./data:/data\"]\nx-a: &a\n  <<: *b\n  image: alpine\nservices:\n  app:\n    <<: *a\n";
+    assert!(compose::parse(service).is_err());
+    let options = "x-d: &d {type: none, o: bind, device: ./x}\nx-b: &b\n  <<: *d\nvolumes:\n  data:\n    driver_opts:\n      <<: *b\n";
+    assert!(compose::parse(options).is_err());
+}
+
+#[test]
+fn a_bind_needs_only_one_of_type_none_or_o_bind_to_be_checked() {
+    for opts in ["{o: bind, device: ./x}", "{type: none, device: ./x}"] {
+        let text = format!("volumes:\n  v:\n    driver_opts: {opts}\n");
+        assert!(compose::parse(&text).is_err(), "{opts}");
+    }
+    let bare = "volumes:\n  v:\n    driver_opts: {type: none, o: bind}\n";
+    assert!(compose::parse(bare).is_ok());
+}
