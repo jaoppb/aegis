@@ -183,7 +183,8 @@
       "- Functions stay small and flat: at most 25 lines, 3 parameters and 2 levels of nesting (`clippy.toml`); use early returns and `?`",
       "- One error enum per layer boundary; no `unwrap`, `expect`, `panic!`, indexing or `as` conversions outside tests",
       "- `///` docs on every public item; no `unreachable_pub`; identifiers of at least two characters",
-      "- No printing or `dbg!` outside tests; never log secrets",
+      "- No printing, `dbg!`, `todo!`, `unimplemented!` or `unreachable!` outside tests; never log secrets",
+      "- No unchecked arithmetic, floats or string slicing: `[workspace.lints]` in `Cargo.toml` is the full list of forbidden lints, and cognitive complexity stays at or under 8 (`clippy.toml`)",
       "- New IO goes behind a port in `application` and an adapter in `adapters`; binaries hold no logic"
     ],
     "TEST_NORMS": [
@@ -194,7 +195,7 @@
     ],
     "CHECK_CMD": "just check",
     "CHECK_DESC": "`fmt-check`, `lint` (clippy with warnings as errors), `workflows-check`, `arch-check` and `test` (cargo nextest)",
-    "MAIN_BRANCH": "main",
+    "MAIN_BRANCH": "origin/main",
     "CANVAS_DIR": "spdd/prompt",
     "ID": "GH-<n>",
     "REF": "#<n>",
@@ -202,16 +203,16 @@
     "TAXONOMY_RULE": "`AGENTS.md` section 1 requires every issue to carry exactly one `type:` label, at least one `area:` label and a release milestone declared in `tools.toml`. Check them with `gh issue view <n> --json labels,milestone`.",
     "SPEC_DOC": "PRODUCT.md",
     "LINT_SUPPRESSIONS": "`#[allow(...)]`, `#[expect(...)]` or any other lint suppression attribute",
-    "LINT_GREP": "git grep -nE '#!?\\[(allow|expect)\\(' -- 'crates/*.rs' 'tests/*.rs'",
+    "LINT_GREP": "git grep -nE '#!?\\[(cfg_attr\\([^]]*)?(allow|expect)\\(' -- 'crates/*.rs' 'tests/*.rs'",
     "MEMORY_TOOLS": "`ai-memory` `memory_query`, `memory_recent`",
-    "MEMORY_RULE": "durable writes only on request, as `AGENTS.md` section 7 says",
+    "MEMORY_RULE": "durable writes only on request, as the ai-memory block of `AGENTS.md` says",
     "MDLINT_CMD": "rumdl check"
   },
   "templates_sha256": "2de1d2cbfe7c8225c4b75f454fa8d838ca8f789dfdcb75d8da38894811bc5e40",
   "generated": {
-    "spdd-analysis/SKILL.md": "82d558daa2d8092a3c4543f7f43566d4d66251e38b0a552fc5c880021ce74fa5",
-    "spdd-generate/SKILL.md": "b42c0a372ebba936575ddd136cabb9e144e18478a6a339ad64c87d735b37f102",
+    "spdd-analysis/SKILL.md": "00767ce4f09e214501d0c95e4c0908e3aed547fa97a717b673e50b8a96bbf239",
+    "spdd-generate/SKILL.md": "5b84a91abeda339ed7292d5e04b65e61a8492a46633710b47e8038da62b69ba8",
     "spdd-prompt-update/SKILL.md": "c82defc2fb11896dc506e7d6eb3d4eef11d43c1b6010aab76c13b910285fee0f",
-    "spdd-reasons-canvas/SKILL.md": "d5ad687acb81e3036c0948d7c53341723a2eb8a4b90b82ad633740e67bde2afa"
+    "spdd-reasons-canvas/SKILL.md": "71e8fe3b62093d2df1897e38f4aa9b380f13769698be6bc0a1eb0294fa127cbe"
   }
 }

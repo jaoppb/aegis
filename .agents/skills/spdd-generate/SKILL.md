@@ -14,9 +14,9 @@ Generate implementation code from a structured SPDD prompt (a REASONS Canvas). F
 1. **Get the canvas.** If no path was given, ask the user for one. Do NOT proceed without a valid canvas.
 
 2. **Resolve the work item (REQUIRED)**
-   - Take it from the `GH-<n>-` file-name prefix (or the header line). If the canvas has none, stop: fix the canvas first with `/spdd-prompt-update`.
-   - Verify it with `gh issue view <n> --json number,title,state`. Not found → stop. Closed → warn and ask.
-   - The canvas is an ephemeral working file: never stage it, commit it or name it by path in a commit, issue or pull request (write `#<n>`). If it does not exist, stop and run `/spdd-reasons-canvas #<n>`, which regenerates it from the analysis and the code already written.
+   a. Take it from the `GH-<n>-` file-name prefix (or the header line). If the canvas has none, stop: fix the canvas first with `/spdd-prompt-update`.
+   b. Verify it with `gh issue view <n> --json number,title,state`. Not found → stop. Closed → warn and ask.
+   c. The canvas is an ephemeral working file: never stage it, commit it or name it by path in a commit, issue or pull request (write `#<n>`). If it does not exist, stop and run `/spdd-reasons-canvas #<n>`, which regenerates it from the analysis and the code already written.
 
 3. **Read the whole canvas** and extract its sections:
 
@@ -60,7 +60,8 @@ Generate implementation code from a structured SPDD prompt (a REASONS Canvas). F
    - Functions stay small and flat: at most 25 lines, 3 parameters and 2 levels of nesting (`clippy.toml`); use early returns and `?`
    - One error enum per layer boundary; no `unwrap`, `expect`, `panic!`, indexing or `as` conversions outside tests
    - `///` docs on every public item; no `unreachable_pub`; identifiers of at least two characters
-   - No printing or `dbg!` outside tests; never log secrets
+   - No printing, `dbg!`, `todo!`, `unimplemented!` or `unreachable!` outside tests; never log secrets
+   - No unchecked arithmetic, floats or string slicing: `[workspace.lints]` in `Cargo.toml` is the full list of forbidden lints, and cognitive complexity stays at or under 8 (`clippy.toml`)
    - New IO goes behind a port in `application` and an adapter in `adapters`; binaries hold no logic
 
    c. **Enforce the Safeguards**:
@@ -86,7 +87,7 @@ Generate implementation code from a structured SPDD prompt (a REASONS Canvas). F
 
    b. Cross-check every Definition of Done item, and check that the error names and messages match the Safeguards exactly.
 
-   c. Check that placement matches Structure, that no forbidden dependency was introduced, and that `git grep -nE '#!?\[(allow|expect)\(' -- 'crates/*.rs' 'tests/*.rs'` prints nothing.
+   c. Check that placement matches Structure, that no forbidden dependency was introduced, and that `git grep -nE '#!?\[(cfg_attr\([^]]*)?(allow|expect)\(' -- 'crates/*.rs' 'tests/*.rs'` prints nothing.
 
    If a failure cannot be fixed without deviating from the canvas, stop and propose a `/spdd-prompt-update`.
 
@@ -120,4 +121,4 @@ Everything this skill writes to Markdown must pass `rumdl check`.
 - Do NOT patch code directly when issues are found: update the canvas first
 - Always verify against the Definition of Done, and always finish with `just check` passing
 - Never stage the canvas: commit only code and tests
-- When generating reveals a gotcha worth keeping, offer to save it with the `ai-memory` write tools, and write it only if the user agrees (durable writes only on request, as `AGENTS.md` section 7 says). A trap that later changes must obey goes in a code comment. The memory tools are optional: if they are unavailable, say so in one line and continue.
+- When generating reveals a gotcha worth keeping, offer to save it with the `ai-memory` write tools, and write it only if the user agrees (durable writes only on request, as the ai-memory block of `AGENTS.md` says). A trap that later changes must obey goes in a code comment. The memory tools are optional: if they are unavailable, say so in one line and continue.

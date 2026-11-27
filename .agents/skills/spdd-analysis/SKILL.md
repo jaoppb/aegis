@@ -11,7 +11,7 @@ Analyze a requirement against the current codebase and produce a **strategic-lev
 
 ```text
 /spdd-analysis #12
-/spdd-analysis #14 @docs/notes.md
+/spdd-analysis #14 @PRODUCT.md
 ```
 
 The analysis is written into the issue body under one `## Analysis` heading, never into a file.

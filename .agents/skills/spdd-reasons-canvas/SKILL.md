@@ -11,7 +11,7 @@ Generate an implementation-ready structured prompt using the REASONS Canvas, spe
 
 ```text
 /spdd-reasons-canvas #12
-/spdd-reasons-canvas #12 @docs/notes.md
+/spdd-reasons-canvas #12 @PRODUCT.md
 ```
 
 ## Steps
@@ -24,7 +24,7 @@ Generate an implementation-ready structured prompt using the REASONS Canvas, spe
 
    c. **Taxonomy.** `AGENTS.md` section 1 requires every issue to carry exactly one `type:` label, at least one `area:` label and a release milestone declared in `tools.toml`. Check them with `gh issue view <n> --json labels,milestone`. Warn, naming the missing field, and ask whether to continue.
 
-   **Analysis check.** If the requirement has no `## Analysis` heading, stop and tell the user to run `/spdd-analysis #<n>` first. A canvas written from a bare requirement has no mapping onto the code, no decisions and no risks.
+   d. **Analysis check.** If the requirement has no `## Analysis` heading, stop and tell the user to run `/spdd-analysis #<n>` first. A canvas written from a bare requirement has no mapping onto the code, no decisions and no risks.
 
 2. **Consolidate the context**
 
@@ -269,7 +269,7 @@ StackRepository ..> Stack : loads
    The canvas is an ephemeral working file for the current branch. `spdd/prompt` is gitignored: never stage it, never commit it, and never name it by path in a commit message, an issue or a pull request (write `#<n>` in prose).
 
    c. **Existing or lost canvas.** If a canvas for this work item already exists, ask whether to update it with `/spdd-prompt-update` instead of writing a second one.
-   If it is missing partway through a branch (recreated worktree, new checkout, a switch of agent), regenerate it from `## Analysis` and the code already written (`git diff main...HEAD`), and say that it was regenerated, since it may differ from the first. Anything only the lost canvas knew belongs in the code, the tests or the design docs.
+   If it is missing partway through a branch (recreated worktree, new checkout, a switch of agent), regenerate it from `## Analysis` and the code already written (`git diff origin/main...HEAD`), and say that it was regenerated, since it may differ from the first. Anything only the lost canvas knew belongs in the code, the tests or the design docs.
 
    **Stale canvas.** If the branch code changed outside the canvas (review fixes, a hand refactor) and more code will be generated from it, rebuild it the same way, with the canvas as a third input. Code wins over the old canvas, and every difference is listed for the user. There is no separate sync step: the canvas only has to be right for the rest of this branch.
 
