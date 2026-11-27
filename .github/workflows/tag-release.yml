@@ -5,7 +5,7 @@ name: Tag Release
 # tags only when the push itself changed [workspace.package].version, so a later unrelated
 # Cargo.toml change never releases under a version an earlier commit bumped.
 # workflow_dispatch is the recovery path: it tags and releases exactly the requested ref.
-# Tags pushed with GITHUB_TOKEN do not trigger release.yml, so it is called directly.
+# Tags pushed with a token of the workflow or of a GitHub App do not trigger release.yml, so it is called directly.
 
 on:
   push:
@@ -42,12 +42,23 @@ jobs:
     outputs:
       tag: ${{ steps.push.outputs.tag || steps.dispatch.outputs.tag }}
     steps:
+      # The `tags` ruleset (.github/rulesets/tags.json) only lets the release GitHub App create
+      # `v*` tags, so the tag is pushed with a short-lived token of that App, not GITHUB_TOKEN.
+      - name: Create the release App token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+
       # Full history: the push path compares with the commit before the push and the
-      # dispatch path may tag an older ref. The token stays for `git push` of the tag.
+      # dispatch path may tag an older ref. The App token stays for `git push` of the tag.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Tag a version bump pushed to main
         id: push

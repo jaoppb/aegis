@@ -10,4 +10,8 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 - Release pipeline: `just bump-version` opens a version bump pull request that rotates this changelog, merging it tags the version (`vX.Y.Z`, or `vX.Y.Z-rc.N` for a prerelease), and the Release workflow publishes this section as the release notes, static musl `aegis`, `aegis-controller` and `aegis-agent` binaries for amd64 and arm64, and multi-arch `ghcr.io/jaoppb/aegis-controller` and `aegis-agent` images bundling the `docker`, `sops` and `tailscale` versions pinned by the flake. The flake exposes the same binaries and images as packages (#8, #47)
 
+### Changed
+
+- Release tags are protected: a `tags` ruleset on `refs/tags/v*` lets only the release GitHub App create them and blocks updates and deletions, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #PR)
+
 [Unreleased]: https://github.com/jaoppb/aegis/commits/main
