@@ -10,11 +10,10 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 - Release pipeline: `just bump-version` opens a version bump pull request that rotates this changelog, merging it tags the version (`vX.Y.Z`, or `vX.Y.Z-rc.N` for a prerelease), and the Release workflow publishes this section as the release notes, static musl `aegis`, `aegis-controller` and `aegis-agent` binaries for amd64 and arm64, and multi-arch `ghcr.io/jaoppb/aegis-controller` and `aegis-agent` images bundling the `docker`, `sops` and `tailscale` versions pinned by the flake. The flake exposes the same binaries and images as packages (#8, #47)
 - Desired-state domain model and repository loader: `hosts/<host>/<stack>/compose.yaml` with an optional `aegis.toml` (`expose`, `update`, `tailnet_tags`, `state`) and the reserved `aegis/` directory load into typed hosts, stacks, policies and a compose summary (services, volumes, mounts, builds, env files). Every problem is collected as a typed error, and an unknown `aegis.toml` key is one of them (#12, #51)
+- Architecture checks beyond layering, run by `just arch-check`: struct field count and private fields in every crate, wrapped primitives and first-class collections in `domain` and `application`, no tuple groupings, no bag names, a 1000-line file limit, no lint exceptions and exact workspace dependency pins. The domain, application and adapters crates now keep their fields private behind constructors and accessors, with value objects and collection types in place of primitives; an empty compose `image` is now rejected (#53, #54)
 
 ### Changed
 
 - Release tags are protected: the `tags-create` and `tags-immutable` rulesets on `refs/tags/v*` let only the release GitHub App create them and let nobody update or delete them, `release.yml` is only called by `tag-release.yml`, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #52)
-
-- Architecture checks beyond layering, run by `just arch-check`: struct field count, private fields, wrapped primitives and first-class collections in `domain` and `application`, no tuple groupings, no bag names, a 1000-line file limit, no lint exceptions and exact workspace dependency pins. The domain, application and adapters crates now expose private fields through constructors and accessors, with value objects and collection types in place of primitives (#53, #54)
 
 [Unreleased]: https://github.com/jaoppb/aegis/commits/main

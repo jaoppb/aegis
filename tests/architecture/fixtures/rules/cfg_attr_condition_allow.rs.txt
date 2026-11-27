@@ -1,0 +1,2 @@
+#[cfg_attr(allow, derive(Clone))]
+struct Fine { name: Name }

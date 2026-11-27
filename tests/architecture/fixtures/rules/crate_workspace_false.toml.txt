@@ -1,0 +1,5 @@
+[package]
+name = "aegis-example"
+
+[dependencies]
+serde = { workspace = false }

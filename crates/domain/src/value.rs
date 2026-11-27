@@ -363,6 +363,18 @@ mod tests {
     }
 
     #[test]
+    fn collections_keep_order_and_report_their_size() {
+        let names = ["a", "b"].map(|name| VolumeName::new(name).unwrap());
+        let volumes: crate::Volumes = names.into_iter().collect();
+        assert_eq!(volumes.len(), 2);
+        assert!(!volumes.is_empty());
+        assert!(crate::Volumes::default().is_empty());
+        let listed: Vec<&str> = volumes.iter().map(VolumeName::as_str).collect();
+        assert_eq!(listed, ["a", "b"]);
+        assert_eq!(volumes.as_slice().len(), 2);
+    }
+
+    #[test]
     fn ports_reject_zero() {
         assert_eq!(Port::new(0), Err(ValueError::ZeroPort));
         assert_eq!(Port::new(8080).unwrap().get(), 8080);

@@ -1,0 +1,2 @@
+/// arch-lint: allow(no-sync-io) reason="x"
+fn skipped() {}

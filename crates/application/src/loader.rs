@@ -38,6 +38,12 @@ struct Named<T> {
 /// The text of a file read from the repository.
 struct FileText(String);
 
+impl FileText {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A file that exists in the repository, with its text.
 struct Located {
     file: RepoPath,
@@ -200,10 +206,10 @@ fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<ComposeFile> {
             file: format!("{dir}/{COMPOSE_FILE}"),
         }]);
     };
-    let parsed = ports.parser.parse_compose(&located.text.0);
+    let parsed = ports.parser.parse_compose(located.text.as_str());
     let summary = parsed.map_err(|error| vec![compose_error(&located.file, &error)])?;
     Ok(ComposeFile {
-        source: ComposeSource::new(located.text.0),
+        source: ComposeSource::new(located.text.as_str()),
         summary,
     })
 }
@@ -211,7 +217,7 @@ fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<ComposeFile> {
 fn read_policy(ports: Ports<'_>, dir: &RepoPath) -> Problems<StackPolicy> {
     match read_optional(ports, dir, POLICY_FILE)? {
         None => Ok(StackPolicy::default()),
-        Some(located) => parse_policy(ports, &located.file, &located.text.0),
+        Some(located) => parse_policy(ports, &located.file, located.text.as_str()),
     }
 }
 

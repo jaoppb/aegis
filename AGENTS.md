@@ -54,14 +54,14 @@ Aegis is GitOps for Docker Compose stacks: a Rust workspace of a controller, per
 
 ## 4. Architecture
 
-The workspace follows clean architecture. Dependencies point inward: `domain` <- `application` <- `adapters` <- binaries (`cli`, `controller`, `agent`). `arch-lint.toml` declares the layers and `just arch-check` (the `tests/architecture` crate, part of `just check`) enforces them. The same crate also runs the structural checks of §5:
+The workspace follows clean architecture. Dependencies point inward: `domain` <- `application` <- `adapters` <- binaries (`cli`, `controller`, `agent`). `arch-lint.toml` declares the layers and `just arch-check` (the `tests/architecture` crate, part of `just check`) enforces them:
 
 - `domain` depends on no other layer and is pure: no IO, process, environment, async runtime, HTTP, CLI, logging or serialization wire formats.
 - `application` depends only on `domain`. It declares ports (traits) and does no IO.
 - `adapters` implement application ports and never depend on a binary.
 - Binaries only wire things together, hold no logic, and never depend on each other.
 
-New IO goes behind a port in `application` and an adapter in `adapters`. Changing a rule means editing `arch-lint.toml` in a pull request that explains why.
+New IO goes behind a port in `application` and an adapter in `adapters`. The same crate also runs the structural checks of §5. Changing a rule means editing `arch-lint.toml` (layering) or the checks in `tests/architecture/src/checks` (structure) in a pull request that explains why.
 
 ## 5. Code and test conventions
 
@@ -72,20 +72,20 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 
 ### Object Calisthenics for Rust
 
-These are the classic rules adapted to Rust and to the layers. `tests/architecture` (`just arch-check`) is the enforcer named "architecture"; it reports every violation with its rule name. It reads `crates/*/src` and the checker's own `src`, skipping `#[cfg(test)]` modules, integration tests and fixtures, except `file-size` and `lint-exception`, which read every `.rs` file.
+These are the classic rules adapted to Rust and to the layers. `tests/architecture` (`just arch-check`) is the enforcer named "architecture"; it reports every violation with its rule name. It reads `crates/*/src` and the checker's own `src`, skipping `#[cfg(test)]` modules, integration tests and fixtures, except `file-size`, `lint-exception` and `suppression-comment`, which read every `.rs` file under `crates/` and `tests/` outside fixtures, `target` and dot-directories.
 
 | Rule | Rust adaptation | Enforcer | Status |
 |------|-----------------|----------|--------|
 | One level of indentation per function | Early returns, `?` and `let ... else`; one block level inside a free function, none inside a method (the `impl` block counts as a level) | clippy `excessive_nesting` (2), `cognitive_complexity` (8) | enforced now |
 | Do not use `else` | Early returns and `match`; no redundant `else` after a return | clippy `redundant_else` | enforced now (partial: only an `else` after a return) |
-| Wrap all primitives | In `domain` and `application`, a struct with two or more fields has no primitive field (`String`, integers, `bool`, `char`, `PathBuf`, also inside `Option`, `Vec` and `Box`); a single-field struct is the newtype that wraps the primitive | architecture `primitive-field` | enforced now in `domain` and `application`; review-only elsewhere |
-| First-class collections | In `domain` and `application`, a struct with a collection field has no other field | architecture `collection-field` | enforced now in `domain` and `application`; review-only elsewhere |
+| Wrap all primitives | In `domain` and `application`, a struct with two or more fields has no primitive field (`String`, `str`, `Path`, `PathBuf`, `OsString`, `bool`, `char`, integers and floats, as a `&` reference or inside `Option`, `Vec` or `Box`); a single-field struct is the newtype that wraps the primitive | architecture `primitive-field` | enforced now in `domain` and `application`; review-only elsewhere |
+| First-class collections | In `domain` and `application`, a struct with a collection field (`Vec`, `VecDeque`, `HashMap`, `BTreeMap`, `HashSet`, `BTreeSet`, a slice or an array, also behind a `&`) has no other field | architecture `collection-field` | enforced now in `domain` and `application`; review-only elsewhere |
 | One dot per line | Short method chains; iterator adapter chains are allowed | none | review-only: clippy has no chain-length lint |
 | Do not abbreviate | Names of three or more characters; only `'_` is shorter | clippy `min_ident_chars` (2), `many_single_char_names` | enforced now |
 | Keep entities small | Functions at most 25 lines and 3 parameters, `self` included; files at most 1000 lines | clippy `too_many_lines` (25), `too_many_arguments` (3); architecture `file-size` (1000) | enforced now |
 | At most four fields per struct | Group the rest into value objects | architecture `struct-fields` | enforced now |
 | No `pub` fields, no getters or setters | Fields are private, including `pub(crate)` and tuple-struct fields; behaviour methods instead of accessors, and read accessors only where a caller must see the value. The one exception is an adapter wire struct that derives `Serialize` or `Deserialize` | architecture `pub-field` | enforced now for the field visibility; accessor intent is review-only |
-| No tuple groupings | No tuple type or pattern in a function parameter or return type (nested ones included, such as `Option<(A, B)>`), no tuple type alias and no tuple-typed struct field. Closures, `()`, parenthesised types such as `&(dyn Trait + Send)`, `Fn(A, B) -> C` lists, enum variant payloads, tuple expressions in bodies and the methods of a trait impl are not groupings | architecture `tuple-signature`, `tuple-alias` and `tuple-field` | enforced now |
+| No tuple groupings | No tuple type or pattern in a function parameter or return type (nested ones included, such as `Option<(A, B)>`), no tuple type alias and no tuple-typed struct field. Closures, `()`, parenthesised types such as `&(dyn Trait + Send)`, `Fn(A, B) -> C` lists, enum variant payloads and tuple expressions in bodies are not groupings, and trait-impl method signatures are exempt because the trait definition's signature is checked instead | architecture `tuple-signature`, `tuple-alias` and `tuple-field` | enforced now |
 | Names say what the thing is | No struct name ending in `Args`, `Params`, `Dto`, `Data`, `Info` or `Bag` | architecture `bag-name` | enforced now |
 
 Parameter ladder: when a function would take a 4th parameter (a 3rd beside `self`), take the first step that fits, and never a tuple or a bag-named struct.

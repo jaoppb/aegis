@@ -1,0 +1,4 @@
+#[cfg(feature = "extra")]
+mod extra {
+    pub struct Loose { pub name: Name }
+}

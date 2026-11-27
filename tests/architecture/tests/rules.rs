@@ -178,4 +178,105 @@ mod cases {
         let exact = manifest("Cargo.toml", &fixture("root_exact_versions.toml.txt"));
         assert_eq!(rules(&exact), Vec::new());
     }
+
+    fn assert_clean_in(path: &str, name: &str) {
+        assert_eq!(rules(&rust(path, &fixture(name))), Vec::new(), "{name}");
+    }
+
+    fn assert_fails_in(path: &str, name: &str) -> Vec<Rule> {
+        rules(&rust(path, &fixture(name)))
+    }
+
+    #[test]
+    fn the_serde_exemption_is_limited_to_adapter_wire_structs() {
+        let plain = assert_fails_in(ADAPTERS, "adapter_plain_pub.rs.txt");
+        assert_eq!(plain, vec![Rule::PubField]);
+        assert_clean_in(ADAPTERS, "wire_serialize.rs.txt");
+        assert_clean_in(ADAPTERS, "wire_qualified.rs.txt");
+    }
+
+    #[test]
+    fn application_is_modelled_and_binaries_are_not() {
+        const APPLICATION: &str = "crates/application/src/example.rs";
+        const BINARY: &str = "crates/cli/src/example.rs";
+        let primitive = assert_fails_in(APPLICATION, "primitive_field.rs.txt");
+        assert_eq!(primitive, vec![Rule::PrimitiveField]);
+        let collection = assert_fails_in(APPLICATION, "collection_field.rs.txt");
+        assert_eq!(collection, vec![Rule::CollectionField]);
+        assert_clean_in(BINARY, "primitive_field.rs.txt");
+        assert_clean_in(BINARY, "collection_field.rs.txt");
+    }
+
+    #[test]
+    fn every_tuple_wrapper_is_looked_through() {
+        let workspace = rust(DOMAIN, &fixture("tuple_nested.rs.txt"));
+        assert_eq!(rules(&workspace), vec![Rule::TupleSignature; 8]);
+    }
+
+    #[test]
+    fn tuple_structs_count_their_fields() {
+        assert_fails("tuple_struct_five.rs.txt", Rule::StructFields);
+    }
+
+    #[test]
+    fn exception_edge_forms() {
+        assert_fails("arch_lint_allow.rs.txt", Rule::LintException);
+        assert_fails("suppression_no_space.rs.txt", Rule::SuppressionComment);
+        assert_fails("suppression_indented.rs.txt", Rule::SuppressionComment);
+        assert_passes("cfg_attr_condition_allow.rs.txt");
+    }
+
+    #[test]
+    fn suppression_comments_are_found_wherever_they_sit() {
+        assert_fails("suppression_trailing.rs.txt", Rule::SuppressionComment);
+        assert_fails("suppression_doc.rs.txt", Rule::SuppressionComment);
+        assert_fails("suppression_extra_space.rs.txt", Rule::SuppressionComment);
+        assert_fails("macros_allow.rs.txt", Rule::LintException);
+        assert_passes("comment_ok.rs.txt");
+    }
+
+    #[test]
+    fn git_dependencies_need_a_rev() {
+        let git = manifest("Cargo.toml", &fixture("root_git.toml.txt"));
+        assert_eq!(rules(&git), vec![Rule::ManifestVersion]);
+    }
+
+    #[test]
+    fn only_test_modules_are_exempt() {
+        assert_fails("feature_module_checked.rs.txt", Rule::PubField);
+        assert_passes("test_module_bag_name.rs.txt");
+    }
+
+    #[test]
+    fn dev_and_build_dependencies_come_from_the_workspace() {
+        let path = "crates/example/Cargo.toml";
+        let both = manifest(path, &fixture("crate_dev_build_dependencies.toml.txt"));
+        assert_eq!(rules(&both), vec![Rule::ManifestDependency; 2]);
+        let disabled = manifest(path, &fixture("crate_workspace_false.toml.txt"));
+        assert_eq!(rules(&disabled), vec![Rule::ManifestDependency]);
+    }
+
+    #[test]
+    fn table_form_versions_are_checked_and_paths_are_exempt() {
+        let loose = manifest("Cargo.toml", &fixture("root_table_loose.toml.txt"));
+        assert_eq!(rules(&loose), vec![Rule::ManifestVersion]);
+        let exact = manifest("Cargo.toml", &fixture("root_table_exact.toml.txt"));
+        assert_eq!(rules(&exact), Vec::new());
+    }
+
+    #[test]
+    fn roles_follow_the_path() {
+        let exposed = vec![Rule::PubField];
+        let name = "pub_field.rs.txt";
+        assert_eq!(
+            assert_fails_in("crates/domain/src/bin/tool.rs", name),
+            exposed
+        );
+        assert_eq!(
+            assert_fails_in("tests/architecture/src/lib.rs", name),
+            exposed
+        );
+        assert_clean_in("crates/domain/build.rs", name);
+        assert_clean_in("crates/domain/examples/demo.rs", name);
+    }
 }

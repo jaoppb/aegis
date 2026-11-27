@@ -8,8 +8,13 @@ use syn::{Attribute, Meta, Token};
 use crate::violation::{Location, Rule, Violation};
 use crate::workspace::{SourceFile, Workspace};
 
-const EXCEPTION_ATTRIBUTES: [&str; 3] = ["allow", "expect", "arch_lint::allow"];
-const SUPPRESSION_PREFIXES: [&str; 2] = ["// arch-lint:", "//arch-lint:"];
+const EXCEPTION_ATTRIBUTES: [&str; 4] = [
+    "allow",
+    "expect",
+    "arch_lint::allow",
+    "arch_lint_macros::allow",
+];
+const SUPPRESSION_MARKER: &str = "arch-lint:";
 
 /// Rejects lint-exception attributes and arch-lint suppression comments in every Rust file.
 #[must_use]
@@ -99,9 +104,12 @@ fn comments_in(source: &SourceFile) -> Vec<Violation> {
         .collect()
 }
 
+/// Whether any `//` comment on `line`, a trailing or a doc comment included, starts with the
+/// arch-lint directive marker, the way arch-lint itself reads suppressions.
 fn is_suppression(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    SUPPRESSION_PREFIXES
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
+    line.match_indices("//").any(|(index, _)| {
+        let comment = line.get(index..).unwrap_or_default();
+        let text = comment.trim_start_matches('/').trim_start();
+        text.starts_with(SUPPRESSION_MARKER)
+    })
 }

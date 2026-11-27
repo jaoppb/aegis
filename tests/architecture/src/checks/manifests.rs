@@ -45,6 +45,15 @@ impl Dependency<'_> {
         inherited.and_then(Value::as_bool) == Some(true)
     }
 
+    /// Whether this registry dependency has no exact `=` version, or this git dependency no `rev`.
+    fn is_inexact(&self) -> bool {
+        let unpinned_git = self.value.get("git").is_some() && self.value.get("rev").is_none();
+        let loose_version = self
+            .version()
+            .is_some_and(|version| !version.starts_with('='));
+        unpinned_git || loose_version
+    }
+
     /// The registry version requirement, absent for path dependencies.
     fn version(&self) -> Option<&str> {
         match self.value {
@@ -87,11 +96,7 @@ fn pins(manifest: &Manifest) -> Vec<Violation> {
     let declared = workspace
         .into_iter()
         .flat_map(|section| entries_of(section, "dependencies"));
-    let loose = declared.filter(|entry| {
-        entry
-            .version()
-            .is_some_and(|version| !version.starts_with('='))
-    });
+    let loose = declared.filter(Dependency::is_inexact);
     loose
         .map(|entry| not_exact(manifest, entry.name()))
         .collect()

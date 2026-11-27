@@ -1,0 +1,3 @@
+[workspace.dependencies]
+foo = { git = "https://example.com/foo" }
+bar = { git = "https://example.com/bar", rev = "abc" }

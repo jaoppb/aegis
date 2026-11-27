@@ -57,7 +57,7 @@ impl Rule {
 }
 
 /// A file and the line a violation points at.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
     path: PathBuf,
     line: usize,
@@ -113,6 +113,11 @@ impl fmt::Display for Violation {
     }
 }
 
+fn by_location_then_rule(left: &Violation, right: &Violation) -> std::cmp::Ordering {
+    let by_location = left.location.cmp(&right.location);
+    by_location.then_with(|| left.rule.name().cmp(right.rule.name()))
+}
+
 /// Every violation found, in a stable order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report(Vec<Violation>);
@@ -121,7 +126,7 @@ impl Report {
     /// A report of `violations`, sorted by location and rule.
     #[must_use]
     pub fn new(mut violations: Vec<Violation>) -> Self {
-        violations.sort_by_key(ToString::to_string);
+        violations.sort_by(by_location_then_rule);
         Self(violations)
     }
 

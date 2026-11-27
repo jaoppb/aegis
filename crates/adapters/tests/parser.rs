@@ -206,3 +206,12 @@ fn a_local_context_that_looks_like_a_host_is_still_a_path() {
         "./github.com/x"
     );
 }
+
+#[test]
+fn an_empty_image_is_rejected() {
+    let text = "services:\n  app:\n    image: ''\n";
+    assert!(matches!(
+        compose::parse(text),
+        Err(ParseError::Invalid(reason)) if reason.contains("value is empty")
+    ));
+}
