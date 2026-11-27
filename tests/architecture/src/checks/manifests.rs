@@ -1,5 +1,5 @@
 //! Manifest rules: crates declare dependencies only as `name.workspace = true`, and the root
-//! `[workspace.dependencies]` pin each registry crate with an exact `=` version.
+//! `[workspace.dependencies]` pin each registry crate with an exact `=` version and each git dependency with a `rev`.
 
 use toml::{Table, Value};
 

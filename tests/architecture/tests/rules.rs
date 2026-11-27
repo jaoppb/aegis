@@ -280,15 +280,19 @@ mod cases {
 
     #[test]
     fn reports_are_ordered_by_file_then_line_then_rule() {
-        let place = |line| Location::new(Path::new("a.rs"), line);
+        let place = |file, line| Location::new(Path::new(file), line);
         let report = Report::new(vec![
-            Violation::new(Rule::TupleField, place(10), "ten"),
-            Violation::new(Rule::TupleAlias, place(2), "two"),
-            Violation::new(Rule::BagName, place(2), "two"),
+            Violation::new(Rule::TupleField, place("b.rs", 1), "b"),
+            Violation::new(Rule::BagName, place("a.rs", 9), "nine"),
+            Violation::new(Rule::TupleAlias, place("a.rs", 5), "five"),
+            Violation::new(Rule::BagName, place("a.rs", 5), "five"),
         ]);
-        assert_eq!(
-            report.rules(),
-            vec![Rule::BagName, Rule::TupleAlias, Rule::TupleField]
-        );
+        let expected = vec![
+            Rule::BagName,
+            Rule::TupleAlias,
+            Rule::BagName,
+            Rule::TupleField,
+        ];
+        assert_eq!(report.rules(), expected);
     }
 }
