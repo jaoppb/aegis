@@ -42,6 +42,10 @@ impl FileText {
     fn as_str(&self) -> &str {
         &self.0
     }
+
+    fn into_string(self) -> String {
+        self.0
+    }
 }
 
 /// A file that exists in the repository, with its text.
@@ -209,7 +213,7 @@ fn read_compose(ports: Ports<'_>, dir: &RepoPath) -> Problems<ComposeFile> {
     let parsed = ports.parser.parse_compose(located.text.as_str());
     let summary = parsed.map_err(|error| vec![compose_error(&located.file, &error)])?;
     Ok(ComposeFile {
-        source: ComposeSource::new(located.text.as_str()),
+        source: ComposeSource::new(located.text.into_string()),
         summary,
     })
 }

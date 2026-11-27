@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
-use aegis_architecture_tests::Rule;
 use aegis_architecture_tests::checks::{self, size};
+use aegis_architecture_tests::violation::Location;
 use aegis_architecture_tests::workspace::{Manifest, SourceFile, Workspace};
+use aegis_architecture_tests::{Report, Rule, Violation};
 
 #[cfg(test)]
 mod cases {
@@ -183,13 +184,13 @@ mod cases {
         assert_eq!(rules(&rust(path, &fixture(name))), Vec::new(), "{name}");
     }
 
-    fn assert_fails_in(path: &str, name: &str) -> Vec<Rule> {
+    fn rules_in(path: &str, name: &str) -> Vec<Rule> {
         rules(&rust(path, &fixture(name)))
     }
 
     #[test]
     fn the_serde_exemption_is_limited_to_adapter_wire_structs() {
-        let plain = assert_fails_in(ADAPTERS, "adapter_plain_pub.rs.txt");
+        let plain = rules_in(ADAPTERS, "adapter_plain_pub.rs.txt");
         assert_eq!(plain, vec![Rule::PubField]);
         assert_clean_in(ADAPTERS, "wire_serialize.rs.txt");
         assert_clean_in(ADAPTERS, "wire_qualified.rs.txt");
@@ -199,9 +200,9 @@ mod cases {
     fn application_is_modelled_and_binaries_are_not() {
         const APPLICATION: &str = "crates/application/src/example.rs";
         const BINARY: &str = "crates/cli/src/example.rs";
-        let primitive = assert_fails_in(APPLICATION, "primitive_field.rs.txt");
+        let primitive = rules_in(APPLICATION, "primitive_field.rs.txt");
         assert_eq!(primitive, vec![Rule::PrimitiveField]);
-        let collection = assert_fails_in(APPLICATION, "collection_field.rs.txt");
+        let collection = rules_in(APPLICATION, "collection_field.rs.txt");
         assert_eq!(collection, vec![Rule::CollectionField]);
         assert_clean_in(BINARY, "primitive_field.rs.txt");
         assert_clean_in(BINARY, "collection_field.rs.txt");
@@ -239,11 +240,14 @@ mod cases {
     fn git_dependencies_need_a_rev() {
         let git = manifest("Cargo.toml", &fixture("root_git.toml.txt"));
         assert_eq!(rules(&git), vec![Rule::ManifestVersion]);
+        let loose = manifest("Cargo.toml", &fixture("root_git_loose_version.toml.txt"));
+        assert_eq!(rules(&loose), vec![Rule::ManifestVersion]);
     }
 
     #[test]
     fn only_test_modules_are_exempt() {
         assert_fails("feature_module_checked.rs.txt", Rule::PubField);
+        assert_fails("cfg_not_test_module.rs.txt", Rule::PubField);
         assert_passes("test_module_bag_name.rs.txt");
     }
 
@@ -268,15 +272,23 @@ mod cases {
     fn roles_follow_the_path() {
         let exposed = vec![Rule::PubField];
         let name = "pub_field.rs.txt";
-        assert_eq!(
-            assert_fails_in("crates/domain/src/bin/tool.rs", name),
-            exposed
-        );
-        assert_eq!(
-            assert_fails_in("tests/architecture/src/lib.rs", name),
-            exposed
-        );
+        assert_eq!(rules_in("crates/domain/src/bin/tool.rs", name), exposed);
+        assert_eq!(rules_in("tests/architecture/src/lib.rs", name), exposed);
         assert_clean_in("crates/domain/build.rs", name);
         assert_clean_in("crates/domain/examples/demo.rs", name);
+    }
+
+    #[test]
+    fn reports_are_ordered_by_file_then_line_then_rule() {
+        let place = |line| Location::new(Path::new("a.rs"), line);
+        let report = Report::new(vec![
+            Violation::new(Rule::TupleField, place(10), "ten"),
+            Violation::new(Rule::TupleAlias, place(2), "two"),
+            Violation::new(Rule::BagName, place(2), "two"),
+        ]);
+        assert_eq!(
+            report.rules(),
+            vec![Rule::BagName, Rule::TupleAlias, Rule::TupleField]
+        );
     }
 }

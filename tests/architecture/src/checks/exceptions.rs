@@ -105,7 +105,8 @@ fn comments_in(source: &SourceFile) -> Vec<Violation> {
 }
 
 /// Whether any `//` comment on `line`, a trailing or a doc comment included, starts with the
-/// arch-lint directive marker, the way arch-lint itself reads suppressions.
+/// arch-lint directive marker, the way arch-lint itself reads suppressions. A string literal that
+/// holds such a comment is a false positive, which is acceptable for a ban.
 fn is_suppression(line: &str) -> bool {
     line.match_indices("//").any(|(index, _)| {
         let comment = line.get(index..).unwrap_or_default();
