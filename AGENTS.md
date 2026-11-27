@@ -80,6 +80,12 @@ New IO goes behind a port in `application` and an adapter in `adapters`. Changin
 - **Hooks.** The ai-memory hooks live in each person's user-level agent settings, not in the repository. `.claude/settings.json` holds only shared project settings.
 - **Skills.** Project-local skills live in `.agents/skills/`; `.claude/skills` is a symlink to it, so every harness reads the same skills.
 
+## 8. SPDD (structured prompt-driven development)
+
+- **When.** Use SPDD for work that needs a design before code. The skills in `.agents/skills/spdd-*` were rendered by `spdd-bootstrap` (from `jaoppb/skills`) using `.agents/skills/spdd.profile.json`, then hand-polished. Edit them directly; the profile records the render inputs and the hashes of the unpolished output, so a re-run of `spdd-bootstrap` reports the polish as hand edits instead of overwriting it silently.
+- **Phases.** `/spdd-analysis #<n>` appends `## Analysis` to the issue body, `/spdd-reasons-canvas #<n>` writes the canvas, `/spdd-generate` implements it, and `/spdd-prompt-update` changes the design first. There is no `spdd-sync`: a stale canvas is rebuilt by `/spdd-reasons-canvas`.
+- **Canvases are local.** They live in `spdd/prompt/` (git-ignored), are named `GH-<n>-...`, and are never committed or named by path in commits, issues or pull requests.
+
 <!-- ai-memory:start -->
 ## Long-term memory (ai-memory)
 
