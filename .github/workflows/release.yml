@@ -6,11 +6,8 @@ name: Release
 # versions pinned by flake.lock. A vX.Y.Z-rc.N tag is a prerelease and gets only its own image tag.
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
-  # Called by tag-release.yml: tags pushed with GITHUB_TOKEN do not trigger the push event.
+  # Only called by tag-release.yml, which creates the tag (a tag pushed by its GitHub App would
+  # also fire a push event, so there is no push trigger: it would run the release twice).
   workflow_call:
     inputs:
       tag:
@@ -22,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.tag }}
 
 jobs:
   validate-version:

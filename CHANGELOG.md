@@ -12,6 +12,6 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 ### Changed
 
-- Release tags are protected: a `tags` ruleset on `refs/tags/v*` lets only the release GitHub App create them and blocks updates and deletions, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #PR)
+- Release tags are protected: the `tags-create` and `tags-immutable` rulesets on `refs/tags/v*` let only the release GitHub App create them and let nobody update or delete them, `release.yml` is only called by `tag-release.yml`, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #PR)
 
 [Unreleased]: https://github.com/jaoppb/aegis/commits/main

@@ -1,5 +1,5 @@
 {
-  "name": "tags",
+  "name": "tags-create",
   "target": "tag",
   "enforcement": "active",
   "conditions": {
@@ -11,5 +11,5 @@
   "bypass_actors": [
     { "actor_id": 0, "actor_type": "Integration", "bypass_mode": "always" }
   ],
-  "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }]
+  "rules": [{ "type": "creation" }]
 }

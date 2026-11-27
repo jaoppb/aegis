@@ -5,7 +5,7 @@ name: Tag Release
 # tags only when the push itself changed [workspace.package].version, so a later unrelated
 # Cargo.toml change never releases under a version an earlier commit bumped.
 # workflow_dispatch is the recovery path: it tags and releases exactly the requested ref.
-# Tags pushed with a token of the workflow or of a GitHub App do not trigger release.yml, so it is called directly.
+# release.yml has no push trigger and is called directly, so a tag is released exactly once.
 
 on:
   push:
@@ -34,7 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
+    # The App secrets live in the `release` environment, limited to the main branch, so a
+    # workflow run from another branch cannot mint a token that bypasses the tags ruleset.
+    environment: release
     # Only the tagging is serialized: a run waiting behind a whole release build could be
     # replaced by a newer pending run and drop a version bump.
     concurrency:

@@ -79,10 +79,11 @@ ruleset-check:
     set -euo pipefail
     repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
     norm='{name, target, enforcement, conditions, bypass_actors, rules} | walk(if type == "array" then sort_by(tostring) else . end)'
+    list=$(gh api "repos/$repo/rulesets")
     status=0
     for file in .github/rulesets/*.json; do
         name=$(jq -r .name "$file")
-        id=$(gh api "repos/$repo/rulesets" --jq ".[] | select(.name == \"$name\") | .id")
+        id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<<"$list")
         if [ -z "$id" ]; then echo "no ruleset named $name on $repo"; status=1; continue; fi
         live=$(gh api "repos/$repo/rulesets/$id" | jq -S "$norm")
         want=$(jq -S "$norm" "$file")
@@ -109,7 +110,7 @@ ruleset-apply:
     done
     for file in .github/rulesets/*.json; do
         name=$(jq -r .name "$file")
-        id=$(gh api "repos/$repo/rulesets" --jq ".[] | select(.name == \"$name\") | .id")
+        id=$(gh api "repos/$repo/rulesets" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id')
         if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
         gh api --method "$method" "$url" --input "$file" --silent
         echo "ruleset $name applied to $repo"
