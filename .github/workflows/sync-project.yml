@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  issues: read
 
 concurrency:
   group: sync-project
@@ -23,12 +22,15 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Fork PRs get no secrets, so skip them rather than fail red.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: jaoppb/tools@42e8d50a8c01711073c1ea1b1d505a7c82fdc725 # v0.3.1
         with:
+          version: v0.3.1
           config-path: tools.toml
           sync-project: "true"
           github-token: ${{ secrets.PROJECT_TOKEN }}
