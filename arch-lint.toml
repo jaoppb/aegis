@@ -32,26 +32,28 @@ paths = ["crates/agent/**"]
 [[restrict-use]]
 name = "domain-is-innermost"
 scope = "domain"
-deny = ["aegis_application::**", "aegis_adapters::**", "aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+deny = ["aegis_application::**", "aegis_adapters::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "domain must not depend on any other layer"
 severity = "error"
 
 [[restrict-use]]
 name = "application-depends-on-domain-only"
 scope = "application"
-deny = ["aegis_adapters::**", "aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+deny = ["aegis_adapters::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "application may depend only on domain and declares ports (traits) for adapters"
 severity = "error"
 
 [[restrict-use]]
 name = "adapters-do-not-reach-binaries"
 scope = "adapters"
-deny = ["aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+deny = ["aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "adapters implement application ports and must not depend on binaries"
 severity = "error"
 
+# The binaries are bin-only crates today, so Cargo already blocks these edges; the rules are
+# future-proofing for when one gains a lib target.
 [[restrict-use]]
-name = "binaries-are-independent"
+name = "cli-is-independent"
 scope = "cli"
 deny = ["aegis_controller::**", "aegis_agent::**"]
 message = "binaries must not depend on each other"
@@ -60,14 +62,14 @@ severity = "error"
 [[restrict-use]]
 name = "controller-is-independent"
 scope = "controller"
-deny = ["aegis::**", "aegis_cli::**", "aegis_agent::**"]
+deny = ["aegis::**", "aegis_agent::**"]
 message = "binaries must not depend on each other"
 severity = "error"
 
 [[restrict-use]]
 name = "agent-is-independent"
 scope = "agent"
-deny = ["aegis::**", "aegis_cli::**", "aegis_controller::**"]
+deny = ["aegis::**", "aegis_controller::**"]
 message = "binaries must not depend on each other"
 severity = "error"
 

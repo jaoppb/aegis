@@ -1,1 +1,1 @@
-use aegis_cli::Args;
+use aegis::Args;
