@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Job names are required status checks in the ruleset (#7): do not rename them.
+# Every job runs in the flake devShell (.github/actions/nix-devshell), so CI uses the toolchain
+# pinned by flake.lock, as local runs do. `actions: write` lets the action purge superseded
+# Nix store caches. No Docker job yet: add one with the first test that needs a daemon (the
+# runner ships a rootful Docker).
+jobs:
+  cargo:
+    name: Workspace Check & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    # `tools actions check` (in `just check`) reads the action versions through `gh`.
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+
+      # rust-cache keys on the runner's rustc, not the devShell's, so the key adds flake.lock.
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('flake.lock') }}
+
+      - name: Run workspace checks, lints, and tests
+        run: nix develop --command just check
+
+  nix:
+    name: Flake Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+
+      - name: Run nix flake check
+        run: nix flake check
+
+  issues-check:
+    name: Audit Issue Workflow Rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+      issues: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+
+      - name: Run issues-check
+        run: nix develop --command just issues-check
+
+  # Not a required check: reading repository settings may need more than the GITHUB_TOKEN grants.
+  repo-check:
+    name: Audit Repository Configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+      issues: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+
+      - name: Run repo-check
+        run: nix develop --command just repo-check

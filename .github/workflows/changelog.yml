@@ -1,0 +1,38 @@
+name: Changelog
+
+# A separate workflow so that adding or removing the skip label re-runs only this check.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: Changelog Entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The check diffs the pull request against its merge base with the target branch.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+
+      - name: Check that the change is in CHANGELOG.md
+        run: nix develop --command just changelog-check "origin/${BASE_REF}" "${LABELS}"
