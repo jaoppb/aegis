@@ -8,3 +8,6 @@ lefthook-local.yml
 .lefthook-local.yml
 .direnv/
 .rumdl_cache/
+
+# SPDD canvases (local working files)
+spdd/prompt/
