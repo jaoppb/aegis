@@ -32,8 +32,12 @@ lint:
 test:
     cargo nextest run --workspace --all-features --no-tests=pass
 
-# Run every check: format, lint and tests.
-check: fmt-check lint test
+# Fail if a crate breaks the clean-architecture layering declared in arch-lint.toml.
+arch-check:
+    cargo test -p aegis-architecture-tests
+
+# Run every check: format, lint, architecture rules and tests.
+check: fmt-check lint arch-check test
 
 # Audit the live GitHub repository settings, labels and milestones against tools.toml.
 repo-check:
