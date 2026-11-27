@@ -1,0 +1,31 @@
+# Opt-in marker for ai-memory: only a repository that carries this file is
+# captured by the agents' lifecycle hooks. No server address, token or
+# hostname belongs here.
+workspace = "default"
+project = "jaoppb-aegis"
+drop_subagent_captures = "true"
+
+[briefing]
+inject_on_session_start = "true"
+max_chars = 4000
+
+[capture]
+ignore_paths = [
+  "target/**",
+  "*.sops.*",
+  "**/*.sops.*",
+  "*.age",
+  "**/*.age",
+  "keys.txt",
+  "**/keys.txt",
+  ".env",
+  ".env.*",
+  "**/.env",
+  "**/.env.*",
+  "*.pem",
+  "**/*.pem",
+  "*.key",
+  "**/*.key",
+  "tailscale/*.state",
+  "**/tailscale/*.state",
+]
