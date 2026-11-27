@@ -7,6 +7,7 @@ members = [
     "crates/cli",
     "crates/controller",
     "crates/agent",
+    "tests/architecture",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ publish = false
 aegis-domain = { path = "crates/domain" }
 aegis-application = { path = "crates/application" }
 aegis-adapters = { path = "crates/adapters" }
+arch-lint = "0.11"
 
 [workspace.lints.rust]
 unused = { level = "deny", priority = -1 }

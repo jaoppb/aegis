@@ -1,0 +1,95 @@
+preset = "recommended"
+
+# Layers (inner to outer): domain <- application <- adapters <- binaries.
+# Binaries only wire things together; they hold no logic of their own.
+
+[[scopes]]
+name = "domain"
+paths = ["crates/domain/**"]
+
+[[scopes]]
+name = "application"
+paths = ["crates/application/**"]
+
+[[scopes]]
+name = "adapters"
+paths = ["crates/adapters/**"]
+
+[[scopes]]
+name = "cli"
+paths = ["crates/cli/**"]
+
+[[scopes]]
+name = "controller"
+paths = ["crates/controller/**"]
+
+[[scopes]]
+name = "agent"
+paths = ["crates/agent/**"]
+
+# Cross-crate edges are `aegis_*::` paths, which arch-lint's scope graph (`crate::` only) does not
+# resolve, so the layering is enforced with restrict-use on those paths.
+[[restrict-use]]
+name = "domain-is-innermost"
+scope = "domain"
+deny = ["aegis_application::**", "aegis_adapters::**", "aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+message = "domain must not depend on any other layer"
+severity = "error"
+
+[[restrict-use]]
+name = "application-depends-on-domain-only"
+scope = "application"
+deny = ["aegis_adapters::**", "aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+message = "application may depend only on domain and declares ports (traits) for adapters"
+severity = "error"
+
+[[restrict-use]]
+name = "adapters-do-not-reach-binaries"
+scope = "adapters"
+deny = ["aegis::**", "aegis_cli::**", "aegis_controller::**", "aegis_agent::**"]
+message = "adapters implement application ports and must not depend on binaries"
+severity = "error"
+
+[[restrict-use]]
+name = "binaries-are-independent"
+scope = "cli"
+deny = ["aegis_controller::**", "aegis_agent::**"]
+message = "binaries must not depend on each other"
+severity = "error"
+
+[[restrict-use]]
+name = "controller-is-independent"
+scope = "controller"
+deny = ["aegis::**", "aegis_cli::**", "aegis_agent::**"]
+message = "binaries must not depend on each other"
+severity = "error"
+
+[[restrict-use]]
+name = "agent-is-independent"
+scope = "agent"
+deny = ["aegis::**", "aegis_cli::**", "aegis_controller::**"]
+message = "binaries must not depend on each other"
+severity = "error"
+
+# The domain is pure: no IO, no CLI, no HTTP, no async runtime, no serialization wire formats.
+[[restrict-use]]
+name = "domain-is-pure"
+scope = "domain"
+deny = [
+    "std::fs::**", "std::net::**", "std::process::**", "std::env::**", "std::io::**",
+    "tokio::**", "reqwest::**", "hyper::**", "axum::**", "clap::**", "serde::**",
+    "serde_json::**", "toml::**", "tracing::**", "git2::**",
+]
+message = "domain must not do IO or know about CLIs, HTTP or wire formats; put that behind a port in application and an adapter"
+severity = "error"
+
+[[restrict-use]]
+name = "application-has-no-io"
+scope = "application"
+deny = [
+    "std::fs::**", "std::net::**", "std::process::**", "std::env::**", "std::io::**",
+    "tokio::process::**", "tokio::fs::**", "tokio::net::**", "reqwest::**", "hyper::**",
+    "axum::**", "clap::**", "git2::**",
+]
+message = "application declares ports (traits); IO belongs in an adapter"
+severity = "error"

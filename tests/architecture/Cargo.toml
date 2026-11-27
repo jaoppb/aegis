@@ -1,0 +1,15 @@
+[package]
+name = "aegis-architecture-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+publish.workspace = true
+
+[[test]]
+name = "architecture"
+path = "tests/architecture.rs"
+
+[dev-dependencies]
+arch-lint.workspace = true
