@@ -74,3 +74,30 @@ project-check:
 # Write the planned Project Status moves (needs a token with Projects write).
 project-sync:
     tools project sync
+
+# Fail when the live `main` ruleset differs from .github/rulesets/main.json (needs `gh` auth with admin read).
+ruleset-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+    id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')
+    if [ -z "$id" ]; then echo "no ruleset named main on $repo"; exit 1; fi
+    norm='{name, target, enforcement, conditions, bypass_actors, rules} | walk(if type == "array" then sort_by(tostring) else . end)'
+    live=$(gh api "repos/$repo/rulesets/$id" | jq -S "$norm")
+    want=$(jq -S "$norm" .github/rulesets/main.json)
+    if [ "$live" != "$want" ]; then
+        diff <(echo "$want") <(echo "$live") || true
+        echo "live ruleset differs from .github/rulesets/main.json"
+        exit 1
+    fi
+    echo "ruleset main matches .github/rulesets/main.json"
+
+# Create or update the `main` ruleset from .github/rulesets/main.json. Changes how every pull request merges.
+ruleset-apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+    id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')
+    if [ -n "$id" ]; then method=PUT; url="repos/$repo/rulesets/$id"; else method=POST; url="repos/$repo/rulesets"; fi
+    gh api --method "$method" "$url" --input .github/rulesets/main.json --silent
+    echo "ruleset main applied to $repo"
