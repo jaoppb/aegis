@@ -13,7 +13,7 @@ use super::agent::{invalid, required};
 use super::controller::{AgentAddress, Hub};
 use super::enroll::enroll_routes_from_env;
 use super::server::{
-    LISTEN_VAR, ListenAddress, Operated, Routes, ServeError, listen_from, serve_controller_for,
+    LISTEN_VAR, ListenAddress, Operated, ServeError, listen_from, serve_controller_for,
 };
 use crate::git::Remote;
 use crate::http::BaseUrl;
@@ -150,10 +150,7 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
         .map_err(|cause| ServeError::Bind { address, cause })?;
     let hub = Hub::new(&settings.watch.agents)?;
     let poller = settings.poller();
-    let routes = Routes::default()
-        .tagged(hub.report_routes().merge(settings.serving.enroll))
-        .either(hub.read_routes())
-        .operators(hub.sync_routes(Arc::clone(&poller)));
+    let routes = hub.grouped(settings.serving.enroll, Arc::clone(&poller));
     let operators = settings.watch.operators.clone();
     let served = serve_controller_for(
         listener,

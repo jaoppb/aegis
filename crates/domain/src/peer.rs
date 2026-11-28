@@ -50,7 +50,7 @@ impl AegisRole {
 }
 
 /// The Tailscale login of the person who owns a node, such as `ada@example.com`. Logins compare
-/// without regard to case.
+/// without regard to ASCII case.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Login(String);
 
@@ -60,28 +60,30 @@ impl Login {
     /// # Errors
     ///
     /// Returns [`ValueError::Empty`] for a blank value and [`ValueError::ForbiddenChar`] for one
-    /// with whitespace, a control character or a comma (the separator of a list of logins).
+    /// with whitespace, a control character, a non-ASCII character or a comma (the separator of
+    /// a list of logins).
     pub fn new(value: &str) -> Result<Self, ValueError> {
         let trimmed = value.trim();
         check_login(trimmed)?;
-        Ok(Self(trimmed.to_lowercase()))
+        Ok(Self(trimmed.to_ascii_lowercase()))
     }
 
-    /// The lower-cased login.
+    /// The login, lower-cased.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-/// A login is not blank and holds no whitespace, control character or comma.
+/// A login is not blank and holds only printable ASCII without whitespace or a comma: Unicode
+/// case folding could make two different logins compare equal.
 fn check_login(login: &str) -> Result<(), ValueError> {
     if login.is_empty() {
         return Err(ValueError::Empty);
     }
     let forbidden = login
         .chars()
-        .find(|found| found.is_whitespace() || found.is_control() || *found == ',');
+        .find(|found| !found.is_ascii_graphic() || *found == ',');
     forbidden.map_or(Ok(()), |found| Err(ValueError::ForbiddenChar(found)))
 }
 
@@ -212,6 +214,11 @@ mod tests {
         assert_eq!(Login::new("  "), Err(ValueError::Empty));
         assert!(Login::new("ada lovelace").is_err());
         assert!(Logins::parse_list("ada@x,b d").is_err());
+    }
+
+    #[test]
+    fn a_login_with_a_non_ascii_character_is_refused() {
+        assert!(Login::new("\u{212A}@example.com").is_err());
     }
 
     #[test]

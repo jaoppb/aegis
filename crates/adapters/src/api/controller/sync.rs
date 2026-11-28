@@ -15,7 +15,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use tokio::task::JoinHandle;
 
-use super::{Shared, judge};
+use super::{Asked, Shared, Verified, ask, look};
 
 /// What a sync handler works with: the controller's state and the poller that fetches.
 struct Syncing<Up> {
@@ -78,10 +78,8 @@ async fn refresh<Up>(syncing: &Syncing<Up>) -> Result<CommitSha, Refusal>
 where
     Up: Upstream + Send + Sync + 'static,
 {
-    let _fetching = syncing.shared.fetching.lock().await;
-    let observation = syncing.poller.observe().await;
-    let mut book = syncing.shared.book();
-    book.fleet.observe(observation);
+    look(&syncing.shared, &syncing.poller).await;
+    let book = syncing.shared.book();
     match book.fleet.notice() {
         Notice::Unreachable(reason) => Err(Refusal::new(StatusCode::BAD_GATEWAY, reason)),
         Notice::Unloadable(found) => Err(Refusal::new(
@@ -96,28 +94,26 @@ where
     }
 }
 
-/// Ask the agent of `host` to converge to `commit`, and say how it went. A whole-host sync is
-/// recorded like a reconcile of the poll; a sync of one stack is not, because its report does not
+/// Ask the agent of `host` to converge, and say how it went. A whole-host sync is recorded like a
+/// reconcile of the poll; a sync of one stack only frees the host, because its report does not
 /// stand for the host.
 async fn converge(shared: Arc<Shared>, host: HostName, request: ReconcileRequest) -> HostSync {
-    let Some(client) = shared.agents.get(&host).cloned() else {
-        return HostSync::failed(host.as_str(), "the host has no agent");
-    };
-    if !shared.book().flying.insert(host.clone()) {
-        return HostSync::failed(host.as_str(), "a reconcile is already running on this host");
+    match ask(&shared, &host, &request).await {
+        Asked::Skipped(reason) => HostSync::failed(host.as_str(), reason),
+        Asked::Answered(outcome) => {
+            let sync = summary(&host, &outcome);
+            let recorded = request.stack().is_none().then_some(outcome);
+            shared.book().conclude(&host, recorded);
+            sync
+        }
     }
-    let answer = client.reconcile(&request).await;
-    let outcome = judge(&shared, &host, answer);
-    let sync = match &outcome {
+}
+
+fn summary(host: &HostName, outcome: &Result<Verified, String>) -> HostSync {
+    match outcome {
         Ok(verified) => HostSync::done(host.as_str(), verified.report.clone()),
         Err(reason) => HostSync::failed(host.as_str(), reason.clone()),
-    };
-    if request.stack().is_none() {
-        shared.book().settle(&host, outcome);
-    } else {
-        shared.book().flying.remove(&host);
     }
-    sync
 }
 
 /// A host's sync that was started and has not answered yet.

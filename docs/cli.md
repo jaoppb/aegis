@@ -25,7 +25,7 @@ What counts as a finding:
 |---------|----------|
 | `validate` | any stack is rejected. `2` when `path` is not a directory with a `hosts/` or `aegis/` directory. |
 | `status` | no commit has loaded, the newest commit cannot be read, the remote cannot be fetched, a host has no agent address, has not confirmed the target commit or has a failing agent, or a stack is rejected, `failed` or `invalid`. |
-| `diff` | a stack of the checkout is not `running` on its host (or a tombstoned one is not `purged`), a host has not reported or is at another commit than the controller's target, a stack is rejected in the checkout, or a stack still `running`, `failed` or `invalid` on a host is not in the checkout. |
+| `diff` | a stack of the checkout is not `running` on its host (or a tombstoned one is not `purged`), a host the checkout declares stacks for has not reported, a host is at another commit than the controller's target, the controller has no target commit yet, an override cannot be rendered, a stack is rejected in the checkout, or a stack still `running`, `failed` or `invalid` on a host is not in the checkout. |
 | `sync` | a host could not be synced, a stack failed or is invalid after the sync, or the sync reached no host. |
 
 An `orphaned` or `purged` stack is the expected outcome of removing a stack ([agent.md](agent.md)), so it is listed by `status`, `diff` and `sync` and never makes them exit `1`.
@@ -82,7 +82,7 @@ The comparison is against the last report of each agent, so it is as fresh as th
 
 ## `aegis sync [--host <name>] [--stack <name>]`
 
-Asks the controller to fetch the repository now and make the agents converge to the newest commit, then waits for them. Without `--host` it syncs every host that has an agent, at the same time. `--stack` limits the reconcile to that one stack of each host it reaches: the others are left alone, nothing is taken down, and the host does not count as confirmed (its report covers one stack only), so the next poll still reconciles the whole host.
+Asks the controller to fetch the repository now and make the agents converge to the newest commit, then waits for them. Without `--host` it syncs every host that has an agent, at the same time. `--stack` limits the reconcile to that one stack of each host it reaches: the others are left alone, nothing is taken down, and the sync does not change whether the host counts as confirmed (its report covers one stack only, so the agent does not report it to the controller). A host that has not confirmed the target commit is still reconciled whole at the next poll.
 
 ```text
 jao-server: at 3fe0623

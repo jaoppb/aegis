@@ -4,23 +4,23 @@
 use std::future::{Future, ready};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aegis_adapters::api::{
-    AgentAddress, ApiClient, ClientError, Hub, Operated, Routes, enroll_routes,
-    serve_controller_for,
+    AgentAddress, ApiClient, ClientError, Hub, Operated, enroll_routes, serve_controller_for,
 };
 use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
-    EnrollRequest, RECONCILE_PATH, ReconcileRequest, SidecarVolume, StackState, StackStatus,
-    StatusReport, SyncRequest,
+    EnrollRequest, HostSync, NODE_PATH, RECONCILE_PATH, ReconcileRequest, SidecarVolume,
+    StackState, StackStatus, StatusReport, SyncRequest,
 };
 use aegis_application::{
     EnrollError, EnrollmentRequest, Grant, PeerAddress, Poller, Reason, Repository,
     SidecarEnroller, WhoIs, WhoIsError,
 };
-use aegis_domain::{HostName, Login, Logins, PeerIdentity, TailnetTag};
+use aegis_domain::{HostName, Login, Logins, NodeLabel, PeerIdentity, TailnetTag};
 use axum::extract::State;
-use axum::routing::post;
+use axum::routing::{delete, post};
 use axum::{Json, Router};
 use reqwest::StatusCode;
 use tokio::net::TcpListener;
@@ -93,21 +93,59 @@ impl SidecarEnroller for Closed {
 #[cfg(test)]
 type Calls = Arc<Mutex<Vec<ReconcileRequest>>>;
 
+/// How a fake agent answers: the host it names in its report, how long it takes and whether it
+/// fails.
 #[cfg(test)]
-async fn answer(
-    State(calls): State<Calls>,
-    Json(request): Json<ReconcileRequest>,
-) -> Json<StatusReport> {
-    calls.lock().unwrap().push(request.clone());
-    let stack = StackStatus::new("hosts/h/web", StackState::Running, Vec::new());
-    Json(StatusReport::new("h", request.commit(), vec![stack]))
+#[derive(Clone, Copy)]
+struct Behaviour {
+    host: &'static str,
+    delay: Duration,
+    mode: Mode,
+}
+
+/// Whether a fake agent reports or fails.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Reports,
+    Fails,
 }
 
 #[cfg(test)]
-async fn fake_agent(calls: Calls) -> BaseUrl {
+const WELL_BEHAVED: Behaviour = Behaviour {
+    host: "h",
+    delay: Duration::ZERO,
+    mode: Mode::Reports,
+};
+
+#[cfg(test)]
+#[derive(Clone)]
+struct Fake {
+    calls: Calls,
+    behaviour: Behaviour,
+}
+
+#[cfg(test)]
+async fn answer(
+    State(fake): State<Fake>,
+    Json(request): Json<ReconcileRequest>,
+) -> Result<Json<StatusReport>, StatusCode> {
+    fake.calls.lock().unwrap().push(request.clone());
+    tokio::time::sleep(fake.behaviour.delay).await;
+    if fake.behaviour.mode == Mode::Fails {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let directory = format!("hosts/{}/web", fake.behaviour.host);
+    let stack = StackStatus::new(directory, StackState::Running, Vec::new());
+    let host = fake.behaviour.host;
+    Ok(Json(StatusReport::new(host, request.commit(), vec![stack])))
+}
+
+#[cfg(test)]
+async fn fake_agent(fake: Fake) -> BaseUrl {
     let app = Router::new()
         .route(RECONCILE_PATH, post(answer))
-        .with_state(calls);
+        .with_state(fake);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
     tokio::spawn(async move { axum::serve(listener, app).await });
@@ -166,35 +204,73 @@ async fn scratch_origin(name: &str) -> PathBuf {
     root
 }
 
-/// The routes of a controller as `aegis-controller` groups them by caller.
+/// The agent-only routes of a controller beside the status reports: enrolment, and a stand-in for
+/// the deletion of a node.
 #[cfg(test)]
-fn grouped(hub: &Hub, root: &Path) -> Routes {
-    Routes::default()
-        .tagged(hub.report_routes().merge(enroll_routes(Closed)))
-        .either(hub.read_routes())
-        .operators(hub.sync_routes(poller(root)))
+fn agent_routes() -> Router {
+    let node = delete(|| async { StatusCode::NO_CONTENT });
+    enroll_routes(Closed).merge(Router::new().route(NODE_PATH, node))
 }
 
 #[cfg(test)]
 async fn world(name: &str, caller: Caller, operators: &str) -> World {
-    let root = scratch_origin(name).await;
+    let setup = Setup {
+        name,
+        caller,
+        operators,
+    };
+    world_with(&setup, &[WELL_BEHAVED]).await
+}
+
+/// Which controller to start: its scratch name, who calls it and which logins it admits.
+#[cfg(test)]
+struct Setup<'setup> {
+    name: &'setup str,
+    caller: Caller,
+    operators: &'setup str,
+}
+
+/// One fake agent per behaviour, each listening for the host its behaviour names.
+#[cfg(test)]
+async fn start_agents(calls: &Calls, agents: &[Behaviour]) -> Vec<AgentAddress> {
+    let mut addresses = Vec::new();
+    for behaviour in agents {
+        let fake = Fake {
+            calls: Arc::clone(calls),
+            behaviour: *behaviour,
+        };
+        let host = HostName::new(behaviour.host).unwrap();
+        addresses.push(AgentAddress::new(host, fake_agent(fake).await));
+    }
+    addresses
+}
+
+/// A controller with one fake agent per behaviour, each for the host its behaviour names.
+#[cfg(test)]
+async fn world_with(setup: &Setup<'_>, agents: &[Behaviour]) -> World {
+    let root = scratch_origin(setup.name).await;
     let calls = Calls::default();
-    let agent = fake_agent(Arc::clone(&calls)).await;
-    let address = AgentAddress::new(HostName::new("h").unwrap(), agent);
-    let hub = Hub::new(&[address]).unwrap();
+    let hub = Hub::new(&start_agents(&calls, agents).await).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let callers = Operated::new(Peer(caller), Logins::parse_list(operators).unwrap());
-    tokio::spawn(serve_controller_for(
-        listener,
-        callers,
-        grouped(&hub, &root),
-    ));
+    let logins = Logins::parse_list(setup.operators).unwrap();
+    let callers = Operated::new(Peer(setup.caller), logins);
+    let routes = hub.grouped(agent_routes(), poller(&root));
+    tokio::spawn(serve_controller_for(listener, callers, routes));
     let client = ApiClient::new(BaseUrl::new(url)).unwrap();
     World {
         root,
         calls,
         client,
+    }
+}
+
+#[cfg(test)]
+const fn ada(name: &str) -> Setup<'_> {
+    Setup {
+        name,
+        caller: ADA,
+        operators: "ada@example.com",
     }
 }
 
@@ -311,50 +387,57 @@ fn an_unreadable_commit_is_a_conflict_and_nothing_is_asked_of_agents() {
     });
 }
 
-/// How each route answers `caller`: the status read, the sync, the report of an agent and the
-/// enrolment of a sidecar.
+/// How the routes of an operator answer: the status read, the sync and the health check.
 #[cfg(test)]
-async fn statuses_for(caller: Caller, operators: &str) -> [Option<StatusCode>; 4] {
-    let name = format!("auth-{}", rand_name());
-    let world = world(&name, caller, operators).await;
-    world.commit(&GOOD).await;
+async fn operator_routes(world: &World) -> [Option<StatusCode>; 3] {
     let read = refused(&world.client.controller_status().await);
     let sync = refused(&world.client.sync(None, &SyncRequest::everything()).await);
+    let health = refused(&world.client.health().await);
+    [read, sync, health]
+}
+
+/// How the routes of an agent answer: the report, the enrolment and the deletion of a node.
+#[cfg(test)]
+async fn agent_only_routes(world: &World) -> [Option<StatusCode>; 3] {
     let report = StatusReport::new("h", "abc1234", Vec::new());
     let posted = refused(&world.client.report_status(&report).await);
     let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
     let enroll = refused(&world.client.enroll(&request).await);
-    [read, sync, posted, enroll]
+    let label = NodeLabel::new("x").unwrap();
+    let node = refused(&world.client.delete_node(&label).await);
+    [posted, enroll, node]
 }
 
+/// How each route answers `caller`: the status read, the sync, the health check, the report of an
+/// agent, the enrolment of a sidecar and the deletion of a node.
 #[cfg(test)]
-fn rand_name() -> String {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    NEXT.fetch_add(1, Ordering::Relaxed).to_string()
+async fn statuses_for(label: &str, caller: Caller, operators: &str) -> [Option<StatusCode>; 6] {
+    let world = world(&format!("auth-{label}"), caller, operators).await;
+    world.commit(&GOOD).await;
+    let [read, sync, health] = operator_routes(&world).await;
+    let [posted, enroll, node] = agent_only_routes(&world).await;
+    [read, sync, health, posted, enroll, node]
 }
 
 #[test]
-fn an_operator_reads_and_syncs_but_cannot_report_or_enroll() {
+fn an_operator_reads_syncs_and_checks_health_but_cannot_report_enroll_or_delete_nodes() {
     runtime().block_on(async {
-        let forbidden = Some(StatusCode::FORBIDDEN);
-        let seen = statuses_for(ADA, "ada@example.com").await;
-        assert_eq!(seen[0], None);
-        assert_eq!(seen[1], None);
-        assert_eq!(seen[2], forbidden);
-        assert_eq!(seen[3], forbidden);
+        let denied = Some(StatusCode::FORBIDDEN);
+        let seen = statuses_for("operator", ADA, "ada@example.com").await;
+        assert_eq!(seen, [None, None, None, denied, denied, denied]);
     });
 }
 
 #[test]
-fn an_agent_reads_reports_and_enrolls_but_cannot_sync() {
+fn an_agent_does_everything_but_sync() {
     runtime().block_on(async {
         let agent = Caller::Tagged("tag:aegis-agent");
-        let seen = statuses_for(agent, "ada@example.com").await;
-        assert_eq!(seen[0], None);
-        assert_eq!(seen[1], Some(StatusCode::FORBIDDEN));
-        assert_ne!(seen[2], Some(StatusCode::FORBIDDEN));
-        assert_ne!(seen[3], Some(StatusCode::FORBIDDEN));
+        let seen = statuses_for("agent", agent, "ada@example.com").await;
+        let [read, sync, health, posted, enroll, node] = seen;
+        assert_eq!(sync, Some(StatusCode::FORBIDDEN));
+        assert_eq!([read, health, node], [None, None, None]);
+        assert_ne!(posted, Some(StatusCode::FORBIDDEN));
+        assert_ne!(enroll, Some(StatusCode::FORBIDDEN));
     });
 }
 
@@ -362,16 +445,117 @@ fn an_agent_reads_reports_and_enrolls_but_cannot_sync() {
 fn a_person_who_is_not_listed_is_refused_everywhere() {
     runtime().block_on(async {
         let stranger = Caller::Person("eve@example.com");
-        let forbidden = Some(StatusCode::FORBIDDEN);
-        let seen = statuses_for(stranger, "ada@example.com").await;
-        assert_eq!(seen, [forbidden; 4]);
+        let seen = statuses_for("stranger", stranger, "ada@example.com").await;
+        assert_eq!(seen, [Some(StatusCode::FORBIDDEN); 6]);
     });
 }
 
 #[test]
 fn with_no_operators_configured_even_a_known_person_is_refused() {
     runtime().block_on(async {
-        let forbidden = Some(StatusCode::FORBIDDEN);
-        assert_eq!(statuses_for(ADA, "").await, [forbidden; 4]);
+        let seen = statuses_for("nobody", ADA, "").await;
+        assert_eq!(seen, [Some(StatusCode::FORBIDDEN); 6]);
+    });
+}
+
+#[test]
+fn two_syncs_of_one_stack_in_a_row_both_run_because_the_host_is_freed() {
+    runtime().block_on(async {
+        let world = world("twice", ADA, "ada@example.com").await;
+        world.commit(&GOOD).await;
+        let host = HostName::new("h").unwrap();
+        let request = SyncRequest::only("web");
+        let first = world.client.sync(Some(&host), &request).await.unwrap();
+        let second = world.client.sync(Some(&host), &request).await.unwrap();
+        assert!(first.hosts()[0].failure().is_none());
+        assert!(second.hosts()[0].failure().is_none());
+        assert_eq!(world.calls.lock().unwrap().len(), 2);
+    });
+}
+
+#[test]
+fn an_agent_that_answers_an_error_is_a_failed_host_in_a_successful_sync() {
+    runtime().block_on(async {
+        let broken = Behaviour {
+            mode: Mode::Fails,
+            ..WELL_BEHAVED
+        };
+        let world = world_with(&ada("broken"), &[broken]).await;
+        world.commit(&GOOD).await;
+        let answer = world
+            .client
+            .sync(None, &SyncRequest::everything())
+            .await
+            .unwrap();
+        assert!(answer.hosts()[0].report().is_none());
+        assert_eq!(
+            answer.hosts()[0].failure(),
+            Some("the agent answered 500 Internal Server Error")
+        );
+    });
+}
+
+#[test]
+fn one_failing_host_does_not_hide_the_other_and_hosts_come_in_name_order() {
+    runtime().block_on(async {
+        let broken = Behaviour {
+            host: "g",
+            mode: Mode::Fails,
+            ..WELL_BEHAVED
+        };
+        let world = world_with(&ada("partial"), &[WELL_BEHAVED, broken]).await;
+        world.commit(&GOOD).await;
+        let answer = world
+            .client
+            .sync(None, &SyncRequest::everything())
+            .await
+            .unwrap();
+        let names: Vec<&str> = answer.hosts().iter().map(HostSync::host).collect();
+        assert_eq!(names, ["g", "h"]);
+        assert!(answer.hosts()[0].failure().is_some());
+        assert!(answer.hosts()[1].report().is_some());
+    });
+}
+
+/// Start a sync of everything in a task of its own.
+#[cfg(test)]
+fn start_sync(
+    world: &World,
+) -> tokio::task::JoinHandle<Result<aegis_api::version_1::SyncResponse, ClientError>> {
+    let client = world.client.clone();
+    tokio::spawn(async move { client.sync(None, &SyncRequest::everything()).await })
+}
+
+/// Wait until a fake agent has been asked something.
+#[cfg(test)]
+async fn wait_for_a_call(world: &World) {
+    while world.calls.lock().unwrap().is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[test]
+fn a_sync_while_the_host_is_reconciling_says_so_instead_of_queueing() {
+    runtime().block_on(async {
+        let slow = Behaviour {
+            delay: Duration::from_millis(600),
+            ..WELL_BEHAVED
+        };
+        let world = world_with(&ada("busy"), &[slow]).await;
+        world.commit(&GOOD).await;
+        let running = start_sync(&world);
+        wait_for_a_call(&world).await;
+        let second = world
+            .client
+            .sync(None, &SyncRequest::everything())
+            .await
+            .unwrap();
+        let reason = second.hosts()[0].failure().unwrap();
+        assert!(reason.contains("already running"), "{reason}");
+        assert!(
+            running.await.unwrap().unwrap().hosts()[0]
+                .report()
+                .is_some()
+        );
     });
 }
