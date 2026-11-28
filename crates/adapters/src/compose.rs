@@ -283,16 +283,26 @@ fn is_absolute_path(device: &serde_norway::Value) -> bool {
 /// not an absolute path either.
 fn reject_bind_device(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
     let options = raw.and_then(|volume| volume.driver_opts.as_ref());
-    let Some(options) = options.filter(|options| binds_a_device(options)) else {
+    let Some(options) = options else {
         return Ok(());
     };
-    let acceptable = options.get("device").is_none_or(is_absolute_path);
+    if options.values().any(is_interpolated) {
+        return Err(ParseError::Invalid(format!(
+            "volume `{name}` interpolates a driver option (`$`): write the value out"
+        )));
+    }
+    let acceptable = !binds_a_device(options) || options.get("device").is_none_or(is_absolute_path);
     if acceptable {
         return Ok(());
     }
     Err(ParseError::Invalid(format!(
         "volume `{name}` binds a device that is not an absolute host path: use an absolute host path"
     )))
+}
+
+/// Compose interpolates driver options, so a `$` hides what the bind rules would check.
+fn is_interpolated(value: &serde_norway::Value) -> bool {
+    value.as_str().is_some_and(|text| text.contains('$'))
 }
 
 fn in_scope(scope: &str, error: &impl Display) -> ParseError {
@@ -342,6 +352,19 @@ fn reject_remote(context: &str) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// An `oci-layout://` context is a directory `BuildKit` reads from the host, so it is a path outside the rules.
+fn reject_oci_layout(contexts: &[String]) -> Result<(), ParseError> {
+    if contexts
+        .iter()
+        .any(|value| value.starts_with("oci-layout://"))
+    {
+        return Err(ParseError::Invalid(
+            "`oci-layout://` build contexts are not supported".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn detailed_build(
     context: Option<String>,
     dockerfile: Option<String>,
@@ -353,6 +376,7 @@ fn detailed_build(
     let extra = additional
         .map(RawAdditionalContexts::values)
         .unwrap_or_default();
+    reject_oci_layout(&extra)?;
     let extra = extra.into_iter().filter(|value| is_path_context(value));
     let extra = extra
         .map(DeclaredPath::new)
@@ -429,8 +453,12 @@ fn short(spec: &str) -> Result<Mount, ParseError> {
     }
 }
 
+/// The last `ro` or `rw` option wins, as in Compose.
 fn short_access(options: &str) -> Access {
-    if options.split(',').any(|option| option == "ro") {
+    let last = options
+        .split(',')
+        .rfind(|option| matches!(*option, "ro" | "rw"));
+    if last == Some("ro") {
         Access::ReadOnly
     } else {
         Access::ReadWrite

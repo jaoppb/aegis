@@ -455,3 +455,49 @@ fn plain_anchors_and_one_merge_level_are_still_accepted() {
     let text = "x-base: &base\n  restart: always\nservices:\n  app:\n    <<: *base\n    image: a\n";
     assert!(compose::parse(text).is_ok());
 }
+
+#[test]
+fn interpolated_driver_options_are_refused() {
+    for opts in [
+        "{type: '$TYPE', o: bind, device: ./x}",
+        "{type: none, o: 'bi$ND', device: ./x}",
+        "{type: none, o: bind, device: '$DEVICE'}",
+    ] {
+        let text = format!("volumes:\n  v:\n    driver_opts: {opts}\n");
+        assert!(rejection(&text).contains("interpolates"), "{opts}");
+    }
+}
+
+#[test]
+fn the_last_of_ro_and_rw_decides_the_access() {
+    let read_write = first_mount("./data:/data:ro,rw").unwrap();
+    assert!(matches!(
+        read_write,
+        Mount::Relative {
+            access: Access::ReadWrite,
+            ..
+        }
+    ));
+    let read_only = first_mount("./data:/data:rw,ro").unwrap();
+    assert!(matches!(
+        read_only,
+        Mount::Relative {
+            access: Access::ReadOnly,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn an_oci_layout_build_context_is_refused() {
+    let text = "services:\n  app:\n    build:\n      context: .\n      additional_contexts:\n        base: oci-layout:///etc\n";
+    assert!(rejection(text).contains("oci-layout"));
+}
+
+#[test]
+fn devices_and_volumes_from_are_refused() {
+    for key in ["devices: [/dev/x]", "volumes_from: ['container:x']"] {
+        let text = format!("services:\n  app:\n    {key}\n");
+        assert!(rejection(&text).contains("services.app."), "{key}");
+    }
+}

@@ -15,7 +15,7 @@ const TOP: &[&str] = &[
 ];
 
 /// Spec service keys that read no host path or file, plus the ones the model reads itself.
-/// `label_file`, `develop`, `provider` and `credential_spec` are left out on purpose.
+/// `label_file`, `develop`, `provider`, `credential_spec`, `devices` and `volumes_from` are left out on purpose.
 const SERVICE: &[&str] = &[
     "image",
     "build",
@@ -44,7 +44,6 @@ const SERVICE: &[&str] = &[
     "depends_on",
     "deploy",
     "device_cgroup_rules",
-    "devices",
     "dns",
     "dns_opt",
     "dns_search",
@@ -100,7 +99,6 @@ const SERVICE: &[&str] = &[
     "user",
     "userns_mode",
     "uts",
-    "volumes_from",
     "working_dir",
 ];
 
