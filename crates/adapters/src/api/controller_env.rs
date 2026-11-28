@@ -179,12 +179,18 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_url_with_an_at_sign_anywhere_is_refused() {
+        assert!(agents_from(Some("a=http://user:pw@h")).is_err());
+        assert!(agents_from(Some("a=http://token@h")).is_err());
+        assert!(agents_from(Some("a=http://h/path@x")).is_err());
+    }
+
+    #[test]
     fn agents_are_comma_separated_host_url_pairs() {
         let agents =
             agents_from(Some("a=http://100.64.0.1:7480, b=http://100.64.0.2:7480,")).unwrap();
         assert_eq!(agents.len(), 2);
         assert!(agents_from(None).unwrap().is_empty());
-        assert!(agents_from(Some("a=http://user:pw@h")).is_err());
         assert!(matches!(
             agents_from(Some("a")),
             Err(ServeError::Invalid { .. })

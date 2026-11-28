@@ -197,18 +197,24 @@ async fn world(name: &str) -> World {
 
 #[cfg(test)]
 async fn world_with(name: &str, behaviour: Behaviour) -> World {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let agent = Agent {
+        calls: calls.clone(),
+        behaviour,
+    };
+    world_over(name, calls, fake_agent(agent).await).await
+}
+
+/// A world whose only agent listens at `agent`.
+#[cfg(test)]
+async fn world_over(name: &str, calls: Arc<Mutex<Vec<String>>>, agent: BaseUrl) -> World {
     let root = std::env::temp_dir().join(format!("aegis-ctl-{}-{name}", std::process::id()));
     tokio::fs::remove_dir_all(&root).await.ok();
     tokio::fs::create_dir_all(root.join("origin"))
         .await
         .unwrap();
     git(&root.join("origin"), &["init", "-q", "-b", "trunk"]).await;
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let agent = Agent {
-        calls: calls.clone(),
-        behaviour,
-    };
-    let address = AgentAddress::new(HostName::new("h").unwrap(), fake_agent(agent).await);
+    let address = AgentAddress::new(HostName::new("h").unwrap(), agent);
     let hub = Hub::new(&[address]).unwrap();
     let url = serve(hub.routes()).await;
     World {
@@ -525,5 +531,37 @@ fn refused_reports_are_not_kept() {
         let status = world.status().await;
         assert_eq!(status.hosts().len(), 1);
         assert_eq!(status.hosts()[0].report(), None);
+    });
+}
+
+#[cfg(test)]
+fn reason_of(status: &ControllerStatus) -> String {
+    match status.hosts()[0].confirmation() {
+        Confirmation::Failing(reason) => reason.clone(),
+        other => panic!("not failing: {other:?}"),
+    }
+}
+
+#[test]
+fn a_refusing_agent_is_reported_by_status_without_its_address() {
+    runtime().block_on(async {
+        let world = world_with("refusing", NEVER_ANSWERS).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        let reason = reason_of(&world.failing("h").await);
+        assert_eq!(reason, "the agent answered 500 Internal Server Error");
+    });
+}
+
+#[test]
+fn an_unreachable_agent_is_reported_by_status_without_its_address() {
+    runtime().block_on(async {
+        let nowhere = BaseUrl::new("http://127.0.0.1:1");
+        let world = world_over("unreachable", Arc::default(), nowhere).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        let reason = reason_of(&world.failing("h").await);
+        assert_eq!(reason, "the agent is unreachable");
+        assert!(!reason.contains("127.0.0.1"));
     });
 }

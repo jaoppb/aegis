@@ -173,6 +173,7 @@ fn a_followed_remote_is_cloned_into_a_missing_directory_and_tracks_new_commits()
             first.as_str(),
             git(&pair.origin, &["rev-parse", "HEAD"]).await
         );
+        assert!(pair.root.join("follower/.git/aegis-managed").exists());
         let second = pair.commit("two").await;
         assert_eq!(follower.advance().await.unwrap().as_str(), second);
         let text = tokio::fs::read_to_string(pair.root.join("follower/file")).await;
