@@ -98,11 +98,11 @@ Commit the stack with its encrypted files, one stack per commit and pull request
 
 ```sh
 aegis validate                 # offline; every stack valid
-aegis diff                     # the stack is "same", and the override of an exposed stack looks right
+aegis diff                     # the stack is "same", and the override of a stack with `expose` or `node` looks right
 aegis status                   # the host confirmed the target commit and the stack is running
 ```
 
-Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack with `expose` or `node` and a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again.
+Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net` (a `node` stack, at `<hostname>.<tailnet>.ts.net` on its own ports), the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack with `expose` or `node` and a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again.
 
 ## Rolling back
 
