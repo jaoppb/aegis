@@ -123,14 +123,32 @@ fn structured_is_age_only(text: &str) -> bool {
     })
 }
 
+/// Whether `rest`, the flattened key after `key_groups__list_`, is `<digits>__map_age` followed by
+/// nothing or by `__list_...`: a key group whose only key is `age`. `sops` splits a flattened key
+/// on `__map_` and `__list_` only, so a looser reading of `__` would let a group it builds from
+/// `key_groups__map_hc_vault__map_age` pass.
+fn key_group_is_age_only(rest: &str) -> bool {
+    let Some((index, tail)) = rest.split_once("__map_age") else {
+        return false;
+    };
+    let numbered = !index.is_empty() && index.chars().all(|digit| digit.is_ascii_digit());
+    numbered && (tail.is_empty() || tail.starts_with("__list_"))
+}
+
+/// Whether the first token of the flattened key `key`, up to the first `__map_` or `__list_`, is a
+/// metadata name `sops` writes for age.
+fn first_token_is_metadata(key: &str) -> bool {
+    let first = key.split("__map_").next().unwrap_or_default();
+    let first = first.split("__list_").next().unwrap_or_default();
+    METADATA_KEYS.contains(&first)
+}
+
 /// Whether the flattened metadata key `key` (lowercase, without any `sops_` prefix) is one that
-/// `sops` writes for age: a known metadata key, or `key_groups__list_<n>__map_age__...`.
+/// `sops` writes for age: a known metadata name as its first token, or a `key_groups` entry whose
+/// group holds only `age`.
 fn flat_key_is_age_only(key: &str) -> bool {
-    let mut parts = key.split("__");
-    match parts.next().unwrap_or_default() {
-        "key_groups" => parts.nth(1) == Some("map_age"),
-        name => METADATA_KEYS.contains(&name),
-    }
+    let group = key.strip_prefix("key_groups__list_");
+    group.map_or_else(|| first_token_is_metadata(key), key_group_is_age_only)
 }
 
 /// Dotenv: every `sops_<key>=` entry must be age-only metadata. Other entries are the file's data.
@@ -147,7 +165,7 @@ fn dotenv_is_age_only(text: &str) -> bool {
 /// these (its values are `ENC[...]`), so a file with any is refused.
 fn is_plain_ini_line(line: &str) -> bool {
     !line.ends_with('\\')
-        && !["\"\"\"", "\'\'\'", "`"]
+        && !["\"\"\"", "'''", "`"]
             .iter()
             .any(|quote| line.contains(quote))
 }
@@ -156,7 +174,8 @@ fn is_plain_ini_line(line: &str) -> bool {
 /// A header followed by anything (`[sops] ; c`, `[sops]x`) is read differently by different
 /// readers, so it has no name here.
 fn section_name(line: &str) -> Option<&str> {
-    let name = line.strip_prefix('[')?.strip_suffix(']')?;
+    let inner = line.strip_prefix('[').unwrap_or(line);
+    let name = inner.strip_suffix(']')?;
     (!name.contains(']')).then_some(name.trim())
 }
 

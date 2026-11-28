@@ -267,6 +267,7 @@ fn an_ini_header_with_trailing_text_or_a_joined_line_cannot_hide_a_group() {
         assert_refused("e.ini", "[sops]\nmac = `x\n[a]\n`\nhckms__x = 1\n").await;
         assert_refused("f.ini", "[a]b]\nx = 1\n").await;
         assert_refused("g.ini", "[sops]\nhckms__x = 1\n[a]\nx = 1\n").await;
+        assert_refused("h.ini", "[sops]\nmac = '''x\n[a]\n'''\nhckms__x = 1\n").await;
     });
 }
 
@@ -277,6 +278,16 @@ fn flat_keys_are_trimmed_and_key_groups_need_an_age_group() {
         assert_refused("b.env", "A=1\nsops_bogus = 1\n").await;
         assert_refused("c.env", "A=1\nsops_key_groups=1\n").await;
         assert_refused("d.env", "A=1\nsops_key_groups__list_0=1\n").await;
+        assert_refused("e.env", "A=1\nsops_key_groups__map_hc_vault__map_age=x\n").await;
+        let nested = "sops_key_groups__list_0__map_age__x__map_hc_vault__list_0__map_created_at=t";
+        assert_refused("f.env", &format!("A=1\n{nested}\n")).await;
+        assert_refused("g.env", "A=1\nsops_mac__x=1\n").await;
+        assert_refused("h.ini", "[sops]\nkey_groups__map_hc_vault__map_age = x\n").await;
+        assert_refused(
+            "i.ini",
+            "[sops]\nkey_groups__list_x__map_age__list_0__map_enc = e\n",
+        )
+        .await;
     });
 }
 
@@ -333,6 +344,8 @@ fn every_metadata_key_and_age_only_key_groups_are_accepted() {
         let groups = "A=ENC[x]\nsops_key_groups__list_0__map_age__list_0__map_recipient=age1a\nsops_key_groups__list_1__map_age__list_0__map_enc=e\nsops_shamir_threshold=2\nsops_lastmodified=t\nsops_mac=m\n";
         accepted("groups.env", groups).await;
         accepted("data.env", "APP_KMS__ARN=x\nsops_mac=m\n").await;
+        accepted("after.ini", "[sops]\nmac = m\n[a]\nkms__x = 1\n").await;
+        accepted("quotes.ini", "[a]\np = C:\\x\nq = \"a\"\nr = it's\n[sops]\nmac = m\n").await;
         accepted("notes.ini", "[sops]\n; note\n\n# n\nmac = m\n").await;
         let ini = "[a]\nkms__x = data\n\n[sops]\nkey_groups__list_0__map_age__list_0__map_recipient = a\nshamir_threshold = 2\nmac = m\nversion = 3\n";
         accepted("groups.ini", ini).await;
