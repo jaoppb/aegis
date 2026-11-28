@@ -99,7 +99,7 @@ async fn make_private_directory(path: &Path) -> Result<(), StoreError> {
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(|cause| io_failure("inspect the secret directory", &cause))?;
-    let private = metadata.mode() & 0o17_7777 == DIRECTORY | 0o700;
+    let private = metadata.mode() & 0o17_0777 == DIRECTORY | 0o700;
     let owned = metadata.uid() == own_uid().await?;
     (private && owned)
         .then_some(())

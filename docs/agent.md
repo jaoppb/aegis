@@ -10,7 +10,7 @@ The agent reads its configuration from the environment and exits at start-up whe
 |----------|----------|---------|
 | `AEGIS_LISTEN` | yes | Socket address to listen on, normally the node's tailnet address (see [tailscale-acl.md](tailscale-acl.md)). |
 | `AEGIS_HOST` | yes | The host this agent deploys: the directory name under `hosts/`. |
-| `AEGIS_CHECKOUT` | yes | Path of a git working tree of the repository, cloned beforehand with an `origin` remote. |
+| `AEGIS_CHECKOUT` | yes | Absolute path of a git working tree of the repository, cloned beforehand with an `origin` remote. |
 | `AEGIS_CONTROLLER` | yes | Base URL of the controller API, such as `http://100.64.0.2:7480`. |
 | `AEGIS_RESERVED` | no | Comma-separated names of the reserved `aegis/` stacks this host deploys. Empty by default, so nothing under `aegis/` runs unless a host opts in. |
 

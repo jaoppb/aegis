@@ -462,3 +462,72 @@ fn a_link_that_leaves_the_stack_directory_is_refused() {
         clean_up(&root).await;
     });
 }
+
+/// A checkout with a stack `web` and a sibling stack `other`, under a scratch root.
+#[cfg(test)]
+async fn checkout_with_stacks(root: &std::path::Path) -> (PathBuf, PathBuf) {
+    let checkout = root.join("checkout");
+    let stack = checkout.join("hosts/host/web");
+    tokio::fs::create_dir_all(&stack).await.unwrap();
+    tokio::fs::create_dir_all(checkout.join("hosts/host/other"))
+        .await
+        .unwrap();
+    (checkout, stack)
+}
+
+#[test]
+fn a_link_that_stays_inside_the_stack_is_followed_and_the_real_path_is_decrypted() {
+    runtime().block_on(async {
+        let root = root("inside");
+        let (checkout, stack) = checkout_with_stacks(&root).await;
+        tokio::fs::create_dir_all(stack.join("real")).await.unwrap();
+        tokio::fs::write(stack.join("real/db.env"), "sealed")
+            .await
+            .unwrap();
+        tokio::fs::symlink("real", stack.join("sub")).await.unwrap();
+        let files = [("db.env", Ok("A=1\n"))];
+        let compose = decorated_in(&checkout, &TmpfsStore::at(root.join("store")), &files);
+        compose.converge(&with_env("sub/db.env")).await.unwrap();
+        assert_eq!(compose.seen()[0].workspace["env-app-0"], "A=1\n");
+        clean_up(&root).await;
+    });
+}
+
+#[test]
+fn a_stack_directory_that_is_itself_a_link_is_confined_to_its_real_path() {
+    runtime().block_on(async {
+        let root = root("stacklink");
+        let (checkout, stack) = checkout_with_stacks(&root).await;
+        let moved = checkout.join("hosts/host/moved");
+        tokio::fs::rename(&stack, &moved).await.unwrap();
+        tokio::fs::symlink("moved", &stack).await.unwrap();
+        tokio::fs::write(moved.join("db.env"), "sealed")
+            .await
+            .unwrap();
+        let files = [("db.env", Ok("A=1\n"))];
+        let compose = decorated_in(&checkout, &TmpfsStore::at(root.join("store")), &files);
+        assert!(compose.converge(&with_env("db.env")).await.is_ok());
+        clean_up(&root).await;
+    });
+}
+
+#[test]
+fn something_that_is_not_a_regular_file_is_refused() {
+    runtime().block_on(async {
+        let root = root("directory");
+        let (checkout, stack) = checkout_with_stacks(&root).await;
+        tokio::fs::create_dir_all(stack.join("db.env"))
+            .await
+            .unwrap();
+        let files = [("db.env", Ok("A=1\n"))];
+        let compose = decorated_in(&checkout, &TmpfsStore::at(root.join("store")), &files);
+        let message = compose
+            .converge(&with_env("db.env"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("regular file"), "{message}");
+        assert!(compose.seen().is_empty());
+        clean_up(&root).await;
+    });
+}

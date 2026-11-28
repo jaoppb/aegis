@@ -172,3 +172,71 @@ fn a_file_that_names_a_key_group_other_than_age_is_refused_without_running_sops(
         assert_refused("s.ini", ini).await;
     });
 }
+
+#[test]
+fn the_check_cannot_be_hidden_by_case_documents_merge_keys_duplicates_or_key_groups() {
+    runtime().block_on(async {
+        assert_refused(
+            "a.json",
+            r#"{"sops": {"HC_VAULT": [{"vault_address": "x"}]}}"#,
+        )
+        .await;
+        assert_refused("b.yaml", "sops: {Kms: [{arn: x}]}\n---\nb: 1\n").await;
+        assert_refused(
+            "c.yaml",
+            "sops:\n  <<: *g\n  azure_kv:\n    - vault_url: x\n",
+        )
+        .await;
+        assert_refused("d.json", r#"{"sops": {"pgp": null, "pgp": [{"fp": "A"}]}}"#).await;
+        let nested =
+            "sops:\n  key_groups:\n    - age: []\n      hc_vault:\n        - vault_address: x\n";
+        assert_refused("e.yaml", nested).await;
+        assert_refused(
+            "f.env",
+            "A=1\nsops_key_groups__list_0__map_hc_vault__list_0__map_vault_address=x\n",
+        )
+        .await;
+    });
+}
+
+#[cfg(test)]
+async fn accepted(name: &str, text: &str) {
+    let sandbox = Sandbox::new(name, 0).await;
+    let path = sandbox.root.join(name);
+    tokio::fs::write(&path, text).await.unwrap();
+    let file = HostPath::new(path.display().to_string()).unwrap();
+    sandbox.decryptor().decrypt(&file).await.unwrap();
+    assert!(
+        tokio::fs::try_exists(sandbox.log()).await.unwrap(),
+        "{name}: sops did not run"
+    );
+}
+
+#[test]
+fn real_age_only_files_are_accepted_including_the_empty_groups_older_sops_wrote() {
+    runtime().block_on(async {
+        let yaml = "a: ENC[AES256_GCM,data:aA==,iv:x=,tag:y==,type:str]\nsops:\n    age:\n        - recipient: age1abc\n          enc: |\n            -----BEGIN AGE ENCRYPTED FILE-----\n    mac: ENC[AES256_GCM,data:b,iv:c,tag:d,type:str]\n    version: 3.13.3\n";
+        let old = "sops:\n    kms: null\n    gcp_kms: null\n    azure_kv: []\n    hc_vault: ~\n    pgp: null\n    age:\n        - recipient: age1abc\n    version: 3.7.3\n";
+        let json = r#"{"a": "ENC[x]", "sops": {"kms": null, "pgp": [], "age": [{"recipient": "age1abc"}], "version": "3.13.3"}}"#;
+        let dotenv = "A=ENC[AES256_GCM,data:aA==,iv:x=,tag:y==,type:str]\nsops_age__list_0__map_recipient=age1abc\nsops_mac=ENC[x]\nsops_version=3.13.3\n";
+        let ini = "[a]\nx = ENC[x]\n\n[sops]\nage__list_0__map_recipient = age1abc\nmac = ENC[x]\nversion = 3.13.3\n";
+        accepted("ok.yaml", yaml).await;
+        accepted("old.yaml", old).await;
+        accepted("ok.json", json).await;
+        accepted("ok.env", dotenv).await;
+        accepted("ok.ini", ini).await;
+    });
+}
+
+#[cfg(test)]
+async fn refuse_every_group() {
+    for group in ["kms", "gcp_kms", "azure_kv", "hc_vault", "pgp"] {
+        assert_refused("g.env", &format!("A=1\nsops_{group}__list_0__map_x=y\n")).await;
+        assert_refused("g.yaml", &format!("sops:\n  {group}:\n    - x: y\n")).await;
+    }
+}
+
+#[test]
+fn every_foreign_key_group_is_refused_in_the_yaml_and_dotenv_forms() {
+    runtime().block_on(refuse_every_group());
+}

@@ -85,16 +85,20 @@ where
 {
     let commit = CommitSha::new(request.commit())
         .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
-    // The reconcile runs in its own task: a controller that hangs up cannot cancel it half way,
-    // which would skip removing the decrypted files.
+    // The reconcile runs in its own task, so dropping this handler (a transport that cancels on
+    // hang-up, or a timeout layer added later) cannot stop it half way and skip removing the
+    // decrypted files. The HTTP/1 server used today keeps running the handler anyway.
     let worker = Arc::clone(&agent);
     let task = tokio::spawn(async move {
         let _turn = worker.turn.lock().await;
         worker.reconciler.reconcile(commit).await
     });
-    let done = task
-        .await
-        .map_err(|failure| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, &failure.to_string()))?;
+    let done = task.await.map_err(|_| {
+        Refusal::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &"the reconcile task failed",
+        )
+    })?;
     let report =
         status_report(&done.map_err(|error| Refusal::new(StatusCode::BAD_GATEWAY, &error))?);
     // Reporting is best effort: the controller also gets the report as the answer.
@@ -137,6 +141,15 @@ fn reserved_from(variable: Option<&str>) -> Result<ReservedStacks, ServeError> {
         .map(ReservedStacks::new)
 }
 
+/// `AEGIS_CHECKOUT`, which the secret paths and Docker bind mounts are built from, so it must be
+/// absolute.
+fn absolute_checkout(value: &str) -> Result<PathBuf, ServeError> {
+    let path = PathBuf::from(value);
+    path.is_absolute()
+        .then_some(path)
+        .ok_or_else(|| invalid(CHECKOUT_VAR, &"must be an absolute path"))
+}
+
 impl Settings {
     fn from_env() -> Result<Self, ServeError> {
         let listen = listen_from(std::env::var(LISTEN_VAR))?;
@@ -147,7 +160,7 @@ impl Settings {
                 host,
                 reserved: reserved_from(std::env::var(RESERVED_VAR).ok().as_deref())?,
             },
-            checkout: PathBuf::from(required(CHECKOUT_VAR)?),
+            checkout: absolute_checkout(&required(CHECKOUT_VAR)?)?,
             controller: BaseUrl::new(required(CONTROLLER_VAR)?),
         })
     }

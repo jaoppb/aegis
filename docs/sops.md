@@ -12,11 +12,11 @@ For each stack it deploys, the agent decrypts:
 
 Validation already rejects a stack when any of these files is not SOPS-encrypted (a format check, no decryption). At deploy time the agent runs `sops decrypt` on each file, writes the plaintext to a private directory on **tmpfs**, and runs Compose with a generated override file that points `env_file` and `secrets` at those copies (the decrypted `.env` is passed with `--env-file`). Compose and Docker never see the encrypted files, and nothing is written to the repository or to persistent disk.
 
-The plaintext is removed as soon as `docker compose up` returns, whether it succeeded or failed, and a reconcile continues even if the controller hangs up on the request. The agent also removes anything a crashed run left behind when it starts. A stack without any such file creates no directory and never runs `sops`.
+The plaintext is removed as soon as `docker compose up` returns, whether it succeeded or failed. The agent also removes anything a crashed run left behind when it starts. A stack without any such file creates no directory and never runs `sops`.
 
 The file format is taken from the extension: `.json`, `.yaml`/`.yml` and `.ini` use that format, and every other name, such as `.env` or `db.env`, is a dotenv file. So **every secret must be dotenv, JSON, YAML or INI content encrypted in that format**: a file `sops` encrypted as `binary` (its default for an unknown name, such as `cert.pem`) passes the format check but fails when the agent decrypts it as dotenv. To ship a PEM or another raw value, put it in a YAML or JSON file and encrypt that.
 
-Only **age** recipients are accepted. A file whose `sops` metadata also lists `kms`, `gcp_kms`, `azure_kv`, `hc_vault` or `pgp` is refused without running `sops`, because those key groups make `sops` call out to addresses or programs the file's author chose.
+Only **age** recipients are accepted. A file that names `kms`, `gcp_kms`, `azure_kv`, `hc_vault` or `pgp` as a key (in any case, at any depth, including under `key_groups`, or as a flattened `sops_<group>__` entry) is refused without running `sops`, because those key groups make `sops` call out to addresses or programs the file's author chose. The check reads tokens, so it also refuses a YAML or JSON secret that has a data key of that name followed by a value.
 
 The files must live inside the stack's own directory: the agent resolves every link first and refuses a file that leaves the directory (a committed `sub -> ../other-stack`) or is not a regular file.
 
@@ -24,7 +24,7 @@ The files must live inside the stack's own directory: the agent resolves every l
 
 A file that is not encrypted to this host's key, a missing required file, or a missing `sops` fails **only that stack**: its status is `failed` and the others still deploy. The message names the file and the exit status or launch error, never the output of `sops` (which can carry key material) and never a decrypted value. If Compose fails, the whole decrypted file and the value of each `NAME=value` line are removed from its message; a single value inside a JSON, YAML or INI secret file is not, so do not rely on the message to hide those.
 
-The decrypted `.env` may not set `COMPOSE_*` or `DOCKER_*` variables, nor `PATH`, `HOME`, `XDG_RUNTIME_DIR` or `SSL_CERT_FILE`, which Compose or Docker read: the stack is refused with the variable name (never its value), so a secret cannot redirect Docker. It is read the way Compose reads it (`export NAME=`, `NAME: value`, a BOM, a bare `NAME` line), and a line that does not start with a plain name (`[A-Za-z0-9_.-]+`), which includes the continuation lines of a multi-line quoted value, refuses the stack, so keep multi-line values in a secret file instead. Variables in an `env_file` only reach the container, so they are not restricted.
+The decrypted `.env` may not set `COMPOSE_*` or `DOCKER_*` variables, nor `PATH`, `HOME`, `XDG_RUNTIME_DIR` or `SSL_CERT_FILE`, which Compose or Docker read: the stack is refused with the variable name (never its value), so a secret cannot redirect Docker. It is read the way Compose reads it (`export NAME=`, `NAME: value`, a BOM, a bare `NAME` line), and a line that does not start with a plain name (`[A-Za-z0-9_.-]+`), which includes the continuation lines of a multi-line quoted value, refuses the stack, so a continuation line usually fails this check: keep multi-line values in a secret file instead. Variables in an `env_file` only reach the container, so they are not restricted.
 
 ## The agent's key
 

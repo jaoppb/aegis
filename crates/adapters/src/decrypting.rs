@@ -166,8 +166,10 @@ impl<Decryptor: SecretDecryptor + Sync, Store: SecretStore + Sync> Session<'_, D
 /// decrypt another stack's file, or any file of the host, into this stack. A file that does not
 /// exist is left for the decryptor to report.
 async fn confine(stack: &Path, source: HostPath) -> Result<HostPath, Reason> {
-    let Ok(resolved) = tokio::fs::canonicalize(source.as_str()).await else {
-        return Ok(source);
+    let resolved = match tokio::fs::canonicalize(source.as_str()).await {
+        Ok(resolved) => resolved,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return Ok(source),
+        Err(_) => return Err(Reason::new(&"cannot resolve the file")),
     };
     let regular = tokio::fs::metadata(&resolved).await;
     if !resolved.starts_with(stack)

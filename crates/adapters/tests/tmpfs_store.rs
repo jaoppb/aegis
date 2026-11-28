@@ -145,3 +145,62 @@ fn a_root_that_others_can_enter_is_refused() {
         tokio::fs::remove_dir_all(&root).await.ok();
     });
 }
+
+#[test]
+fn a_project_directory_with_loose_permissions_is_refused() {
+    runtime().block_on(async {
+        let root = root("loose");
+        let store = TmpfsStore::at(&root);
+        store.place(&slot(), &Secret::new("A=1")).await.unwrap();
+        let open = std::fs::Permissions::from_mode(0o750);
+        tokio::fs::set_permissions(root.join("aegis-web"), open)
+            .await
+            .unwrap();
+        let error = store.place(&slot(), &Secret::new("A=2")).await.unwrap_err();
+        assert!(error.to_string().contains("private directory"), "{error}");
+        tokio::fs::remove_dir_all(&root).await.ok();
+    });
+}
+
+#[test]
+fn a_link_planted_at_the_file_is_replaced_and_its_target_left_alone() {
+    runtime().block_on(async {
+        let root = root("filelink");
+        let target = root.with_extension("target");
+        tokio::fs::write(&target, "untouched").await.unwrap();
+        let store = TmpfsStore::at(&root);
+        store.place(&slot(), &Secret::new("A=1")).await.unwrap();
+        let file = root.join("aegis-web/env-app-0");
+        tokio::fs::remove_file(&file).await.unwrap();
+        tokio::fs::symlink(&target, &file).await.unwrap();
+        store.place(&slot(), &Secret::new("A=2")).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&target).await.unwrap(),
+            "untouched"
+        );
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "A=2");
+        let mode = tokio::fs::metadata(&file)
+            .await
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        tokio::fs::remove_dir_all(&root).await.ok();
+        tokio::fs::remove_file(&target).await.ok();
+    });
+}
+
+#[test]
+fn placing_the_same_slot_again_replaces_the_content() {
+    runtime().block_on(async {
+        let root = root("again");
+        let store = TmpfsStore::at(&root);
+        store.place(&slot(), &Secret::new("first")).await.unwrap();
+        let path = store.place(&slot(), &Secret::new("second")).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(path.as_str()).await.unwrap(),
+            "second"
+        );
+        tokio::fs::remove_dir_all(&root).await.ok();
+    });
+}
