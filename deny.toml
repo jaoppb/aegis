@@ -8,6 +8,10 @@ all-features = true
 allow = [
     "Apache-2.0",
     "BSD-3-Clause",
+    # rustls and aws-lc (reqwest TLS, #18): ISC for the crypto and webpki crates, CDLA-Permissive-2.0
+    # for the bundled webpki root certificate data.
+    "CDLA-Permissive-2.0",
+    "ISC",
     "MIT",
     "Unicode-3.0",
 ]
