@@ -12,7 +12,7 @@ use aegis_adapters::api::{
 };
 use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
-    EnrollRequest, HostSync, NODE_PATH, RECONCILE_PATH, ReconcileRequest, SidecarVolume,
+    EnrollRequest, HostSync, NODE_PATH, RECONCILIATIONS_PATH, ReconcileRequest, SidecarVolume,
     StackState, StackStatus, StatusReport, SyncRequest,
 };
 use aegis_application::{
@@ -146,7 +146,7 @@ async fn answer(
 #[cfg(test)]
 async fn fake_agent(fake: Fake) -> BaseUrl {
     let app = Router::new()
-        .route(RECONCILE_PATH, post(answer))
+        .route(RECONCILIATIONS_PATH, post(answer))
         .with_state(fake);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));

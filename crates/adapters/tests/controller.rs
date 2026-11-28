@@ -1,5 +1,5 @@
 //! The controller end to end: a real git origin, the polling adapters, the status routes on a real
-//! socket and a fake agent that answers `POST /v1/reconcile`.
+//! socket and a fake agent that answers `POST /v1/reconciliations`.
 
 use std::future::{Future, ready};
 use std::path::{Path, PathBuf};
@@ -11,8 +11,8 @@ use aegis_adapters::api::{
 };
 use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
-    Agent as Wire, Confirmation, ControllerStatus, EnrollRequest, HostStatus, RECONCILE_PATH,
-    ReconcileRequest, STATUS_PATH, SidecarVolume, StackState, StackStatus, StatusReport,
+    Agent as Wire, Confirmation, ControllerStatus, EnrollRequest, HostStatus, RECONCILIATIONS_PATH,
+    ReconcileRequest, SidecarVolume, StackState, StackStatus, StatusReport, host_status_path,
 };
 use aegis_application::{
     Caller, EnrollError, EnrollmentRequest, Grant, PeerAddress, Poller, Reason, Repository,
@@ -190,7 +190,7 @@ async fn answer(
 #[cfg(test)]
 async fn fake_agent(agent: Agent) -> BaseUrl {
     let app = Router::new()
-        .route(RECONCILE_PATH, post(answer))
+        .route(RECONCILIATIONS_PATH, post(answer))
         .with_state(agent);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
@@ -364,9 +364,9 @@ fn a_host_of_the_repository_without_an_agent_is_listed_as_unmapped() {
 
 #[cfg(test)]
 async fn post_report(world: &World, report: &StatusReport) -> StatusCode {
-    let url = format!("{}{STATUS_PATH}", world.url);
+    let url = format!("{}{}", world.url, host_status_path(report.host()));
     let client = reqwest::Client::new();
-    client.post(url).json(report).send().await.unwrap().status()
+    client.put(url).json(report).send().await.unwrap().status()
 }
 
 #[test]

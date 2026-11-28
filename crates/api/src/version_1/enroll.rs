@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The path of the enrolment endpoint, served by the controller.
-pub const ENROLL_PATH: &str = "/v1/enroll";
+pub const ENROLLMENTS_PATH: &str = "/v1/enrollments";
 
 /// What the agent found in the sidecar's state volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,7 +18,7 @@ pub enum SidecarVolume {
     Populated,
 }
 
-/// The body of `POST /v1/enroll`.
+/// The body of `POST /v1/enrollments`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollRequest {
@@ -82,7 +82,7 @@ impl EnrollRequest {
     }
 }
 
-/// The answer of `POST /v1/enroll`. The key is a secret: `Debug` hides it.
+/// The answer of `POST /v1/enrollments`. The key is a secret: `Debug` hides it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollResponse {

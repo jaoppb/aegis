@@ -189,7 +189,7 @@ async fn post_status(
 ) -> (StatusCode, Log) {
     let served = controller(peer, failing).await;
     let client = reqwest::Client::new();
-    let call = client.post(format!("{}/v1/enroll", served.root));
+    let call = client.post(format!("{}/v1/enrollments", served.root));
     let answer = call
         .header("content-type", "application/json")
         .body(body.to_owned())

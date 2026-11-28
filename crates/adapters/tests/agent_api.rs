@@ -1,4 +1,4 @@
-//! `POST /v1/reconcile` on a real socket: admission, validation of the body, the answer and the
+//! `POST /v1/reconciliations` on a real socket: admission, validation of the body, the answer and the
 //! report sent to the controller.
 
 use std::future::{Future, ready};
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{ApiClient, ClientError, reconcile_routes, serve_agent};
-use aegis_api::version_1::{ReconcileRequest, STATUS_PATH, StackState, StatusReport};
+use aegis_api::version_1::{HOST_STATUS_PATH, ReconcileRequest, StackState, StatusReport};
 use aegis_application::{
     GitError, PeerAddress, Reason, Reconcile, ReconcileError, WhoIs, WhoIsError,
 };
@@ -15,7 +15,7 @@ use aegis_domain::{
     StackReport, TailnetTag, TailnetTags,
 };
 use axum::extract::State;
-use axum::routing::post;
+use axum::routing::put;
 use axum::{Json, Router};
 use reqwest::StatusCode;
 use tokio::net::TcpListener;
@@ -78,7 +78,7 @@ async fn controller() -> (BaseUrl, Arc<Mutex<Vec<StatusReport>>>) {
         ready(StatusCode::ACCEPTED)
     };
     let app = Router::new()
-        .route(STATUS_PATH, post(handler))
+        .route(HOST_STATUS_PATH, put(handler))
         .with_state(received.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
@@ -89,6 +89,7 @@ async fn controller() -> (BaseUrl, Arc<Mutex<Vec<StatusReport>>>) {
 #[cfg(test)]
 struct Running {
     client: ApiClient,
+    base: String,
     runs: Arc<Mutex<Vec<String>>>,
     reports: Arc<Mutex<Vec<StatusReport>>>,
 }
@@ -96,9 +97,10 @@ struct Running {
 #[cfg(test)]
 async fn agent(caller: Option<&'static str>) -> Running {
     let (controller_url, reports) = controller().await;
-    let (client, runs) = agent_for(caller, None, controller_url).await;
+    let (client, runs, base) = agent_for(caller, None, controller_url).await;
     Running {
         client,
+        base,
         runs,
         reports,
     }
@@ -110,7 +112,7 @@ async fn agent_for(
     caller: Option<&'static str>,
     failure: Option<&'static str>,
     controller_url: BaseUrl,
-) -> (ApiClient, Arc<Mutex<Vec<String>>>) {
+) -> (ApiClient, Arc<Mutex<Vec<String>>>, String) {
     let runs = Arc::new(Mutex::new(Vec::new()));
     let fixed = Fixed {
         runs: runs.clone(),
@@ -118,9 +120,9 @@ async fn agent_for(
     };
     let routes = reconcile_routes(fixed, ApiClient::new(controller_url).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
+    let root = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(serve_agent(listener, Who(caller), routes));
-    (ApiClient::new(base).unwrap(), runs)
+    (ApiClient::new(BaseUrl::new(&root)).unwrap(), runs, root)
 }
 
 #[cfg(test)]
@@ -223,7 +225,7 @@ fn a_commit_that_is_not_hex_is_refused_before_anything_runs() {
 fn a_failed_checkout_is_a_bad_gateway() {
     runtime().block_on(async {
         let (dead, _) = controller().await;
-        let (client, _) =
+        let (client, ..) =
             agent_for(Some("tag:aegis-controller"), Some("no such commit"), dead).await;
         let result = client.reconcile(&ReconcileRequest::new("abc1234")).await;
         assert!(matches!(
@@ -237,12 +239,24 @@ fn a_failed_checkout_is_a_bad_gateway() {
 fn an_unreachable_controller_does_not_fail_the_reconcile() {
     runtime().block_on(async {
         let nowhere = BaseUrl::new("http://127.0.0.1:1");
-        let (client, runs) = agent_for(Some("tag:aegis-controller"), None, nowhere).await;
+        let (client, runs, _) = agent_for(Some("tag:aegis-controller"), None, nowhere).await;
         let answer = client
             .reconcile(&ReconcileRequest::new("abc1234"))
             .await
             .unwrap();
         assert_eq!(answer.commit(), "abc1234");
         assert_eq!(*runs.lock().unwrap(), ["abc1234"]);
+    });
+}
+
+#[test]
+fn the_verb_path_of_the_old_reconcile_is_gone() {
+    runtime().block_on(async {
+        let running = agent(Some("tag:aegis-controller")).await;
+        let url = format!("{}/v1/reconcile", running.base);
+        let body = ReconcileRequest::new("abc1234");
+        let answer = reqwest::Client::new().post(url).json(&body).send().await;
+        assert_eq!(answer.unwrap().status(), StatusCode::NOT_FOUND);
+        assert!(running.runs.lock().unwrap().is_empty());
     });
 }

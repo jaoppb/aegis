@@ -1,9 +1,9 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{
-    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health,
-    MAX_REPLY_BYTES, NODE_GONE, RECONCILE_PATH, ReconcileRequest, STATUS_PATH, SYNCS_PATH,
-    StatusReport, SyncRequest, SyncResponse, host_syncs_path, node_path,
+    ControllerStatus, ENROLLMENTS_PATH, EnrollRequest, EnrollResponse, FLEET_PATH, HEALTH_PATH,
+    Health, MAX_REPLY_BYTES, NODE_GONE, RECONCILIATIONS_PATH, ReconcileRequest, SYNCS_PATH,
+    StatusReport, SyncRequest, SyncResponse, host_status_path, host_syncs_path, node_path,
 };
 use std::time::Duration;
 
@@ -65,7 +65,7 @@ impl ApiClient {
     ///
     /// The same as [`ApiClient::health`].
     pub async fn controller_status(&self) -> Result<ControllerStatus, ClientError> {
-        let response = self.http.get(self.base.join(STATUS_PATH)).send().await?;
+        let response = self.http.get(self.base.join(FLEET_PATH)).send().await?;
         Ok(accepted(response)?.json().await?)
     }
 
@@ -88,7 +88,10 @@ impl ApiClient {
     /// The same as [`ApiClient::health`], and [`ClientError::TooLarge`] for an answer beyond the
     /// cap.
     pub async fn reconcile(&self, request: &ReconcileRequest) -> Result<StatusReport, ClientError> {
-        let call = self.http.post(self.base.join(RECONCILE_PATH)).json(request);
+        let call = self
+            .http
+            .post(self.base.join(RECONCILIATIONS_PATH))
+            .json(request);
         let response = accepted(call.timeout(RECONCILE_TIMEOUT).send().await?)?;
         capped_json(response).await
     }
@@ -120,7 +123,8 @@ impl ApiClient {
     ///
     /// The same as [`ApiClient::health`].
     pub async fn report_status(&self, report: &StatusReport) -> Result<(), ClientError> {
-        self.post(STATUS_PATH, report).await.map(drop)
+        let url = self.base.join(&host_status_path(report.host()));
+        accepted(self.http.put(url).json(report).send().await?).map(drop)
     }
 
     /// Ask the controller to enrol the node of `request`.
@@ -129,7 +133,7 @@ impl ApiClient {
     ///
     /// The same as [`ApiClient::health`].
     pub async fn enroll(&self, request: &EnrollRequest) -> Result<EnrollResponse, ClientError> {
-        let response = self.post(ENROLL_PATH, request).await?;
+        let response = self.post(ENROLLMENTS_PATH, request).await?;
         Ok(response.json().await?)
     }
 

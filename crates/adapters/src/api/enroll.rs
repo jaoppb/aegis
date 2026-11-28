@@ -1,9 +1,9 @@
-//! `POST /v1/enroll`: the controller's side, which answers an agent's enrolment request, and the
-//! client an agent uses to ask it.
+//! `POST /v1/enrollments`: the controller's side, which answers an agent's enrolment request, and
+//! the client an agent uses to ask it.
 
 use std::sync::Arc;
 
-use aegis_api::version_1::{ENROLL_PATH, EnrollRequest, EnrollResponse, SidecarVolume};
+use aegis_api::version_1::{ENROLLMENTS_PATH, EnrollRequest, EnrollResponse, SidecarVolume};
 use aegis_application::{
     Caller, EnrollError, Enrolled, Enroller, EnrollmentRequest, Grant, SidecarEnroller,
     SidecarIdentity, StateVolume, TagError,
@@ -25,7 +25,7 @@ struct Gated<Enrol> {
     binding: Binding,
 }
 
-/// The `POST /v1/enroll` route: answer an agent's request with `enroller`.
+/// The `POST /v1/enrollments` route: answer an agent's request with `enroller`.
 ///
 /// `binding` first checks the request against the caller's host and the desired state. The route
 /// is meant to be served behind the tag check of the controller.
@@ -34,7 +34,7 @@ where
     Enrol: SidecarEnroller + Send + Sync + 'static,
 {
     Router::new()
-        .route(ENROLL_PATH, post(enroll::<Enrol>))
+        .route(ENROLLMENTS_PATH, post(enroll::<Enrol>))
         .with_state(Arc::new(Gated { enroller, binding }))
 }
 
@@ -194,8 +194,8 @@ pub(super) struct EnrollDesks {
 }
 
 impl EnrollDesks {
-    /// The `POST /v1/enroll` and `DELETE /v1/nodes/{hostname}` routes, which check each request
-    /// with `binding`.
+    /// The `POST /v1/enrollments` and `DELETE /v1/nodes/{hostname}` routes, which check each
+    /// request with `binding`.
     pub(super) fn routes(self, binding: &Binding) -> Router {
         let enroll = enroll_routes(self.enroller, binding.clone());
         enroll.merge(super::node_routes(self.removing, binding.clone()))

@@ -1,6 +1,6 @@
 # Running the agent
 
-The agent converges one host to a git commit. The controller tells it which commit with `POST /v1/reconcile`; the agent moves its own git checkout to that commit, loads and validates the stacks of its host, and brings each valid stack up with `docker compose`.
+The agent converges one host to a git commit. The controller tells it which commit with `POST /v1/reconciliations`; the agent moves its own git checkout to that commit, loads and validates the stacks of its host, and brings each valid stack up with `docker compose`.
 
 ## Configuration
 
@@ -36,15 +36,15 @@ Every stack runs as the project `aegis-<stack>` (so the stack name must be lower
 
 Each stack's SOPS-encrypted `env_file`, `secrets` and `.env` files are decrypted by the agent with its own age key onto tmpfs for the length of `docker compose up`, and removed afterwards. `sops` (3.9 or later, for `sops decrypt`) must be on the `PATH`, and the agent needs its age key: set `SOPS_AGE_KEY_FILE` (or `SOPS_AGE_KEY_CMD`, or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`), or place the key at the default path `$XDG_CONFIG_HOME/sops/age/keys.txt`. `sops` inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` and those variables. Docker Compose 2.24.4 or later is required for the generated override (the release image pins compatible versions through `flake.lock`). A decryption failure marks only that stack `failed`.
 
-A stack that exposes a service (`expose` in its `aegis.toml`) also needs the Docker daemon to run the sidecar images (`tailscale/tailscale`, `caddy`) and a throw-away container that checks the sidecar's state volume, and the agent calls the controller's `POST /v1/enroll`; see [exposure.md](exposure.md). See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
+A stack that exposes a service (`expose` in its `aegis.toml`) also needs the Docker daemon to run the sidecar images (`tailscale/tailscale`, `caddy`) and a throw-away container that checks the sidecar's state volume, and the agent calls the controller's `POST /v1/enrollments`; see [exposure.md](exposure.md). See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
 
-## `POST /v1/reconcile`
+## `POST /v1/reconciliations`
 
 Callable only by a node tagged `tag:aegis-controller` (see the ACL snippet in [tailscale-acl.md](tailscale-acl.md)). The body names the commit as 7 to 64 lower-case hex digits, and may name one stack with `"stack"` (a stack name, such as `{"commit":"3fe0623","stack":"web"}`; `aegis sync --stack` sends it through the controller):
 
 ```sh
 curl -X POST -H 'content-type: application/json' -d '{"commit":"3fe0623"}' \
-  http://100.64.0.7:7480/v1/reconcile
+  http://100.64.0.7:7480/v1/reconciliations
 ```
 
 The answer is the status report: the host, the commit and one entry per stack with its state (`running`, `failed`, `invalid`, `orphaned` or `purged`) and details (the failure, the violations of an invalid stack, which is never deployed, or what a removal kept):
@@ -63,7 +63,7 @@ The answer is the status report: the host, the commit and one entry per stack wi
 
 Only one reconcile runs at a time; a second request waits for the first. A reconcile of one stack deploys, reports and removes that stack alone (no orphan sweep) and answers a report that lists that stack only; the agent does not post it to the controller, because it would stand for the whole host.
 
-The agent also posts the same report to the controller's `POST /v1/status` ([controller.md](controller.md)). The post is best effort: a failure is ignored, and the answer above is the report either way.
+The agent also puts the same report to the controller's `PUT /v1/hosts/{host}/status` ([controller.md](controller.md)). The call is best effort: a failure is ignored, and the answer above is the report either way.
 
 ## Removing stacks
 
