@@ -9,18 +9,18 @@ Nothing here changes a host by itself: you edit files in a checkout, and the onl
 | Before | After |
 |--------|-------|
 | `~/containers/<stack>/docker-compose.yml` | `hosts/<host>/<stack>/compose.yaml` in git |
-| Project name from the directory | Project `aegis-<stack>` (`docs/agent.md`) |
-| A `tailscale` and a `caddy` service in every stack | `[expose]` in `aegis.toml`; Aegis injects both (`docs/exposure.md`) |
-| Plaintext `.env` on the host | `.env` encrypted with SOPS, decrypted onto tmpfs per deploy (`docs/sops.md`) |
+| Project name from the directory | Project `aegis-<stack>` ([agent.md](agent.md)) |
+| A `tailscale` and a `caddy` service in every stack | `[expose]` in `aegis.toml`; Aegis injects both ([exposure.md](exposure.md)) |
+| Plaintext `.env` on the host | `.env` encrypted with SOPS, decrypted onto tmpfs per deploy ([sops.md](sops.md)) |
 | `TS_AUTHKEY` pasted by hand | Single-use key minted by the controller, only when the node's state volume is empty |
 | `docker compose up -d` over SSH | A commit; the agent converges the host |
 
 ## Before you start
 
-1. **Aegis is installed on the host.** Follow `docs/bootstrap.md`: `aegis bootstrap` generates the host's age key, joins the host to the tailnet and starts the agent and controller. Copy the rendered `aegis/` directory into the repository and commit it.
-2. **The ACL is in place** (`docs/tailscale-acl.md`), and `--enroll-tags` includes every tag your stacks will carry, such as `tag:app`.
-3. **`.sops.yaml` names the host.** Put the recipient `aegis bootstrap` printed in a rule for `hosts/<host>/`, together with an offline backup recipient (`docs/sops.md`). Only ever paste public `age1...` recipients into the repository; the private key stays on the host and in your backup.
-4. **You have a local checkout, `sops`, and the backup key**, so you can encrypt and check files on your machine. `aegis validate` runs offline.
+1. **Aegis is installed on the host.** Follow [bootstrap.md](bootstrap.md): `aegis bootstrap` generates the host's age key, joins the host to the tailnet and starts the agent and controller. Copy the rendered `aegis/` directory into the repository and commit it.
+2. **The ACL is in place** ([tailscale-acl.md](tailscale-acl.md)), and `--enroll-tags` includes every tag your stacks will carry, such as `tag:app`.
+3. **`.sops.yaml` names the host.** Put the recipient `aegis bootstrap` printed in a rule for `hosts/<host>/`, together with an offline backup recipient ([sops.md](sops.md)). Only ever paste public `age1...` recipients into the repository; the private key stays on the host and in your backup.
+4. **You have a local checkout and `sops`**, so you can encrypt and check files on your machine; encrypting needs only the public recipients in `.sops.yaml`. The backup private key stays in offline storage and comes out only to decrypt and check a file. `aegis validate` runs offline.
 5. **A rollback point.** Keep the old directory on the host untouched until the stack is verified.
 
 ## Per stack
@@ -57,7 +57,7 @@ Names change when the project does. A named volume `data` of the old project `va
 - **Keep the old named volume.** Declare it `external: true` with its old full name. Aegis never purges an external volume, so this also means Aegis never cleans it up.
 - **Copy into the new volume.** Stop the old stack, create `aegis-<stack>_<volume>` and copy the data into it with a throw-away container. Do this before the first reconcile, so the app never starts on an empty volume.
 
-Back the data up first, whichever you choose.
+Whichever you choose, back the data up first. After a copy, compare the old and new contents (file counts and sizes, or start the app and look at the data) before you remove the old volume.
 
 ### 4. Encrypt the secrets
 
@@ -67,7 +67,7 @@ For each `.env`, `env_file` and `secrets` file of the stack, encrypt it in place
 sops encrypt --in-place hosts/<host>/<stack>/.env
 ```
 
-Then check it is encrypted before you add it: `git diff --cached` shows `ENC[...]` values and a `sops_` metadata block, never a plain secret. Mind the rules that Aegis checks (`docs/sops.md`):
+Then check each file before you stage it (a copied plaintext `.env` is one `git add -A` from a commit): `sops filestatus <file>` reports `"encrypted":true`, and `aegis validate` rejects any `.env`, `env_file` or `secrets` file that is not SOPS-encrypted. Only then `git add`, and read `git diff --cached` before you commit: it shows `ENC[...]` values and a `sops_` metadata block, never a plain secret. Mind the rules that Aegis checks ([sops.md](sops.md)):
 
 - A file with another name than `.env` or `*.env` needs `--input-type dotenv --output-type dotenv`, or `sops` encrypts it as binary and the agent cannot read it.
 - A PEM or another raw value goes into a YAML or JSON file, encrypted in that format.
@@ -75,7 +75,7 @@ Then check it is encrypted before you add it: `git diff --cached` shows `ENC[...
 - Keep multi-line values in a secret file, not in `.env`.
 - Never commit the plaintext. If a plaintext secret reaches a commit, treat it as leaked and rotate it; deleting the file in a later commit does not remove it from history.
 
-Copy secrets between machines over a channel you trust, and never paste them into an issue, a chat or a pull request. Once the stack is verified, remove the plaintext `.env` from the host (`shred -u` is best effort on journaling and copy-on-write filesystems, so rotating the secret is the sure way) and from your checkout.
+Copy secrets between machines over a channel you trust, and never paste them into an issue, a chat or a pull request. Once the stack is verified, revoke the old hand-made auth keys in the Tailscale admin console (Settings, Keys), because a reusable key left in an old `.env` can still enrol nodes, and remove the plaintext `.env` from the host (`shred -u` is best effort on journaling and copy-on-write filesystems, so rotating the secret is the sure way) and from your checkout.
 
 ### 5. Delete the hand-made tailnet node before Aegis mints its own
 
@@ -101,7 +101,7 @@ aegis diff                     # the stack is "same", and the override of an exp
 aegis status                   # the host confirmed the target commit and the stack is running
 ```
 
-Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack that exposes a service and has a node that is `<name>-1` means step 5 was skipped: delete the stray node and the volume, and let the next reconcile mint again (`docs/exposure.md`, "Things to know").
+Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack that exposes a service and has a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again ([exposure.md](exposure.md), "Things to know").
 
 ## Rolling back
 
@@ -109,22 +109,11 @@ Until you delete it, the old directory is the way back. To return a stack to han
 
 ## Removing a stack for good
 
-Deleting the directory only stops the stack. To wipe it, set `state = "purged"` in its `aegis.toml`, commit, and delete the directory in a later commit once the agent reports it purged. Purging deletes the stack's named volumes, its read-write absolute host paths and its tailnet node, and nothing else (`docs/agent.md`). Check the paths before you commit: this is the one operation that deletes data. For an exposed stack Aegis calls `DELETE /v1/nodes/{hostname}` on the controller, whose OAuth client needs the `devices:core` scope.
+Deleting the directory only stops the stack. To wipe it, set `state = "purged"` in its `aegis.toml`, commit, and delete the directory in a later commit once the agent reports it purged. Purging deletes the stack's named volumes, its read-write absolute host paths and its tailnet node. Its path guard has limits: it crosses a filesystem mounted under a purged path and cannot see `driver_opts` bind devices or a volume another stack uses as `external`, so keep mount points and shared data out of a purged stack's volumes and paths ([agent.md](agent.md), "Known limits"). Check the paths before you commit: this is the one operation that deletes data. For an exposed stack Aegis calls `DELETE /v1/nodes/{hostname}` on the controller, whose OAuth client needs the `devices:core` scope.
 
 ## Controller routes
 
-If you script against the controller, these are its routes ([controller.md](controller.md)). The API is resource-oriented: plural nouns and the method states the action.
-
-| Route | Caller |
-|-------|--------|
-| `GET /v1/health` | agent, operator |
-| `GET /v1/fleet` | agent (its own host), operator |
-| `PUT /v1/hosts/{host}/status` | the agent of `{host}` |
-| `POST /v1/enrollments` | agent |
-| `DELETE /v1/nodes/{hostname}` | agent |
-| `POST /v1/syncs`, `POST /v1/hosts/{host}/syncs` | operator |
-
-The agent serves `POST /v1/reconciliations` to the controller only.
+The routes the migration touches are `POST /v1/enrollments` (a node's key, step 5) and `DELETE /v1/nodes/{hostname}` (a purge). [controller.md](controller.md) lists every route with its caller and statuses, and [agent.md](agent.md) the one the agent serves.
 
 ## What is not migrated
 
