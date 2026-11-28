@@ -233,6 +233,68 @@ fn a_flattened_group_name_or_a_non_ascii_key_refuses_a_dotenv_or_ini_file() {
     });
 }
 
+#[test]
+fn tags_directives_decoys_and_merge_keys_cannot_supply_the_metadata() {
+    runtime().block_on(async {
+        let age = r#""sops":{"age":[]}"#;
+        assert_refused(
+            "a.yaml",
+            "!!binary sops: {age: []}\n!!binary c29wcw==: {kms: [{arn: x}]}\n",
+        )
+        .await;
+        assert_refused(
+            "b.yaml",
+            "%TAG !e! tag:yaml.org,2002:\n---\nsops: {age: []}\n",
+        )
+        .await;
+        assert_refused(
+            "c.json",
+            &format!("{{{age},\"SOPS\":{{\"kms\":[{{\"arn\":\"x\"}}]}}}}"),
+        )
+        .await;
+        assert_refused(
+            "d.json",
+            &format!("{{{age},\"\u{17f}ops\":{{\"kms\":[{{\"arn\":\"x\"}}]}}}}"),
+        )
+        .await;
+        assert_refused("e.json", &format!("{{\"caf\u{e9}\":1,{age}}}")).await;
+        assert_refused("f.yaml", "base: &g {age: []}\n<<: *g\nsops: {age: []}\n").await;
+    });
+}
+
+#[test]
+fn the_allowlist_refuses_unknown_keys_bad_key_groups_and_unreadable_documents() {
+    runtime().block_on(async {
+        assert_refused("a.yaml", "sops: {age: [], bogus: 1}\n").await;
+        assert_refused("b.yaml", "sops: {age: [], key_groups: {age: []}}\n").await;
+        assert_refused("c.yaml", "sops: {age: [], key_groups: scalar}\n").await;
+        assert_refused("d.yaml", "sops: {age: [], key_groups: [{kms: []}]}\n").await;
+        assert_refused("e.yaml", "sops: {age: []}\n---\nb: 1\n").await;
+        assert_refused("f.json", r#"{"sops":{"age":[],"age":[]}}"#).await;
+        assert_refused("g.yaml", "sops:\n  base: 1\n  <<: {age: []}\n").await;
+        assert_refused("h.yaml", "- sops\n").await;
+        assert_refused("i.yaml", "{ not: [valid\n").await;
+    });
+}
+
+#[test]
+fn every_metadata_key_and_age_only_key_groups_are_accepted() {
+    runtime().block_on(async {
+        let all = "a: ENC[x]\nsops:\n  age: []\n  mac: m\n  version: 3.13.3\n  lastmodified: t\n  unencrypted_suffix: _u\n  encrypted_suffix: _e\n  unencrypted_regex: r\n  encrypted_regex: r\n  unencrypted_comment_regex: r\n  encrypted_comment_regex: r\n  mac_only_encrypted: true\n  shamir_threshold: 2\n  key_groups:\n    - age:\n        - recipient: age1abc\n    - age: []\n";
+        accepted("all.yaml", all).await;
+        accepted("comment.env", "# note\n\nA=ENC[x]\nsops_mac=m\n").await;
+    });
+}
+
+#[test]
+fn a_non_ascii_key_or_colon_delimited_group_refuses_a_flat_file() {
+    runtime().block_on(async {
+        assert_refused("a.ini", "[sops]\n\u{212a}ms__list_0__map_arn: x\n").await;
+        assert_refused("b.ini", "[sops]\nkms__list_0__map_arn: x\n").await;
+        assert_refused("c.env", "A=ENC[x]\nsops_azure_\u{212a}v__x=y\n").await;
+    });
+}
+
 #[cfg(test)]
 async fn accepted(name: &str, text: &str) {
     let sandbox = Sandbox::new(name, 0).await;

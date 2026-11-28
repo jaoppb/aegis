@@ -11,7 +11,7 @@ mod filesystem;
 mod git;
 mod parser;
 pub mod policy;
-mod sops;
+pub mod sops;
 mod sops_decrypt;
 mod tmpfs_store;
 mod whois;

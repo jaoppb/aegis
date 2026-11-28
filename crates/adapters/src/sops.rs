@@ -4,22 +4,42 @@ use aegis_application::EncryptionCheck;
 use aegis_domain::RepoPath;
 use serde_norway::Value;
 
-/// A file whose extension says how its SOPS metadata is laid out.
-enum Layout {
-    Structured,
+/// A file whose extension says how its SOPS metadata is laid out, and which `--input-type` and
+/// `--output-type` `sops` gets for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// A JSON file.
+    Json,
+    /// A YAML file.
+    Yaml,
+    /// An INI file.
     Ini,
+    /// Any other name: a dotenv file.
     Dotenv,
 }
 
-fn layout(file: &RepoPath) -> Layout {
-    let extension = file
-        .as_str()
-        .rsplit_once('.')
-        .map(|(_, extension)| extension);
-    match extension {
-        Some("json" | "yaml" | "yml") => Layout::Structured,
-        Some("ini") => Layout::Ini,
-        _ => Layout::Dotenv,
+impl Layout {
+    /// The layout of the file at `file`; every name that is not JSON, YAML or INI is dotenv.
+    #[must_use]
+    pub fn of(file: &str) -> Self {
+        let extension = file.rsplit_once('.').map(|(_, extension)| extension);
+        match extension {
+            Some("json") => Self::Json,
+            Some("yaml" | "yml") => Self::Yaml,
+            Some("ini") => Self::Ini,
+            _ => Self::Dotenv,
+        }
+    }
+
+    /// The format name `sops` takes.
+    #[must_use]
+    pub const fn sops_type(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Ini => "ini",
+            Self::Dotenv => "dotenv",
+        }
     }
 }
 
@@ -68,8 +88,8 @@ pub struct SopsCheck;
 
 impl EncryptionCheck for SopsCheck {
     fn is_encrypted(&self, file: &RepoPath, text: &str) -> bool {
-        match layout(file) {
-            Layout::Structured => structured(text),
+        match Layout::of(file.as_str()) {
+            Layout::Json | Layout::Yaml => structured(text),
             Layout::Ini => ini(text),
             Layout::Dotenv => dotenv(text) || structured(text),
         }

@@ -14,6 +14,7 @@ use serde_norway::Value;
 use tokio::process::Command;
 
 use crate::cli;
+use crate::sops::Layout;
 
 /// How long one decryption may take; an `age-plugin` or a key command may be slow.
 const SOPS_TIMEOUT: Duration = Duration::from_mins(1);
@@ -29,16 +30,6 @@ const INHERITED: [&str; 7] = [
     "SOPS_AGE_KEY_CMD",
     "SOPS_AGE_SSH_PRIVATE_KEY_FILE",
 ];
-
-/// The SOPS format of a file, from its extension, as the encryption check reads it.
-fn format_of(file: &Path) -> &'static str {
-    match file.extension().and_then(|extension| extension.to_str()) {
-        Some("json") => "json",
-        Some("yaml" | "yml") => "yaml",
-        Some("ini") => "ini",
-        _ => "dotenv",
-    }
-}
 
 /// The key groups `sops` can use besides age. The file's author picks them, and `sops` would act on
 /// them (a request to a URL of the author's choosing, `gpg`, cloud credentials of the host), so a
@@ -70,9 +61,15 @@ fn is_empty_value(value: &Value) -> bool {
 
 /// A `key_groups` list of which every group holds age recipients only.
 fn groups_are_age_only(groups: &Value) -> bool {
-    let listed = groups.as_sequence().into_iter().flatten();
-    let mut maps = listed.map(Value::as_mapping);
-    maps.all(|group| group.is_some_and(|map| map.keys().all(|key| key.as_str() == Some("age"))))
+    let age_only = |group: &Value| {
+        let keys = group
+            .as_mapping()
+            .map(|map| map.keys().all(|key| key.as_str() == Some("age")));
+        keys.unwrap_or(false)
+    };
+    groups
+        .as_sequence()
+        .is_some_and(|list| list.iter().all(age_only))
 }
 
 fn metadata_entry_is_age_only(key: &Value, value: &Value) -> bool {
@@ -84,15 +81,24 @@ fn metadata_entry_is_age_only(key: &Value, value: &Value) -> bool {
     }
 }
 
-/// Whether a top-level key could be read as the `sops` metadata by the parser in `sops` without
-/// being exactly `sops`: another case, or any non-ASCII name that Unicode folding could turn into it.
+/// Whether a top-level key could be read as, or merged into, the `sops` metadata by the parser in
+/// `sops` without being exactly `sops`: another case, a merge key, or any non-ASCII name that
+/// Unicode folding could turn into it.
 fn masquerades_as_metadata(key: &str) -> bool {
-    (key.eq_ignore_ascii_case("sops") && key != "sops") || !key.is_ascii()
+    (key.eq_ignore_ascii_case("sops") && key != "sops") || key == "<<" || !key.is_ascii()
+}
+
+/// YAML tags (`!!binary sops`) and directives (`%TAG`) that change how the parser in `sops` reads
+/// a key, but that this parser drops silently. Real `sops` output has none: its values are
+/// `ENC[...]` and its comments are encrypted.
+fn has_tag_or_directive(text: &str) -> bool {
+    text.contains('!') || text.lines().any(|line| line.starts_with('%'))
 }
 
 /// YAML and JSON: one document whose `sops` metadata holds only keys that are known and age-only.
-/// A file the parser cannot read, several documents, duplicate keys and unresolved merge keys are
-/// all refused, because the parser in `sops` may read them differently.
+/// A file the parser cannot read, several documents, duplicate keys, a tag or directive, and a
+/// merge key in the metadata are all refused, because the parser in `sops` may read them
+/// differently.
 fn structured_is_age_only(text: &str) -> bool {
     let Ok(document) = serde_norway::from_str::<Value>(text) else {
         return false;
@@ -100,23 +106,26 @@ fn structured_is_age_only(text: &str) -> bool {
     let Some(root) = document.as_mapping() else {
         return false;
     };
-    let mut names = root.keys().filter_map(Value::as_str);
+    if has_tag_or_directive(text)
+        || root
+            .keys()
+            .filter_map(Value::as_str)
+            .any(masquerades_as_metadata)
+    {
+        return false;
+    }
     let metadata = root.get("sops").and_then(Value::as_mapping);
-    let clean = !names.any(masquerades_as_metadata);
-    clean
-        && metadata.is_some_and(|sops| {
-            sops.iter()
-                .all(|(key, value)| metadata_entry_is_age_only(key, value))
-        })
+    metadata.is_some_and(|sops| {
+        sops.iter()
+            .all(|(key, value)| metadata_entry_is_age_only(key, value))
+    })
 }
 
-/// Dotenv and INI: the flattened `sops_<group>__...` and `<group>__...` entries, and any
-/// non-ASCII key (it could fold into one).
+/// Dotenv and INI: ASCII only, because a non-ASCII key could fold into a group name, and no
+/// flattened `sops_<group>__...` or `<group>__...` entry. Real `sops` output is ASCII.
 fn flat_is_age_only(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let keys = text.lines().filter_map(|line| line.split_once('='));
-    let ascii = keys.map(|(key, _)| key).all(str::is_ascii);
-    ascii
+    text.is_ascii()
         && !FOREIGN_KEYS
             .iter()
             .any(|group| lower.contains(&format!("{group}__")))
@@ -124,9 +133,9 @@ fn flat_is_age_only(text: &str) -> bool {
 
 /// Whether the file at `file`, read as its extension says, uses only age recipients.
 fn is_age_only(file: &Path, text: &str) -> bool {
-    match format_of(file) {
-        "json" | "yaml" => structured_is_age_only(text),
-        _ => flat_is_age_only(text),
+    match Layout::of(&file.to_string_lossy()) {
+        Layout::Json | Layout::Yaml => structured_is_age_only(text),
+        Layout::Ini | Layout::Dotenv => flat_is_age_only(text),
     }
 }
 
@@ -152,7 +161,7 @@ impl SopsDecrypt {
     }
 
     fn command(&self, file: &HostPath) -> Command {
-        let format = format_of(Path::new(file.as_str()));
+        let format = Layout::of(file.as_str()).sops_type();
         let mut command = Command::new(&self.program);
         cli::inherit_only(&mut command, &INHERITED);
         command.args(["decrypt", "--input-type", format, "--output-type", format]);
