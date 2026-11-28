@@ -369,6 +369,13 @@ mod cases {
         assert!(lines(&elsewhere.fake).is_empty());
     }
 
+    /// Nextest runs every test in a fresh process, so nothing has installed the TLS provider yet:
+    /// the client must install it itself.
+    #[test]
+    fn the_official_client_builds_in_a_fresh_process() {
+        assert!(TailscaleApi::new(credentials(CLIENT_SECRET)).is_ok());
+    }
+
     #[test]
     fn a_base_url_that_would_expose_the_secret_is_refused() {
         let plain = BaseUrl::new("http://tailscale.example");
