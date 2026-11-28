@@ -44,7 +44,7 @@ Both binaries read `AEGIS_LISTEN` and fail at start-up when it is missing or is 
 AEGIS_LISTEN=100.64.0.7:7480 aegis-agent
 ```
 
-(The containers `aegis bootstrap` installs are the exception described above; whois still guards them.) Bind to the node's tailnet address, not `0.0.0.0`; nothing checks the address, so a wildcard or LAN address exposes the plain-HTTP port beyond the tailnet. The transport is plain HTTP inside the WireGuard tunnel, and a peer outside the tailnet is not a tailnet node, so whois finds no match and it gets `403`. Do not share an Aegis node with another tailnet. The `tailscale` CLI must be on the `PATH` and the Tailscale daemon must be running on the host.
+Bind to the node's tailnet address, not `0.0.0.0` (the containers `aegis bootstrap` installs are the exception described above; whois still guards them); nothing checks the address, so a wildcard or LAN address exposes the plain-HTTP port beyond the tailnet. The transport is plain HTTP inside the WireGuard tunnel, and a peer outside the tailnet is not a tailnet node, so whois finds no match and it gets `403`. Do not share an Aegis node with another tailnet. The `tailscale` CLI must be on the `PATH` and the Tailscale daemon must be running on the host.
 
 ## Checking it
 

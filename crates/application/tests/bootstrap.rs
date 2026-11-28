@@ -409,6 +409,8 @@ mod cases {
             "HTTPS://token@host/r",
             "ftps://token@host/r",
             "https::https://token@host/r",
+            "https::token@host/r",
+            "ext::sh -c evil",
             "ssh://git:secret@host/r",
         ];
         let accepted = sneaky.iter().filter(|url| RepoUrl::new(**url).is_ok());

@@ -99,14 +99,20 @@ const SSH_SCHEMES: [&str; 3] = ["ssh", "git+ssh", "ssh+git"];
 /// allowed, scp-style remotes (`git@host:path`) have no scheme and carry no secret, and the
 /// `helper::url` transport syntax is refused outright because it hides the real scheme.
 fn reject_password(value: &str) -> Result<(), ValueError> {
+    if value.contains("::") {
+        return Err(ValueError::EmbeddedPassword);
+    }
     let Some((scheme, rest)) = value.split_once("://") else {
         return Ok(());
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let secret = authority.rsplit_once('@').is_some_and(|(user, _)| {
-        user.contains(':') || !SSH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+        let ssh = SSH_SCHEMES
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(scheme));
+        user.contains(':') || !ssh
     });
-    if secret || scheme.contains("::") {
+    if secret {
         return Err(ValueError::EmbeddedPassword);
     }
     Ok(())
