@@ -156,7 +156,8 @@ pub enum RefusalReason {
     NotPlaced,
     /// The tags asked for are not exactly the tags of the stack.
     WrongTags,
-    /// The agent asked to delete the node of a stack the desired state does not mark purged.
+    /// The agent asked to delete a node the desired state does not allow to delete: no purged
+    /// stack of the host exposes the name, or another stack or a rejected stack may still use it.
     NotPurged,
 }
 

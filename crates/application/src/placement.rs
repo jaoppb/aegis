@@ -7,6 +7,8 @@ use aegis_domain::{
     DesiredState, HostName, NodeLabel, Stack, StackName, StackPolicy, StackState, TailnetTags,
 };
 
+use aegis_domain::exposed_node;
+
 use crate::enroll::EnrollmentRequest;
 use crate::outcome::Outcome;
 
@@ -86,29 +88,36 @@ pub fn check_enrollment(
         .ok_or(Misplaced::WrongTags)
 }
 
-/// Whether the agent of `host` may delete the node `node`.
-///
-/// A stack of `host` must be marked purged with an exposed service named like the node. Node
-/// names are shared by the whole tailnet, so the node stays when any active stack of any host,
-/// or of the reserved `aegis/` directory, exposes the name, and while any stack is rejected,
-/// because a rejected stack may still run with it (the agent's own rule).
+/// Whether the tailnet node `node` must stay: a stack that is not purged exposes the hostname, on
+/// any host or in the reserved `aegis/` directory, or a stack is rejected and may still run with
+/// it. Node names are shared by the whole tailnet, so the node is then someone's, and deleting it
+/// would break the owner. The agent and the controller both ask this.
 #[must_use]
-pub fn purges_node(outcome: &Outcome, host: &HostName, node: &NodeLabel) -> bool {
+pub(crate) fn node_is_held(outcome: &Outcome, node: Option<&NodeLabel>) -> bool {
     let state = outcome.state();
-    let own = state.hosts().iter().find(|found| found.name() == host);
-    let purged = own.is_some_and(|found| {
-        found
-            .stacks()
-            .iter()
-            .any(|stack| holds(stack, node, StackState::Purged))
-    });
     let hosted = state.hosts().iter().flat_map(|found| found.stacks().iter());
-    let mut live = hosted.chain(state.reserved().iter());
-    purged
-        && outcome.rejected().is_empty()
-        && !live.any(|stack| holds(stack, node, StackState::Active))
+    let live = hosted
+        .chain(state.reserved().iter())
+        .filter(|stack| stack.policy().state() == StackState::Active);
+    let claimed = live
+        .filter_map(exposed_node)
+        .any(|name| Some(&name) == node);
+    claimed || !outcome.rejected().is_empty()
 }
 
-fn holds(stack: &Stack, node: &NodeLabel, wanted: StackState) -> bool {
-    exposes(stack.policy(), node) && stack.policy().state() == wanted
+/// Whether the agent of `host` may delete the node `node`.
+///
+/// A stack of `host` must be marked purged with an exposed service named like the node, and the
+/// node must not be held by another stack or by a rejected one ([`node_is_held`], the agent's own
+/// rule).
+#[must_use]
+pub fn purges_node(outcome: &Outcome, host: &HostName, node: &NodeLabel) -> bool {
+    let hosts = outcome.state().hosts();
+    let own = hosts.iter().find(|found| found.name() == host);
+    let owns_node = |stack: &Stack| {
+        let named = exposed_node(stack).is_some_and(|name| name == *node);
+        named && stack.policy().state() == StackState::Purged
+    };
+    let tombstoned = own.is_some_and(|found| found.stacks().iter().any(owns_node));
+    tombstoned && !node_is_held(outcome, Some(node))
 }

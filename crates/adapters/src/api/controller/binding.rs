@@ -54,8 +54,8 @@ impl Binding {
     }
 
     /// Let the agent of `host` delete the node `node` when the desired state marks a stack of
-    /// that host purged with an exposed service named like the node, and no other stack still
-    /// holds the name (see [`purges_node`]).
+    /// that host purged with an exposed service named like the node, and no other or
+    /// rejected stack still holds the name (see [`purges_node`]).
     pub(in crate::api) fn admit_deletion(
         &self,
         host: &HostName,

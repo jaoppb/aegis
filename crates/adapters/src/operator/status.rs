@@ -63,7 +63,7 @@ fn refusal_line(refused: &Refused) -> String {
         RefusalReason::RateLimited => "too many keys",
         RefusalReason::NotPlaced => "not placed on the host by the desired state",
         RefusalReason::WrongTags => "tags are not the stack's",
-        RefusalReason::NotPurged => "stack is not purged",
+        RefusalReason::NotPurged => "node delete not allowed by the desired state",
     };
     let stack = refused.stack().unwrap_or("-");
     let times = refused.times();

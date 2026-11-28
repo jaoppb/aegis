@@ -26,9 +26,8 @@ struct Removal {
 /// The `DELETE /v1/nodes/{hostname}` route: delete the stack node with `remover`.
 ///
 /// `remover` refuses any device a stack may not own, and `binding` first checks that the desired
-/// state marks a stack of the caller's host purged for that node and no other stack still holds
-/// the name. The route is meant to be served
-/// behind the tag check of the controller.
+/// state marks a stack of the caller's host purged for that node and no other or rejected stack
+/// still holds the name. The route is meant to be served behind the tag check of the controller.
 pub fn node_routes(remover: StackNodes, binding: Binding) -> Router {
     Router::new()
         .route(NODE_PATH, delete(remove))
