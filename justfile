@@ -43,8 +43,16 @@ workflows-check:
     shellcheck scripts/*.sh scripts/tests/*.sh
     for t in scripts/tests/*.test.sh; do "$t"; done
 
-# Run every check: format, lint, workflow lint, architecture rules and tests.
-check: fmt-check lint workflows-check arch-check test
+# Fail on a banned crate, a disallowed license, an unknown source or a duplicate crate version (deny.toml; works offline).
+deny:
+    cargo deny check bans licenses sources
+
+# Fail on a RustSec advisory against a locked dependency (needs network for the advisory database).
+deny-advisories:
+    cargo deny check advisories
+
+# Run every check: format, lint, workflow lint, dependency policy, architecture rules and tests.
+check: fmt-check lint workflows-check deny deny-advisories arch-check test
 
 # Audit the live GitHub repository settings, labels and milestones against tools.toml.
 repo-check:

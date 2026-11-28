@@ -6,6 +6,10 @@ Closes #
 
 ## Notes
 
+## New dependencies
+
+One line per added crate: why it is needed and which features it enables. Write "none" when there is none.
+
 ## Changelog
 
 - [ ] An entry under `Unreleased` in `CHANGELOG.md` (one bullet ending `(#issue, #PR)`), or the `skip-changelog` label when nothing consumer-visible changed
