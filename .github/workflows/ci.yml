@@ -66,6 +66,41 @@ jobs:
       - name: Run nix flake check
         run: nix flake check
 
+  # Not a required check (see AGENTS.md section 3): builds what release.yml builds, so a broken
+  # musl binary or image fails the pull request instead of the release. Both architectures run on
+  # every pull request, each on its native runner. It restores the devShell cache but never saves
+  # it, so the build outputs stay out of the cache the other jobs share and each run compiles the
+  # workspace. Only the amd64 leg ever hits the cache: the key includes the architecture and no
+  # job saves an arm64 one.
+  release-build:
+    name: Release Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the flake devShell
+        uses: ./.github/actions/nix-devshell
+        with:
+          save-cache: 'false'
+
+      - name: Build the musl binaries and the images
+        run: nix develop --command just build-release
+
   issues-check:
     name: Audit Issue Workflow Rules
     runs-on: ubuntu-latest

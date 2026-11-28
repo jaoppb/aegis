@@ -62,6 +62,12 @@
             cargoBuildFlags = [ "--package" crate ];
             # `just check` runs the tests; a release build only has to compile.
             doCheck = false;
+            # pkgsStatic exports `-static` in NIX_CFLAGS_LINK, which the build-platform (glibc)
+            # compiler also reads: cargo then links every build script statically against glibc
+            # and the binary jumps to a null `__libc_start_main` (SIGSEGV in whichever build script
+            # runs first, e.g. `icu_normalizer_data`). The musl target links static through
+            # `-C target-feature=+crt-static`, so the variable is not needed.
+            preBuild = "unset NIX_CFLAGS_LINK";
             meta = {
               description = "Aegis: GitOps for Docker Compose stacks (${crate})";
               license = pkgs.lib.licenses.asl20;
@@ -137,6 +143,8 @@
               # Workflow lint (actionlint runs shellcheck on `run:` blocks).
               actionlint
               shellcheck
+              # build-release checks the binaries are static.
+              file
             ]);
             # Checked by the justfile's `_devshell` guard.
             AEGIS_DEVSHELL = "1";

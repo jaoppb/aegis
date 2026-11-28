@@ -53,6 +53,18 @@ deny-advisories:
 # Run every check that needs no network: format, lint, workflow lint, dependency policy, architecture rules and tests.
 check-offline: fmt-check lint workflows-check deny arch-check test
 
+# Build every release artifact the way release.yml does: the static musl binaries and the controller and agent images (each image is also streamed once), for the host architecture (needs nix, and network for the Nix caches and crate sources).
+build-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for package in aegis aegis-controller aegis-agent aegis-controller-image aegis-agent-image; do
+        out=$(nix build ".#${package}" --no-link --print-build-logs --print-out-paths)
+        # An image package is a script that streams the tarball: run it, as release.yml does.
+        case "$package" in *-image) "$out" >/dev/null ;; esac
+        # The binaries must stay static: a dynamic one would still compile.
+        case "$package" in *-image) ;; *) file -b -L "$out/bin/$package" | grep -qE '(statically|static-pie) linked' || { echo "$package is not statically linked" >&2; exit 1; } ;; esac
+    done
+
 # Fail on unpinned or mismatched action references (reads action versions through `gh`, so it needs network).
 actions-check:
     tools actions check
