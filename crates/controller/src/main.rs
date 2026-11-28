@@ -1,9 +1,8 @@
 //! The aegis-controller binary.
 
-use std::process::ExitCode;
+use aegis_adapters::api::{ServeError, serve_from_env};
+use aegis_api::version_1::Role;
 
-fn main() -> ExitCode {
-    // Reading the arguments keeps `main` non-const until the real entry point replaces this stub.
-    std::env::args_os().for_each(drop);
-    ExitCode::SUCCESS
+fn main() -> Result<(), ServeError> {
+    serve_from_env(Role::Controller)
 }

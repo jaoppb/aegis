@@ -4,6 +4,10 @@ preset = "recommended"
 # Binaries only wire things together; they hold no logic of their own.
 
 [[scopes]]
+name = "api"
+paths = ["crates/api/**"]
+
+[[scopes]]
 name = "domain"
 paths = ["crates/domain/**"]
 
@@ -32,14 +36,14 @@ paths = ["crates/agent/**"]
 [[restrict-use]]
 name = "domain-is-innermost"
 scope = "domain"
-deny = ["aegis_application::**", "aegis_adapters::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
+deny = ["aegis_application::**", "aegis_adapters::**", "aegis_api::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "domain must not depend on any other layer"
 severity = "error"
 
 [[restrict-use]]
 name = "application-depends-on-domain-only"
 scope = "application"
-deny = ["aegis_adapters::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
+deny = ["aegis_adapters::**", "aegis_api::**", "aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "application may depend only on domain and declares ports (traits) for adapters"
 severity = "error"
 
@@ -48,6 +52,20 @@ name = "adapters-do-not-reach-binaries"
 scope = "adapters"
 deny = ["aegis::**", "aegis_controller::**", "aegis_agent::**"]
 message = "adapters implement application ports and must not depend on binaries"
+severity = "error"
+
+# The wire types of the HTTP API depend on no other Aegis crate and on no IO or HTTP stack, so any
+# client (the CLI, a future UI backend) can share them.
+[[restrict-use]]
+name = "api-is-wire-types-only"
+scope = "api"
+deny = [
+    "aegis_domain::**", "aegis_application::**", "aegis_adapters::**", "aegis::**",
+    "aegis_controller::**", "aegis_agent::**",
+    "std::fs::**", "std::net::**", "std::process::**", "std::env::**", "std::io::**",
+    "tokio::**", "reqwest::**", "hyper::**", "axum::**", "clap::**",
+]
+message = "the api crate holds serde wire types only: no other Aegis crate, no IO and no HTTP stack"
 severity = "error"
 
 # The binaries are bin-only crates today, so Cargo already blocks these edges; the rules are
