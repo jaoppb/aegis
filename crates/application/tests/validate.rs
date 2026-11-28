@@ -372,6 +372,96 @@ fn exposing_with(service_names: &[&str], exposed: &str, volumes: &[&str]) -> Vec
     found.map(|violation| violation.problem().clone()).collect()
 }
 
+#[cfg(test)]
+fn joining(services: Vec<Service>, joined: &str) -> Vec<Problem> {
+    let compose = ComposeSummary::new(Services::new(services), Volumes::default());
+    let node = aegis_domain::Node::new(ServiceName::new(joined).unwrap());
+    let policy = StackPolicy::default().with_node(node);
+    let definition = StackDefinition::new(policy, ComposeSource::new("a\nb\n"), compose);
+    let identity = StackIdentity::new(StackName::new("stack").unwrap(), StackKind::Host);
+    let host = Host::new(
+        HostName::new("host").unwrap(),
+        Stacks::new(vec![Stack::new(identity, definition)]),
+    );
+    let state = DesiredState::new(Hosts::new(vec![host]), Stacks::default());
+    let outcome = Outcome::new(state, Rejections::default());
+    let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    let found = validated.rejected().iter().flat_map(Rejection::violations);
+    found.map(|violation| violation.problem().clone()).collect()
+}
+
+#[cfg(test)]
+fn service_with(name: &str, networking: aegis_domain::Networking) -> Service {
+    Service::new(ServiceName::new(name).unwrap(), ServiceSource::default())
+        .with_networking(networking)
+}
+
+#[test]
+fn a_node_service_without_a_network_of_its_own_passes() {
+    let services = vec![service_with("nfs", aegis_domain::Networking::Default)];
+    assert!(joining(services, "nfs").is_empty());
+}
+
+#[test]
+fn a_node_service_the_compose_file_lacks_is_a_violation() {
+    let services = vec![service_with("web", aegis_domain::Networking::Default)];
+    let found = joining(services, "nfs");
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::UnknownExposedService { .. }]
+    ));
+}
+
+#[test]
+fn a_node_service_with_its_own_network_is_a_violation() {
+    let services = vec![service_with("nfs", aegis_domain::Networking::Own)];
+    let found = joining(services, "nfs");
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::OwnNetworkOnNodeService { .. }]
+    ));
+}
+
+#[test]
+fn a_service_beside_the_node_service_may_set_its_own_network() {
+    let services = vec![
+        service_with("nfs", aegis_domain::Networking::Default),
+        service_with("other", aegis_domain::Networking::Own),
+    ];
+    assert!(joining(services, "nfs").is_empty());
+}
+
+#[test]
+fn a_node_stack_may_not_define_tailscale_or_caddy() {
+    let services = vec![
+        service_with("nfs", aegis_domain::Networking::Default),
+        service_with("tailscale", aegis_domain::Networking::Default),
+    ];
+    let found = joining(services, "nfs");
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::ReservedSidecarService { .. }]
+    ));
+}
+
+#[test]
+fn an_exposed_service_with_its_own_network_is_not_a_violation() {
+    let own = service_with("web", aegis_domain::Networking::Own);
+    let compose = ComposeSummary::new(Services::new(vec![own]), Volumes::default());
+    let expose = Expose::new(ServiceName::new("web").unwrap(), Port::new(80).unwrap());
+    let policy = StackPolicy::new(Some(expose), TailnetTags::default(), StackState::Active);
+    let definition = StackDefinition::new(policy, ComposeSource::new("a\nb\n"), compose);
+    let identity = StackIdentity::new(StackName::new("stack").unwrap(), StackKind::Host);
+    let host = Host::new(
+        HostName::new("host").unwrap(),
+        Stacks::new(vec![Stack::new(identity, definition)]),
+    );
+    let state = DesiredState::new(Hosts::new(vec![host]), Stacks::default());
+    let outcome = Outcome::new(state, Rejections::default());
+    let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    assert!(validated.rejected().is_empty());
+}
+
 #[test]
 fn an_exposed_service_the_compose_file_defines_passes() {
     assert!(exposing(&["web"], "web").is_empty());

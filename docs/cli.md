@@ -6,7 +6,7 @@
 |---------|--------------|
 | `aegis validate [path]` | Loads and validates the checkout at `path` (default: the current directory), offline. |
 | `aegis status` | Shows the commit the controller wants, what is wrong with it, and what each host reported. |
-| `aegis diff [path]` | Compares the checkout at `path` with what the hosts last reported, and shows the override Aegis renders for each exposed stack. |
+| `aegis diff [path]` | Compares the checkout at `path` with what the hosts last reported, and shows the override Aegis renders for each stack with `expose` or `node`. |
 | `aegis sync [--host <name>] [--stack <name>]` | Fetches the repository and makes the agents converge now, instead of at the next poll. |
 
 ## Exit codes
@@ -78,7 +78,7 @@ override of hosts/jao-server/web (the tailnet name is a placeholder):
       ...
 ```
 
-The comparison is against the last report of each agent, so it is as fresh as the last reconcile; run `aegis sync` first for a current answer. The override is what Aegis renders for a stack with `expose` ([exposure.md](exposure.md)): the auth key is the `${AEGIS_TS_AUTHKEY}` placeholder and the tailnet name is a placeholder, because only the controller knows the real ones.
+The comparison is against the last report of each agent, so it is as fresh as the last reconcile; run `aegis sync` first for a current answer. The override is what Aegis renders for a stack with `expose` or `node` ([exposure.md](exposure.md)): the auth key is the `${AEGIS_TS_AUTHKEY}` placeholder and the tailnet name is a placeholder, because only the controller knows the real ones.
 
 ## `aegis sync [--host <name>] [--stack <name>]`
 

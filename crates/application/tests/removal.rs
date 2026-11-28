@@ -200,3 +200,18 @@ fn a_tombstone_names_the_project_of_its_stack() {
     assert!(tombstone.node().is_none());
     assert!(tombstone.paths().is_empty());
 }
+
+#[test]
+fn a_purged_stack_with_a_node_names_the_node_to_delete() {
+    let node = aegis_domain::Node::new(aegis_domain::ServiceName::new("files").unwrap());
+    let policy = StackPolicy::new(None, TailnetTags::default(), StackState::Purged).with_node(node);
+    let identity = StackIdentity::new(StackName::new("old").unwrap(), StackKind::Host);
+    let definition = StackDefinition::new(
+        policy,
+        ComposeSource::new("services: {}\n"),
+        ComposeSummary::default(),
+    );
+    let tombstone = Tombstone::of(directory(), &Stack::new(identity, definition)).unwrap();
+    assert_eq!(tombstone.node().unwrap().as_str(), "files");
+    assert_eq!(tombstone.keeping_node().node(), None);
+}

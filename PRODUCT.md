@@ -52,7 +52,7 @@ The tailscale sidecar and Caddy boilerplate that each stack used to hand-write i
 - **Secrets:** SOPS in the repo. **Each agent decrypts** with its own age key; `.sops.yaml` creation rules scope recipients per host. The controller never sees plaintext. Decrypted values go to tmpfs or env and are never written to disk in plaintext.
 - **Image updates:** the controller detects new tags or digests and **commits the bump back to git**, either as a PR or with auto-merge depending on per-stack policy. The normal sync deploys it, so rollback is `git revert`. Services built from the repo are skipped.
 - **Tailscale:** an OAuth client mints **single-use, pre-authorized, tagged, non-ephemeral** keys, only when a sidecar has no state yet. Node state lives in a named volume, so hostnames stay stable. Purge deletes the node through the API. Agents enroll the same way.
-- **Sidecars:** **Aegis injects them.** `compose.yaml` describes only the app. `expose = { service, port }` in `aegis.toml` makes Aegis render a compose override with the tailscale sidecar and Caddy (generated Caddyfile, ts.net certificate through the socket). The rendered override can be viewed with `aegis diff`.
+- **Sidecars:** **Aegis injects them.** `compose.yaml` describes only the app. `expose = { service, port }` in `aegis.toml` makes Aegis render a compose override with the tailscale sidecar and Caddy (generated Caddyfile, ts.net certificate through the socket). The rendered override can be viewed with `aegis diff`. A stack that serves raw TCP or UDP rather than HTTP (NFS, SMB, DNS) sets `node = { service }` instead: Aegis injects the tailscale sidecar without Caddy and the service shares its network namespace, so such stacks get a tailnet node of their own too.
 - **Certificates:** v0.1.0 uses ts.net HTTPS only. Public domains with ACME DNS-01 come later.
 - **Mounts:** persistent data uses **named volumes or absolute host paths only**. A relative bind mount is valid only if the path exists in the repo and is mounted `:ro` (config files). Anything else fails validation at sync time.
 - **Builds:** compose `build:` is supported. The agent builds from the checked-out repo and tags the image with the commit SHA.
@@ -92,7 +92,7 @@ Name: **Aegis**. Tagline: "GitOps-driven container manager".
 
 ## Evidence on Hand
 
-No users, benchmarks or screenshots exist yet. The incumbent `jao-server` stacks (vaultwarden, monitoring, ferrous, clip-cascade, sharefile, proxy, pihole, ai-memory) are the real migration target and test corpus.
+No users, benchmarks or screenshots exist yet. The incumbent `jao-server` stacks (vaultwarden, monitoring, ferrous, sharefile, proxy, pihole, ai-memory) are the real migration target and test corpus.
 
 ## Product Principles
 

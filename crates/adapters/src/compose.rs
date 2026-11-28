@@ -6,9 +6,9 @@ use std::fmt::Display;
 use aegis_application::ParseError;
 use aegis_domain::{
     Access, AdditionalContexts, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile,
-    EnvFiles, FileReference, HostPath, ImageRef, Line, Mount, Mounts, Presence, ReferenceKind,
-    ReferencedFiles, RepoPath, SecretFile, SecretFiles, SecretName, Service, ServiceName,
-    ServiceSource, Services, ValueError, VolumeName, Volumes,
+    EnvFiles, FileReference, HostPath, ImageRef, Line, Mount, Mounts, Networking, Presence,
+    ReferenceKind, ReferencedFiles, RepoPath, SecretFile, SecretFiles, SecretName, Service,
+    ServiceName, ServiceSource, Services, ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
 
@@ -64,9 +64,38 @@ enum RawExtends {
 struct RawService {
     #[serde(flatten)]
     source: RawSource,
+    #[serde(flatten)]
+    files: RawServiceFiles,
+    extends: Option<RawExtends>,
+    #[serde(flatten)]
+    network: RawNetwork,
+}
+
+#[derive(Deserialize)]
+struct RawServiceFiles {
     env_file: Option<RawEnvFile>,
     volumes: Option<Vec<RawMount>>,
-    extends: Option<RawExtends>,
+}
+
+#[derive(Deserialize)]
+struct RawNetwork {
+    network_mode: Option<serde::de::IgnoredAny>,
+    networks: Option<serde::de::IgnoredAny>,
+    ports: Option<serde::de::IgnoredAny>,
+    hostname: Option<serde::de::IgnoredAny>,
+}
+
+impl RawNetwork {
+    fn networking(&self) -> Networking {
+        let settings = [
+            &self.network_mode,
+            &self.networks,
+            &self.ports,
+            &self.hostname,
+        ];
+        let own = settings.into_iter().find_map(|setting| setting.as_ref());
+        own.map(|_| Networking::Own).unwrap_or_default()
+    }
 }
 
 #[derive(Deserialize)]
@@ -341,7 +370,8 @@ fn in_scope(scope: &str, error: &impl Display) -> ParseError {
 fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
     let scope = format!("service `{name}`");
     let scoped = |error: &dyn Display| in_scope(&scope, &error);
-    let mounts = raw.volumes.unwrap_or_default().into_iter();
+    let networking = raw.network.networking();
+    let mounts = raw.files.volumes.unwrap_or_default().into_iter();
     let image = raw.source.image.map(ImageRef::new).transpose();
     let build = raw.source.build.map(build).transpose();
     let source = ServiceSource::new(
@@ -350,7 +380,8 @@ fn service(name: &str, raw: RawService) -> Result<Service, ParseError> {
     );
     let name = ServiceName::new(name).map_err(|error| scoped(&error))?;
     Ok(Service::new(name, source)
-        .with_env_files(env_files(raw.env_file).map_err(|error| scoped(&error))?)
+        .with_networking(networking)
+        .with_env_files(env_files(raw.files.env_file).map_err(|error| scoped(&error))?)
         .with_mounts(
             mounts
                 .map(mount)

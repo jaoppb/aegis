@@ -14,7 +14,7 @@ pub mod violation;
 
 pub use compose::{
     Access, AdditionalContexts, Build, ComposeSummary, EnvFile, EnvFiles, FileReference, Mount,
-    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFile, SecretFiles, Service,
+    Mounts, Networking, Presence, ReferenceKind, ReferencedFiles, SecretFile, SecretFiles, Service,
     ServiceSource, Services, Volumes,
 };
 pub use deployment::{
@@ -22,7 +22,7 @@ pub use deployment::{
     StackReport, StackReports,
 };
 pub use peer::{AegisRole, Login, Logins, PeerIdentity};
-pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
+pub use policy::{Expose, Node, Reach, StackPolicy, StackState, TailnetTags, UpdatePolicy};
 pub use removal::{
     HostPaths, Leftover, Leftovers, ProjectNames, Remains, Tombstone, TombstoneError, exposed_node,
     mounted_paths,

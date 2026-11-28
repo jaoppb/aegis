@@ -6,7 +6,9 @@
 use std::fmt;
 
 use aegis_domain::ValueError;
-use aegis_domain::{Expose, NodeLabel, Port, ProjectName, StackPolicy, TailnetName, TailnetTags};
+use aegis_domain::{
+    Expose, Node, NodeLabel, Port, ProjectName, Reach, StackPolicy, TailnetName, TailnetTags,
+};
 
 /// The name of the environment variable that carries the minted auth key to Compose.
 pub const KEY_VARIABLE: &str = "AEGIS_TS_AUTHKEY";
@@ -51,32 +53,47 @@ pub fn state_volume_of(project: &ProjectName) -> String {
     format!("{project}_{STATE_VOLUME}")
 }
 
-/// What a stack's `aegis.toml` asks of the tailnet: the service to expose and the ACL tags of its
+/// What a stack's `aegis.toml` asks of the tailnet: how to serve a service and the ACL tags of its
 /// node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exposure {
-    expose: Expose,
+    reach: Reach,
     tags: TailnetTags,
 }
 
 impl Exposure {
-    /// Expose `expose`, with its node tagged `tags`.
+    /// Expose `expose` over HTTPS, with its node tagged `tags`.
     #[must_use]
     pub const fn new(expose: Expose, tags: TailnetTags) -> Self {
-        Self { expose, tags }
+        Self {
+            reach: Reach::Https(expose),
+            tags,
+        }
+    }
+
+    /// Serve raw TCP and UDP of `node`'s service, with its node tagged `tags`.
+    #[must_use]
+    pub const fn raw(node: Node, tags: TailnetTags) -> Self {
+        Self {
+            reach: Reach::Raw(node),
+            tags,
+        }
     }
 
     /// The exposure `policy` asks for, if it asks for one.
     #[must_use]
     pub fn of(policy: &StackPolicy) -> Option<Self> {
-        let expose = policy.expose()?;
-        Some(Self::new(expose.clone(), policy.tailnet_tags().clone()))
+        let reach = policy.reach()?.clone();
+        Some(Self {
+            reach,
+            tags: policy.tailnet_tags().clone(),
+        })
     }
 
-    /// The service and port to expose.
+    /// How the node serves its service.
     #[must_use]
-    pub const fn expose(&self) -> &Expose {
-        &self.expose
+    pub const fn reach(&self) -> &Reach {
+        &self.reach
     }
 
     /// The ACL tags of the node.
@@ -85,14 +102,14 @@ impl Exposure {
         &self.tags
     }
 
-    /// The hostname of the node: the exposed service's name.
+    /// The hostname of the node: the served service's name.
     ///
     /// # Errors
     ///
     /// Returns a [`ValueError`] when the service name is not a valid DNS label, for example
     /// because it holds an underscore or an upper-case letter.
     pub fn node(&self) -> Result<NodeLabel, ValueError> {
-        NodeLabel::new(self.expose.service().as_str())
+        NodeLabel::new(self.reach.service().as_str())
     }
 }
 
@@ -139,20 +156,21 @@ impl Caddyfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedSidecar {
     compose: OverrideYaml,
-    caddyfile: Caddyfile,
+    caddyfile: Option<Caddyfile>,
 }
 
 impl RenderedSidecar {
-    /// The compose override. It holds the Caddyfile as an inline compose `config`.
+    /// The compose override. For an HTTPS exposure it holds the Caddyfile as an inline compose
+    /// `config`.
     #[must_use]
     pub const fn compose(&self) -> &OverrideYaml {
         &self.compose
     }
 
-    /// The Caddyfile, as it appears inside the override.
+    /// The Caddyfile, as it appears inside the override; a raw node runs no Caddy and has none.
     #[must_use]
-    pub const fn caddyfile(&self) -> &Caddyfile {
-        &self.caddyfile
+    pub const fn caddyfile(&self) -> Option<&Caddyfile> {
+        self.caddyfile.as_ref()
     }
 }
 
@@ -160,7 +178,7 @@ impl RenderedSidecar {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarSpec {
     node: NodeLabel,
-    upstream: Expose,
+    reach: Reach,
     tailnet: TailnetName,
 }
 
@@ -173,7 +191,7 @@ impl SidecarSpec {
     pub fn new(exposure: &Exposure, tailnet: TailnetName) -> Result<Self, ValueError> {
         Ok(Self {
             node: exposure.node()?,
-            upstream: exposure.expose().clone(),
+            reach: exposure.reach().clone(),
             tailnet,
         })
     }
@@ -184,15 +202,17 @@ impl SidecarSpec {
         format!("{}.{}", self.node, self.tailnet)
     }
 
-    /// The Caddyfile: terminate TLS for the node's address and proxy to the service.
+    /// The Caddyfile: terminate TLS for the node's address and proxy to the service. A raw node
+    /// has none.
     #[must_use]
-    pub fn caddyfile(&self) -> Caddyfile {
-        let service = self.upstream.service();
-        let port: Port = self.upstream.port();
-        Caddyfile(format!(
+    pub fn caddyfile(&self) -> Option<Caddyfile> {
+        let upstream = https_upstream(&self.reach)?;
+        let service = upstream.service();
+        let port: Port = upstream.port();
+        Some(Caddyfile(format!(
             "{} {{\n  reverse_proxy {service}:{port}\n}}\n",
             self.address()
-        ))
+        )))
     }
 
     /// The override and Caddyfile for a node that `key` says whether to enrol. A deployment that
@@ -200,16 +220,39 @@ impl SidecarSpec {
     #[must_use]
     pub fn render(&self, key: KeyUse) -> RenderedSidecar {
         let caddyfile = self.caddyfile();
-        let compose = OverrideYaml(self.compose_text(key, &caddyfile));
-        RenderedSidecar { compose, caddyfile }
+        let raw = || self.raw_text(key);
+        let text = caddyfile
+            .as_ref()
+            .map_or_else(raw, |found| self.https_text(key, found));
+        RenderedSidecar {
+            compose: OverrideYaml(text),
+            caddyfile,
+        }
     }
 
-    fn compose_text(&self, key: KeyUse, caddyfile: &Caddyfile) -> String {
-        let services = [self.tailscale_service(key), caddy_service()].concat();
-        format!("services:\n{services}{}{}", config(caddyfile), volumes())
+    fn https_text(&self, key: KeyUse, caddyfile: &Caddyfile) -> String {
+        let tailscale = self.tailscale_service(key, Socket::Shared);
+        let services = [tailscale, caddy_service()].concat();
+        format!(
+            "services:\n{services}{}volumes:\n  {STATE_VOLUME}:\n  {SOCKET_VOLUME}:\n",
+            config(caddyfile)
+        )
     }
 
-    fn tailscale_service(&self, key: KeyUse) -> String {
+    /// The override of a raw node: the sidecar, and the service joined to its network namespace.
+    fn raw_text(&self, key: KeyUse) -> String {
+        let tailscale = self.tailscale_service(key, Socket::Absent);
+        let service = self.reach.service();
+        format!(
+            "services:\n{tailscale}  {service}:
+    network_mode: service:{TAILSCALE_SERVICE}
+    depends_on:
+      - {TAILSCALE_SERVICE}
+volumes:\n  {STATE_VOLUME}:\n"
+        )
+    }
+
+    fn tailscale_service(&self, key: KeyUse, socket: Socket) -> String {
         let node = &self.node;
         let key_line = match key {
             KeyUse::Fresh => format!("      TS_AUTHKEY: \"${{{KEY_VARIABLE}}}\"\n"),
@@ -223,12 +266,20 @@ impl SidecarSpec {
     environment:
       TS_HOSTNAME: {node}
       TS_STATE_DIR: {STATE_DIRECTORY}
-      TS_SOCKET: {SOCKET_DIRECTORY}/tailscaled.sock
-{key_line}    volumes:
+{}{key_line}    volumes:
       - {STATE_VOLUME}:{STATE_DIRECTORY}
-      - {SOCKET_VOLUME}:{SOCKET_DIRECTORY}
-{TUN_ACCESS}"
+{}{TUN_ACCESS}",
+            socket.environment(),
+            socket.volume(),
         )
+    }
+}
+
+/// The service Caddy proxies to, when the node serves HTTPS.
+const fn https_upstream(reach: &Reach) -> Option<&Expose> {
+    match reach {
+        Reach::Https(expose) => Some(expose),
+        Reach::Raw(_) => None,
     }
 }
 
@@ -238,6 +289,31 @@ const SOCKET_DIRECTORY: &str = "/var/run/tailscale";
 /// The compose name of the volume that holds the tailscale socket, shared with Caddy.
 pub const SOCKET_VOLUME: &str = "tailscale-socket";
 
+/// Whether the sidecar shares its socket with Caddy.
+#[derive(Debug, Clone, Copy)]
+enum Socket {
+    /// Caddy reads the socket from a shared volume.
+    Shared,
+    /// Nothing else reads it.
+    Absent,
+}
+
+impl Socket {
+    fn environment(self) -> String {
+        match self {
+            Self::Shared => format!("      TS_SOCKET: {SOCKET_DIRECTORY}/tailscaled.sock\n"),
+            Self::Absent => String::new(),
+        }
+    }
+
+    fn volume(self) -> String {
+        match self {
+            Self::Shared => format!("      - {SOCKET_VOLUME}:{SOCKET_DIRECTORY}\n"),
+            Self::Absent => String::new(),
+        }
+    }
+}
+
 /// Caddy listens on the tailnet address, so the sidecar needs the TUN device and `NET_ADMIN`
 /// (the incumbent hand-written sidecar does too). The override is generated from typed values and
 /// is not checked by the compose allowlist, which excludes `devices`; revisiting both is #70.
@@ -246,10 +322,6 @@ const TUN_ACCESS: &str = "    devices:
     cap_add:
       - net_admin
 ";
-
-fn volumes() -> String {
-    format!("volumes:\n  {STATE_VOLUME}:\n  {SOCKET_VOLUME}:\n")
-}
 
 fn caddy_service() -> String {
     format!(

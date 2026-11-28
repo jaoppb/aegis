@@ -160,6 +160,12 @@ pub enum Problem {
         /// The service, `tailscale` or `caddy`.
         service: ServiceName,
     },
+    /// The service that joins the tailnet node sets its own network, which would clash with the
+    /// node's network namespace.
+    OwnNetworkOnNodeService {
+        /// The service `node` names.
+        service: ServiceName,
+    },
     /// A stack that exposes a service declares a volume Aegis injects itself.
     ReservedSidecarVolume {
         /// The volume, which Compose would merge into the injected one.
@@ -225,10 +231,13 @@ fn describe_exposure(problem: &Problem) -> String {
             format!("aegis.toml exposes service `{service}`, which compose.yaml does not define")
         }
         Problem::ReservedSidecarService { service } => format!(
-            "service `{service}` is injected by Aegis when the stack exposes a service: rename it or remove the exposure"
+            "service `{service}` is injected by Aegis when the stack exposes a service or sets a node: rename it or remove the exposure"
+        ),
+        Problem::OwnNetworkOnNodeService { service } => format!(
+            "service `{service}` joins the tailnet node's network, so it may not set `network_mode`, `networks`, `ports` or `hostname`: remove them"
         ),
         Problem::ReservedSidecarVolume { volume } => format!(
-            "volume `{volume}` is injected by Aegis when the stack exposes a service: rename it or remove the exposure"
+            "volume `{volume}` is injected by Aegis when the stack exposes a service or sets a node: rename it or remove the exposure"
         ),
         other => format!("{other:?}"),
     }
@@ -360,6 +369,7 @@ mod tests {
         vec![
             Problem::UnknownExposedService { service: service() },
             Problem::ReservedSidecarService { service: service() },
+            Problem::OwnNetworkOnNodeService { service: service() },
             Problem::ReservedSidecarVolume {
                 volume: VolumeName::new("v").unwrap(),
             },

@@ -10,7 +10,8 @@ use aegis_application::{
     ReconcileError, ReconcilePorts, Reconciler, Repository,
 };
 use aegis_domain::{
-    CommitSha, Deployment, HostName, Report, ReservedStacks, ServiceName, StackName, StackReport,
+    CommitSha, Deployment, HostName, Reach, Report, ReservedStacks, ServiceName, StackName,
+    StackReport,
 };
 
 #[cfg(test)]
@@ -341,8 +342,28 @@ fn a_stack_that_exposes_a_service_is_deployed_with_its_exposure() {
         .find(|request| request.target().project().as_str() == "aegis-exposed")
         .unwrap();
     let exposure = exposed.target().exposure().unwrap();
-    assert_eq!(exposure.expose().service().as_str(), "vault");
-    assert_eq!(exposure.expose().port().get(), 80);
+    let Reach::Https(expose) = exposure.reach() else {
+        panic!("expected an HTTPS exposure");
+    };
+    assert_eq!(expose.service().as_str(), "vault");
+    assert_eq!(expose.port().get(), 80);
+    assert_eq!(exposure.tags().as_slice()[0].as_str(), "tag:app");
+}
+
+#[test]
+fn a_stack_with_a_node_is_deployed_with_a_raw_exposure() {
+    let compose = FakeCompose::default();
+    deploy_host3(&compose);
+    let requests = compose.requests();
+    let shared = requests
+        .iter()
+        .find(|request| request.target().project().as_str() == "aegis-shared")
+        .unwrap();
+    let exposure = shared.target().exposure().unwrap();
+    let Reach::Raw(node) = exposure.reach() else {
+        panic!("expected a raw node");
+    };
+    assert_eq!(node.service().as_str(), "files");
     assert_eq!(exposure.tags().as_slice()[0].as_str(), "tag:app");
 }
 

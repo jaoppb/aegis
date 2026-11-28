@@ -309,9 +309,17 @@ collection!(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     name: ServiceName,
-    source: ServiceSource,
+    shape: Shape,
     env_files: EnvFiles,
     mounts: Mounts,
+}
+
+/// What a service is made from and how it is networked, kept together because both decide how the
+/// service starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shape {
+    source: ServiceSource,
+    networking: Networking,
 }
 
 impl Service {
@@ -320,10 +328,23 @@ impl Service {
     pub fn new(name: ServiceName, source: ServiceSource) -> Self {
         Self {
             name,
-            source,
+            shape: Shape {
+                source,
+                networking: Networking::default(),
+            },
             env_files: EnvFiles::default(),
             mounts: Mounts::default(),
         }
+    }
+
+    /// The same service with `networking`.
+    #[must_use]
+    pub fn with_networking(self, networking: Networking) -> Self {
+        let shape = Shape {
+            networking,
+            ..self.shape
+        };
+        Self { shape, ..self }
     }
 
     /// The same service with `env_files`.
@@ -347,7 +368,7 @@ impl Service {
     /// Where the service gets its image.
     #[must_use]
     pub const fn source(&self) -> &ServiceSource {
-        &self.source
+        &self.shape.source
     }
 
     /// The `env_file` entries, relative to the stack directory.
@@ -361,6 +382,23 @@ impl Service {
     pub const fn mounts(&self) -> &Mounts {
         &self.mounts
     }
+
+    /// Whether the service sets its own network.
+    #[must_use]
+    pub const fn networking(&self) -> Networking {
+        self.shape.networking
+    }
+}
+
+/// Whether a service sets its own network, which a service that joins the tailnet node's network
+/// namespace may not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Networking {
+    /// The service sets none of `network_mode`, `networks`, `ports` and `hostname`.
+    #[default]
+    Default,
+    /// The service sets at least one of them.
+    Own,
 }
 
 /// The services, volumes and file references of a compose file.

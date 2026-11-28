@@ -2,8 +2,8 @@
 
 use aegis_domain::{
     Access, Build, DeclaredPath, DesiredState, EnvFile, FileReference, FileRole, Host, Hosts, Line,
-    Location, Mount, Presence, Problem, ReferenceKind, Rejection, Rejections, RepoPath, Service,
-    ServiceName, Stack, Stacks, ValueError, Violation, Violations, VolumeName,
+    Location, Mount, Networking, Presence, Problem, Reach, ReferenceKind, Rejection, Rejections,
+    RepoPath, Service, ServiceName, Stack, Stacks, ValueError, Violation, Violations, VolumeName,
 };
 
 use crate::loader::unreadable;
@@ -111,24 +111,38 @@ fn stack_violations(context: &Context<'_>) -> Vec<Violation> {
     found
 }
 
-/// An exposed service the compose file lacks, and the services and volumes the sidecar would
-/// collide with.
+/// An exposed service the compose file lacks, a node service that sets its own network, and the
+/// services and volumes the sidecar would collide with.
 fn exposure_violations(context: &Context<'_>) -> Vec<Violation> {
-    let Some(expose) = context.stack.policy().expose() else {
+    let Some(exposed) = context.stack.policy().tailnet_service() else {
         return Vec::new();
     };
     let services = context.stack.compose().services();
-    let defined = |name: &ServiceName| services.iter().any(|service| service.name() == name);
     let mut found = Vec::new();
-    if !defined(expose.service()) {
-        let problem = Problem::UnknownExposedService {
-            service: expose.service().clone(),
-        };
-        found.push(context.violation(expose.service().as_str(), problem));
+    match services.iter().find(|service| service.name() == exposed) {
+        None => {
+            let problem = Problem::UnknownExposedService {
+                service: exposed.clone(),
+            };
+            found.push(context.violation(exposed.as_str(), problem));
+        }
+        Some(service) => found.extend(own_network(context, service)),
     }
     found.extend(reserved_services(context));
     found.extend(reserved_volumes(context));
     found
+}
+
+/// A service that joins the node's network namespace and sets a network of its own.
+fn own_network(context: &Context<'_>, service: &Service) -> Option<Violation> {
+    let joins = matches!(context.stack.policy().reach(), Some(Reach::Raw(_)));
+    let own = service.networking() == Networking::Own;
+    (joins && own).then(|| {
+        let problem = Problem::OwnNetworkOnNodeService {
+            service: service.name().clone(),
+        };
+        context.violation(service.name().as_str(), problem)
+    })
 }
 
 fn reserved_services(context: &Context<'_>) -> Vec<Violation> {

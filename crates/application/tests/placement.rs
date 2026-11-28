@@ -66,6 +66,48 @@ mod cases {
         assert_eq!(check_enrollment(&state, &name("h"), &asked), Ok(()));
     }
 
+    fn raw(service: &str, state: StackState) -> StackPolicy {
+        let node = aegis_domain::Node::new(ServiceName::new(service).unwrap());
+        StackPolicy::new(None, tags(&["tag:app"]), state).with_node(node)
+    }
+
+    #[test]
+    fn an_active_stack_with_a_raw_node_of_that_hostname_is_placed() {
+        let state = desired(vec![host(
+            "h",
+            vec![stack("vault", raw("vault", StackState::Active))],
+        )]);
+        assert_eq!(
+            check_enrollment(&state, &name("h"), &request("vault", &["tag:app"])),
+            Ok(())
+        );
+        assert_eq!(
+            check_enrollment(&state, &name("h"), &request("other", &["tag:app"])),
+            Err(Misplaced::NotPlaced)
+        );
+        assert_eq!(
+            check_enrollment(&state, &name("h"), &request("vault", &[])),
+            Err(Misplaced::WrongTags)
+        );
+    }
+
+    #[test]
+    fn a_purged_stack_with_a_raw_node_owns_the_node_for_deletion() {
+        let purged = stack("vault", raw("vault", StackState::Purged));
+        let node = NodeLabel::new("vault").unwrap();
+        let gone = outcome(vec![host("h", vec![purged])], vec![]);
+        assert!(purges_node(&gone, &name("h"), &node));
+        let held = stack("app", raw("vault", StackState::Active));
+        let kept = outcome(
+            vec![host(
+                "h",
+                vec![stack("vault", raw("vault", StackState::Purged)), held],
+            )],
+            vec![],
+        );
+        assert!(!purges_node(&kept, &name("h"), &node));
+    }
+
     #[test]
     fn the_order_of_the_tags_does_not_matter() {
         let state = vault(Some("vaultwarden"), &["tag:a", "tag:b"], StackState::Active);
