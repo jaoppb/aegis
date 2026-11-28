@@ -5,7 +5,7 @@ The controller and the agents talk over the tailnet, and the tailnet is the peri
 | Server | Accepts requests from | Listens on |
 |--------|-----------------------|------------|
 | Agent | nodes tagged `tag:aegis-controller` | `AEGIS_LISTEN` |
-| Controller | nodes tagged `tag:aegis-agent` for every route except the sync routes, each bound to the host the node serves (its node name must be `<host>` or `<host>-aegis-agent` for a host of `AEGIS_AGENTS`, see [controller.md](controller.md)); an operator's untagged node for `GET /v1/status` and `GET /v1/health`; operators alone for the sync routes | `AEGIS_LISTEN` |
+| Controller | nodes tagged `tag:aegis-agent` for every route except the sync routes, each but `GET /v1/health` bound to the host the node serves (its node name must be `<host>` or `<host>-aegis-agent` for a host of `AEGIS_AGENTS`, see [controller.md](controller.md)); an operator's untagged node for `GET /v1/status` and `GET /v1/health`; operators alone for the sync routes | `AEGIS_LISTEN` |
 
 An untagged node, a node with another tag (including an agent calling another agent), an address that is not a tailnet node, or a failed whois lookup is refused, except an operator's untagged node on the controller routes open to operators (see Operators). The first three get `403`; a failed lookup gets `503`. The API is served under `/v1`.
 

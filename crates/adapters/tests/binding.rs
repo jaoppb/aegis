@@ -162,6 +162,19 @@ async fn world_within(name: &str, limits: MintLimits) -> World {
     world_over(world::loaded_hub(name, &files, limits).await).await
 }
 
+/// A world where every stack loads, so a purged stack may have its node deleted.
+#[cfg(test)]
+async fn clean_world(name: &str) -> World {
+    let parts = [
+        VAULT.to_vec(),
+        OLD.to_vec(),
+        OTHER_HOST.to_vec(),
+        MOVED.to_vec(),
+    ];
+    let hub = world::loaded_hub(name, &parts.concat(), MintLimits::standard()).await;
+    world_over(hub).await
+}
+
 /// A world over a hub that has not loaded a commit: it only knows the agents of `h` and `g`.
 #[cfg(test)]
 async fn unloaded_world() -> World {
@@ -428,7 +441,7 @@ fn a_node_that_already_has_state_does_not_count_against_the_limit() {
 #[test]
 fn only_the_node_of_a_purged_stack_of_the_callers_host_may_be_deleted() {
     runtime().block_on(async {
-        let world = world("purge-check").await;
+        let world = clean_world("purge-check").await;
         let active = delete_node(&world.agent, "vaultwarden").await;
         let unknown = delete_node(&world.agent, "nothing").await;
         assert_eq!(active.status(), StatusCode::FORBIDDEN);
@@ -574,7 +587,7 @@ fn a_made_up_stack_name_is_not_kept_in_the_status() {
 #[test]
 fn a_node_of_a_purged_stack_of_another_host_or_still_in_use_is_not_deleted() {
     runtime().block_on(async {
-        let world = world("not-mine").await;
+        let world = clean_world("not-mine").await;
         let theirs = delete_node(&world.agent, "gnode").await;
         let moved = delete_node(&world.agent, "moved").await;
         assert_eq!(theirs.status(), StatusCode::FORBIDDEN);
@@ -591,6 +604,15 @@ fn a_node_of_a_purged_stack_of_another_host_or_still_in_use_is_not_deleted() {
             StatusCode::BAD_GATEWAY,
             "g's own purged node reaches Tailscale"
         );
+    });
+}
+
+#[test]
+fn no_node_is_deleted_while_a_stack_of_the_repository_is_rejected() {
+    runtime().block_on(async {
+        let world = world("rejected-blocks").await;
+        let own = delete_node(&world.agent, "vault").await;
+        assert_eq!(own.status(), StatusCode::FORBIDDEN);
     });
 }
 

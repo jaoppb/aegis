@@ -8,6 +8,7 @@ use aegis_domain::{
 };
 
 use crate::enroll::EnrollmentRequest;
+use crate::outcome::Outcome;
 
 /// A request does not match the desired state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,16 +88,27 @@ pub fn check_enrollment(
 
 /// Whether the agent of `host` may delete the node `node`.
 ///
-/// A stack of `host` must be marked purged with an exposed service named like the node, and no
-/// active stack of any host may expose the name, because node names are shared by the whole
-/// tailnet.
+/// A stack of `host` must be marked purged with an exposed service named like the node. Node
+/// names are shared by the whole tailnet, so the node stays when any active stack of any host,
+/// or of the reserved `aegis/` directory, exposes the name, and while any stack is rejected,
+/// because a rejected stack may still run with it (the agent's own rule).
 #[must_use]
-pub fn purges_node(state: &DesiredState, host: &HostName, node: &NodeLabel) -> bool {
+pub fn purges_node(outcome: &Outcome, host: &HostName, node: &NodeLabel) -> bool {
+    let state = outcome.state();
     let own = state.hosts().iter().find(|found| found.name() == host);
-    let in_state = |wanted: StackState| {
-        move |stack: &Stack| exposes(stack.policy(), node) && stack.policy().state() == wanted
-    };
-    let purged = own.is_some_and(|found| found.stacks().iter().any(in_state(StackState::Purged)));
-    let mut stacks = state.hosts().iter().flat_map(|found| found.stacks().iter());
-    purged && !stacks.any(in_state(StackState::Active))
+    let purged = own.is_some_and(|found| {
+        found
+            .stacks()
+            .iter()
+            .any(|stack| holds(stack, node, StackState::Purged))
+    });
+    let hosted = state.hosts().iter().flat_map(|found| found.stacks().iter());
+    let mut live = hosted.chain(state.reserved().iter());
+    purged
+        && outcome.rejected().is_empty()
+        && !live.any(|stack| holds(stack, node, StackState::Active))
+}
+
+fn holds(stack: &Stack, node: &NodeLabel, wanted: StackState) -> bool {
+    exposes(stack.policy(), node) && stack.policy().state() == wanted
 }

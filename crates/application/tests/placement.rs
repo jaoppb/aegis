@@ -3,13 +3,14 @@
 #[cfg(test)]
 mod cases {
     use aegis_application::{
-        EnrollmentRequest, Misplaced, SidecarIdentity, StateVolume, check_enrollment, knows_stack,
-        purges_node,
+        EnrollmentRequest, Misplaced, Outcome, SidecarIdentity, StateVolume, check_enrollment,
+        knows_stack, purges_node,
     };
     use aegis_domain::{
         ComposeSource, ComposeSummary, DesiredState, Expose, Host, HostName, Hosts, NodeLabel,
-        Port, ServiceName, Services, Stack, StackDefinition, StackIdentity, StackKind, StackName,
-        StackPolicy, StackState, Stacks, TailnetTag, TailnetTags, Volumes,
+        Port, Rejection, Rejections, RepoPath, ServiceName, Services, Stack, StackDefinition,
+        StackIdentity, StackKind, StackName, StackPolicy, StackState, Stacks, TailnetTag,
+        TailnetTags, Violations, Volumes,
     };
 
     fn tags(names: &[&str]) -> TailnetTags {
@@ -129,16 +130,42 @@ mod cases {
         stack("old", policy(Some(service), &[], state))
     }
 
+    fn outcome(hosts: Vec<Host>, reserved: Vec<Stack>) -> Outcome {
+        let state = DesiredState::new(Hosts::new(hosts), Stacks::new(reserved));
+        Outcome::new(state, Rejections::default())
+    }
+
+    fn rejecting(hosts: Vec<Host>) -> Outcome {
+        let state = DesiredState::new(Hosts::new(hosts), Stacks::default());
+        let broken = Rejection::new(
+            RepoPath::new("hosts/g/broken").unwrap(),
+            Violations::default(),
+        );
+        Outcome::new(state, Rejections::new(vec![broken]))
+    }
+
     #[test]
     fn only_a_purged_stack_of_the_callers_host_owns_its_node_for_deletion() {
         let node = NodeLabel::new("vault").unwrap();
-        let purged = desired(vec![host("h", vec![old("vault", StackState::Purged)])]);
-        let active = desired(vec![host("h", vec![old("vault", StackState::Active)])]);
-        let other = desired(vec![host("h", vec![old("other", StackState::Purged)])]);
-        let elsewhere = desired(vec![
-            host("h", Vec::new()),
-            host("g", vec![old("vault", StackState::Purged)]),
-        ]);
+        let purged = outcome(
+            vec![host("h", vec![old("vault", StackState::Purged)])],
+            vec![],
+        );
+        let active = outcome(
+            vec![host("h", vec![old("vault", StackState::Active)])],
+            vec![],
+        );
+        let other = outcome(
+            vec![host("h", vec![old("other", StackState::Purged)])],
+            vec![],
+        );
+        let elsewhere = outcome(
+            vec![
+                host("h", Vec::new()),
+                host("g", vec![old("vault", StackState::Purged)]),
+            ],
+            vec![],
+        );
         assert!(purges_node(&purged, &name("h"), &node));
         assert!(!purges_node(&active, &name("h"), &node));
         assert!(!purges_node(&other, &name("h"), &node));
@@ -146,15 +173,20 @@ mod cases {
     }
 
     #[test]
-    fn a_node_name_another_host_still_uses_is_never_deleted() {
+    fn a_node_name_another_host_or_a_reserved_stack_still_uses_is_never_deleted() {
         let node = NodeLabel::new("vault").unwrap();
-        let moved = desired(vec![
-            host("h", vec![old("vault", StackState::Purged)]),
-            host(
-                "g",
-                vec![stack("app", policy(Some("vault"), &[], StackState::Active))],
-            ),
-        ]);
+        let mine = host("h", vec![old("vault", StackState::Purged)]);
+        let theirs = stack("app", policy(Some("vault"), &[], StackState::Active));
+        let moved = outcome(vec![mine.clone(), host("g", vec![theirs.clone()])], vec![]);
+        let reserved = outcome(vec![mine], vec![theirs]);
         assert!(!purges_node(&moved, &name("h"), &node));
+        assert!(!purges_node(&reserved, &name("h"), &node));
+    }
+
+    #[test]
+    fn no_node_is_deleted_while_a_stack_is_rejected_because_it_may_still_run_with_the_name() {
+        let node = NodeLabel::new("vault").unwrap();
+        let mine = host("h", vec![old("vault", StackState::Purged)]);
+        assert!(!purges_node(&rejecting(vec![mine]), &name("h"), &node));
     }
 }

@@ -42,10 +42,11 @@ impl Binding {
         request: &EnrollmentRequest,
     ) -> Result<(), Refusal> {
         let stack = request.stack();
-        let known = self.with_goal(|goal| knows_stack(state_of(goal), host, stack))?;
-        let who = Who::new(host, known.then_some(stack));
-        let checked = self.with_goal(|goal| check_enrollment(state_of(goal), host, request))?;
-        checked.map_err(|misplaced| self.misplaced(who, misplaced))?;
+        let judged = self.with_goal(|goal| judge(goal, host, request))?;
+        let who = Who::new(host, judged.known.as_ref());
+        judged
+            .checked
+            .map_err(|misplaced| self.misplaced(who, misplaced))?;
         match request.state() {
             StateVolume::Empty => self.reserve(host, stack),
             StateVolume::Populated => Ok(()),
@@ -53,13 +54,14 @@ impl Binding {
     }
 
     /// Let the agent of `host` delete the node `node` when the desired state marks a stack of
-    /// that host purged and its exposed service is named like the node.
+    /// that host purged with an exposed service named like the node, and no other stack still
+    /// holds the name (see [`purges_node`]).
     pub(in crate::api) fn admit_deletion(
         &self,
         host: &HostName,
         node: &NodeLabel,
     ) -> Result<(), Refusal> {
-        let purged = self.with_goal(|goal| purges_node(state_of(goal), host, node))?;
+        let purged = self.with_goal(|goal| purges_node(goal.outcome(), host, node))?;
         purged.then_some(()).ok_or_else(|| self.not_purged(host))
     }
 
@@ -99,12 +101,27 @@ impl Binding {
         self.note(Who::new(host, None), RefusalReason::NotPurged);
         Refusal::new(
             StatusCode::FORBIDDEN,
-            &"the desired state does not mark a stack of this host purged for that node",
+            &"the desired state does not let this host delete that node",
         )
     }
 
     fn note(&self, who: Who<'_>, reason: RefusalReason) {
         self.shared.vigil().refuse(who, reason);
+    }
+}
+
+/// What the desired state says of a request for a node: the stack when the host has it at all, and
+/// whether the request matches it.
+struct Judged {
+    known: Option<StackName>,
+    checked: Result<(), Misplaced>,
+}
+
+fn judge(goal: &Goal, host: &HostName, request: &EnrollmentRequest) -> Judged {
+    let state = state_of(goal);
+    Judged {
+        known: knows_stack(state, host, request.stack()).then(|| request.stack().clone()),
+        checked: check_enrollment(state, host, request),
     }
 }
 
