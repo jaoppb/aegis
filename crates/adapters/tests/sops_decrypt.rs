@@ -79,14 +79,19 @@ fn a_file_is_decrypted_with_its_own_format_and_nothing_is_kept_on_disk_by_the_ad
     });
 }
 
+#[cfg(test)]
+async fn names_seen_by_sops() -> String {
+    let sandbox = Sandbox::new("env", 0).await;
+    let file = sandbox.encrypted("db.env").await;
+    sandbox.decryptor().decrypt(&file).await.unwrap();
+    let log = tokio::fs::read_to_string(sandbox.log()).await.unwrap();
+    log.lines().last().unwrap().to_owned()
+}
+
 #[test]
 fn sops_only_inherits_the_variables_that_find_the_age_key() {
     runtime().block_on(async {
-        let sandbox = Sandbox::new("env", 0).await;
-        let file = sandbox.encrypted("db.env").await;
-        sandbox.decryptor().decrypt(&file).await.unwrap();
-        let log = tokio::fs::read_to_string(sandbox.log()).await.unwrap();
-        let names = log.lines().last().unwrap();
+        let names = names_seen_by_sops().await;
         let allowed = [
             "PATH",
             "HOME",
@@ -99,6 +104,10 @@ fn sops_only_inherits_the_variables_that_find_the_age_key() {
             "SHLVL",
             "_",
         ];
+        assert!(
+            names.split_whitespace().any(|name| name == "PATH"),
+            "{names}"
+        );
         let stray: Vec<&str> = names
             .split_whitespace()
             .filter(|name| !allowed.contains(name))
@@ -129,5 +138,37 @@ fn a_missing_file_is_reported_without_running_sops() {
         let error = sandbox.decryptor().decrypt(&file).await.unwrap_err();
         assert_eq!(error, DecryptError::Missing);
         assert!(!sandbox.log().exists());
+    });
+}
+
+#[cfg(test)]
+async fn refused(name: &str, text: &str) -> (String, bool) {
+    let sandbox = Sandbox::new(name, 0).await;
+    let path = sandbox.root.join(name);
+    tokio::fs::write(&path, text).await.unwrap();
+    let file = HostPath::new(path.display().to_string()).unwrap();
+    let error = sandbox.decryptor().decrypt(&file).await.unwrap_err();
+    let ran = tokio::fs::try_exists(sandbox.log()).await.unwrap();
+    (error.to_string(), ran)
+}
+
+#[cfg(test)]
+async fn assert_refused(name: &str, text: &str) {
+    let (message, ran) = refused(name, text).await;
+    assert!(message.contains("only age recipients"), "{name}: {message}");
+    assert!(!ran, "{name} reached sops");
+}
+
+#[test]
+fn a_file_that_names_a_key_group_other_than_age_is_refused_without_running_sops() {
+    runtime().block_on(async {
+        let yaml = "a: ENC[x]\nsops:\n  hc_vault:\n    - vault_address: http://evil\n  age: []\n";
+        let json = r#"{"sops": {"kms": [{"arn": "arn:x"}], "age": []}}"#;
+        let dotenv = "A=ENC[x]\nsops_pgp__list_0__map_fp=ABCD\nsops_mac=m\n";
+        let ini = "[a]\nx=1\n[sops]\ngcp_kms__list_0__map_resource_id = r\nmac = m\n";
+        assert_refused("s.yaml", yaml).await;
+        assert_refused("s.json", json).await;
+        assert_refused("s.env", dotenv).await;
+        assert_refused("s.ini", ini).await;
     });
 }

@@ -38,6 +38,43 @@ fn format_of(file: &Path) -> &'static str {
     }
 }
 
+/// The key groups `sops` can use besides age. The file's author picks them, and `sops` would act on
+/// them (a request to a URL of the author's choosing, `gpg`, cloud credentials of the host), so a
+/// file that lists any is refused.
+const FOREIGN_KEYS: [&str; 5] = ["kms", "gcp_kms", "azure_kv", "hc_vault", "pgp"];
+
+fn lists_foreign_key(value: &serde_norway::Value, key: &str) -> bool {
+    let listed = value.get(key);
+    listed.is_some_and(|found| {
+        !found.is_null() && found.as_sequence().is_none_or(|list| !list.is_empty())
+    })
+}
+
+/// YAML and JSON: a foreign key group in the `sops` mapping.
+fn structured_foreign(text: &str) -> bool {
+    let Ok(document) = serde_norway::from_str::<serde_norway::Value>(text) else {
+        return false;
+    };
+    let metadata = document.get("sops");
+    metadata.is_some_and(|sops| FOREIGN_KEYS.iter().any(|key| lists_foreign_key(sops, key)))
+}
+
+/// Dotenv: `sops_<group>__...` entries. INI: `<group>__...` keys of the `[sops]` section.
+fn flat_foreign(text: &str) -> bool {
+    let keys = text.lines().filter_map(|line| line.split_once('='));
+    let keys: Vec<&str> = keys.map(|(key, _)| key.trim()).collect();
+    FOREIGN_KEYS.iter().any(|group| {
+        let dotenv = format!("sops_{group}__");
+        let ini = format!("{group}__");
+        keys.iter()
+            .any(|key| key.starts_with(&dotenv) || key.starts_with(&ini))
+    })
+}
+
+fn has_foreign_key(text: &str) -> bool {
+    structured_foreign(text) || flat_foreign(text)
+}
+
 /// Runs `sops decrypt` with the age key of the agent's own host.
 #[derive(Debug, Clone)]
 pub struct SopsDecrypt {
@@ -88,6 +125,11 @@ impl SecretDecryptor for SopsDecrypt {
         let present = tokio::fs::try_exists(file.as_str()).await;
         let present = present.map_err(|cause| failed(file, &cause.kind()))?;
         present.then_some(()).ok_or(DecryptError::Missing)?;
+        let text = tokio::fs::read_to_string(file.as_str()).await;
+        let text = text.map_err(|cause| failed(file, &cause.kind()))?;
+        (!has_foreign_key(&text))
+            .then_some(())
+            .ok_or_else(|| failed(file, &"only age recipients are accepted"))?;
         let output = cli::run(self.command(file), String::new(), SOPS_TIMEOUT)
             .await
             .map_err(|reason| failed(file, &reason))?;

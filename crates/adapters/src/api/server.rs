@@ -53,7 +53,7 @@ pub enum ServeError {
     Tag(#[from] ValueError),
     /// Decrypted files left by an earlier run could not be removed.
     #[error("cannot remove stale decrypted files: {0}")]
-    Sweep(String),
+    Sweep(aegis_application::StoreError),
     /// A required environment variable is not set.
     #[error("{0} is not set")]
     Missing(&'static str),

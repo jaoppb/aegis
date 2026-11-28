@@ -85,8 +85,16 @@ where
 {
     let commit = CommitSha::new(request.commit())
         .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
-    let _turn = agent.turn.lock().await;
-    let done = agent.reconciler.reconcile(commit).await;
+    // The reconcile runs in its own task: a controller that hangs up cannot cancel it half way,
+    // which would skip removing the decrypted files.
+    let worker = Arc::clone(&agent);
+    let task = tokio::spawn(async move {
+        let _turn = worker.turn.lock().await;
+        worker.reconciler.reconcile(commit).await
+    });
+    let done = task
+        .await
+        .map_err(|failure| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, &failure.to_string()))?;
     let report =
         status_report(&done.map_err(|error| Refusal::new(StatusCode::BAD_GATEWAY, &error))?);
     // Reporting is best effort: the controller also gets the report as the answer.
@@ -182,7 +190,7 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
         .map_err(|cause| ServeError::Bind { address, cause })?;
     let controller = ApiClient::new(settings.controller.clone())?;
     let swept = TmpfsStore::from_environment().sweep().await;
-    swept.map_err(|error| ServeError::Sweep(error.to_string()))?;
+    swept.map_err(ServeError::Sweep)?;
     let routes = reconcile_routes(settings.reconciler(), controller);
     serve_agent(listener, TailscaleWhois::new(), routes).await
 }
@@ -196,7 +204,8 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
 /// # Errors
 ///
 /// Returns a [`ServeError`] when a variable is missing or invalid, the runtime cannot start, the
-/// address cannot be bound or the server fails.
+/// address cannot be bound, decrypted files left by an earlier run cannot be removed or the server
+/// fails.
 pub fn serve_agent_from_env() -> Result<(), ServeError> {
     let settings = Settings::from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()

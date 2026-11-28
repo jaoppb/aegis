@@ -4,13 +4,13 @@ The agent converges one host to a git commit. The controller tells it which comm
 
 ## Configuration
 
-The agent reads its configuration from the environment and exits at start-up when a required variable is missing or invalid.
+The agent reads its configuration from the environment and exits at start-up when a required variable is missing or invalid, or when it cannot remove the decrypted files an earlier run left in its secret directory (`$XDG_RUNTIME_DIR/aegis`, or `/dev/shm/aegis`).
 
 | Variable | Required | Meaning |
 |----------|----------|---------|
 | `AEGIS_LISTEN` | yes | Socket address to listen on, normally the node's tailnet address (see [tailscale-acl.md](tailscale-acl.md)). |
 | `AEGIS_HOST` | yes | The host this agent deploys: the directory name under `hosts/`. |
-| `AEGIS_CHECKOUT` | yes | Absolute path of a git working tree of the repository, cloned beforehand with an `origin` remote. |
+| `AEGIS_CHECKOUT` | yes | Path of a git working tree of the repository, cloned beforehand with an `origin` remote. |
 | `AEGIS_CONTROLLER` | yes | Base URL of the controller API, such as `http://100.64.0.2:7480`. |
 | `AEGIS_RESERVED` | no | Comma-separated names of the reserved `aegis/` stacks this host deploys. Empty by default, so nothing under `aegis/` runs unless a host opts in. |
 
@@ -34,7 +34,7 @@ Every stack runs as the project `aegis-<stack>` (so the stack name must be lower
 
 ## Secrets
 
-Each stack's SOPS-encrypted `env_file`, `secrets` and `.env` files are decrypted by the agent with its own age key onto tmpfs for the length of `docker compose up`, and removed afterwards. `sops` must be on the `PATH`, and the agent needs `SOPS_AGE_KEY_FILE` (or `SOPS_AGE_KEY_CMD`, or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`). `sops` inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` and those variables. A decryption failure marks only that stack `failed`. See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
+Each stack's SOPS-encrypted `env_file`, `secrets` and `.env` files are decrypted by the agent with its own age key onto tmpfs for the length of `docker compose up`, and removed afterwards. `sops` (3.9 or later, for `sops decrypt`) must be on the `PATH`, and the agent needs its age key: set `SOPS_AGE_KEY_FILE` (or `SOPS_AGE_KEY_CMD`, or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`), or place the key at the default path `$XDG_CONFIG_HOME/sops/age/keys.txt`. `sops` inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` and those variables. Docker Compose 2.24.4 or later is required for the generated override (the release image pins compatible versions through `flake.lock`). A decryption failure marks only that stack `failed`. See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
 
 ## `POST /v1/reconcile`
 

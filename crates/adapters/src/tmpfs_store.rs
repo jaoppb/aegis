@@ -3,6 +3,7 @@
 //!
 //! Each project gets a private directory (`0700`) under the root, and each file is `0600`.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use aegis_application::{Reason, SecretStore, Slot, StoreError};
@@ -15,6 +16,9 @@ const ROOT_NAME: &str = "aegis";
 /// Where the kernel lists the mounts of this process.
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 
+/// The mode bits of a directory (the file type bits).
+const DIRECTORY: u32 = 0o04_0000;
+
 /// Filesystem types that live in memory.
 const VOLATILE: [&str; 2] = ["tmpfs", "ramfs"];
 
@@ -22,6 +26,7 @@ const VOLATILE: [&str; 2] = ["tmpfs", "ramfs"];
 #[derive(Debug, Clone)]
 pub struct TmpfsStore {
     root: PathBuf,
+    mounts: PathBuf,
 }
 
 impl TmpfsStore {
@@ -37,7 +42,19 @@ impl TmpfsStore {
     /// A store under `root`. It still refuses to write unless `root` is on tmpfs.
     #[must_use]
     pub fn at<Root: Into<PathBuf>>(root: Root) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            mounts: PathBuf::from(MOUNTINFO),
+        }
+    }
+
+    /// The same store that reads the mount table from `mounts` instead of the kernel's, for tests.
+    #[must_use]
+    pub fn with_mount_table<Mounts: Into<PathBuf>>(self, mounts: Mounts) -> Self {
+        Self {
+            mounts: mounts.into(),
+            ..self
+        }
     }
 
     /// The root directory, created (private) and checked to be on tmpfs.
@@ -46,7 +63,7 @@ impl TmpfsStore {
         let root = tokio::fs::canonicalize(&self.root)
             .await
             .map_err(|cause| io_failure("resolve the secret directory", &cause))?;
-        let mounts = tokio::fs::read_to_string(MOUNTINFO)
+        let mounts = tokio::fs::read_to_string(&self.mounts)
             .await
             .map_err(|cause| io_failure("read the mount table", &cause))?;
         is_volatile(&mounts, &root)
@@ -63,13 +80,30 @@ fn io_failure(action: &str, cause: &std::io::Error) -> StoreError {
     StoreError::new(Reason::new(&format!("cannot {action}: {}", cause.kind())))
 }
 
+/// The user the agent runs as: the owner of its own `/proc` entry.
+async fn own_uid() -> Result<u32, StoreError> {
+    let own = tokio::fs::metadata("/proc/self").await;
+    own.map(|metadata| metadata.uid())
+        .map_err(|cause| io_failure("find the agent's user", &cause))
+}
+
+/// `path` as a real directory owned by the agent and closed to everyone else: created `0700` when
+/// absent, refused when it is a link, belongs to someone else or lets others in. A shared
+/// directory such as `/dev/shm` cannot hold a plaintext workspace another user prepared.
 async fn make_private_directory(path: &Path) -> Result<(), StoreError> {
-    tokio::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
+    let existing = tokio::fs::symlink_metadata(path).await;
+    if matches!(&existing, Err(cause) if cause.kind() == std::io::ErrorKind::NotFound) {
+        let created = tokio::fs::DirBuilder::new().mode(0o700).create(path).await;
+        created.map_err(|cause| io_failure("create the secret directory", &cause))?;
+    }
+    let metadata = tokio::fs::symlink_metadata(path)
         .await
-        .map_err(|cause| io_failure("create the secret directory", &cause))
+        .map_err(|cause| io_failure("inspect the secret directory", &cause))?;
+    let private = metadata.mode() & 0o17_7777 == DIRECTORY | 0o700;
+    let owned = metadata.uid() == own_uid().await?;
+    (private && owned)
+        .then_some(())
+        .ok_or_else(|| failure("the secret directory is not a private directory of the agent"))
 }
 
 /// Whether the mount that holds `path` is an in-memory filesystem, according to `mountinfo`: the
@@ -99,10 +133,10 @@ fn mount_of(line: &str) -> Option<Mount> {
 }
 
 async fn write_private(path: &Path, content: &Secret) -> Result<(), StoreError> {
+    tokio::fs::remove_file(path).await.ok();
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)
         .await

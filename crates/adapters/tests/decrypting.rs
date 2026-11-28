@@ -44,6 +44,7 @@ struct Seen {
     override_text: String,
     dotenv_text: Option<String>,
     secret_files: Vec<PathBuf>,
+    workspace: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -61,6 +62,21 @@ impl FakeRunner {
             seen: Mutex::new(Vec::new()),
         }
     }
+}
+
+/// Every file of the directory that holds `file`, by name.
+#[cfg(test)]
+async fn snapshot(file: Option<&HostPath>) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::new();
+    let Some(directory) = file.and_then(|path| std::path::Path::new(path.as_str()).parent()) else {
+        return found;
+    };
+    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        let text = tokio::fs::read_to_string(entry.path()).await.unwrap();
+        found.insert(entry.file_name().to_string_lossy().into_owned(), text);
+    }
+    found
 }
 
 #[cfg(test)]
@@ -84,6 +100,7 @@ impl ComposeRunner for FakeRunner {
                 .iter()
                 .map(|file| PathBuf::from(file.as_str()))
                 .collect(),
+            workspace: snapshot(files.first().or_else(|| request.extras().dotenv())).await,
         };
         self.seen.lock().unwrap().push(seen);
         self.failure
@@ -162,12 +179,35 @@ fn decorated(
     files: &[(&'static str, Result<&'static str, &'static str>)],
     failure: Option<&'static str>,
 ) -> Harness {
-    let decryptor = FakeDecryptor {
+    let ports = SecretPorts::new(fake_decryptor(files), store.clone());
+    harness("/srv/checkout", ports, failure)
+}
+
+#[cfg(test)]
+fn decorated_in(
+    checkout: impl Into<PathBuf>,
+    store: &TmpfsStore,
+    files: &[(&'static str, Result<&'static str, &'static str>)],
+) -> Harness {
+    let ports = SecretPorts::new(fake_decryptor(files), store.clone());
+    harness(checkout, ports, None)
+}
+
+#[cfg(test)]
+fn fake_decryptor(files: &[(&'static str, Result<&'static str, &'static str>)]) -> FakeDecryptor {
+    FakeDecryptor {
         files: files.iter().copied().collect(),
-    };
+    }
+}
+
+#[cfg(test)]
+fn harness(
+    checkout: impl Into<PathBuf>,
+    ports: SecretPorts<FakeDecryptor, TmpfsStore>,
+    failure: Option<&'static str>,
+) -> Harness {
     let runner = Arc::new(FakeRunner::new(failure));
-    let ports = SecretPorts::new(decryptor, store.clone());
-    let compose = DecryptingCompose::new(Shared(runner.clone()), ports, "/srv/checkout");
+    let compose = DecryptingCompose::new(Shared(runner.clone()), ports, checkout);
     Harness { compose, runner }
 }
 
@@ -186,13 +226,33 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[cfg(test)]
 fn with_env(path: &str) -> DeployRequest {
+    with_env_in("web", path)
+}
+
+#[cfg(test)]
+fn with_env_in(stack: &str, path: &str) -> DeployRequest {
     let services = vec![app(vec![env_file(path, Presence::Required)])];
-    request("web", services, vec![])
+    request(stack, services, vec![])
 }
 
 #[cfg(test)]
 async fn clean_up(root: &PathBuf) {
     tokio::fs::remove_dir_all(root).await.ok();
+}
+
+#[cfg(test)]
+fn assert_placed(placed: &BTreeMap<String, String>) {
+    assert_eq!(placed["env-app-0"], "DB_PASSWORD=hunter2\n");
+    assert_eq!(placed["secret-token"], "s3cr3t-token");
+    assert_eq!(placed["dotenv"], "TAG=1.2\n");
+}
+
+#[cfg(test)]
+fn assert_override(text: &str) {
+    assert!(text.contains("app:\n    env_file: !override\n"), "{text}");
+    assert!(text.contains("aegis-web/env-app-0\""), "{text}");
+    assert!(!text.contains("absent"), "{text}");
+    assert!(text.contains("secrets:\n  token:\n    file: \""), "{text}");
 }
 
 #[test]
@@ -213,23 +273,21 @@ fn a_stack_is_pointed_at_decrypted_copies_that_only_exist_while_compose_runs() {
         let request = request("web", vec![app(envs)], secrets);
         compose.converge(&request).await.unwrap();
         let seen = compose.seen();
-        let text = &seen[0].override_text;
-        assert!(text.contains("app:\n    env_file: !override\n"), "{text}");
-        assert!(text.contains("aegis-web/env-app-0\""), "{text}");
-        assert!(!text.contains("absent"), "{text}");
-        assert!(text.contains("secrets:\n  token:\n    file: \""), "{text}");
+        assert_override(&seen[0].override_text);
         assert_eq!(seen[0].dotenv_text.as_deref(), Some("TAG=1.2\n"));
+        assert_placed(&seen[0].workspace);
         assert!(!root.join("aegis-web").exists());
         clean_up(&root).await;
     });
 }
 
 #[test]
-fn plaintext_is_written_only_under_the_tmpfs_workspace() {
+fn every_placed_file_lives_under_the_store_root() {
     runtime().block_on(async {
         let root = root("private");
         let compose = decorated(&TmpfsStore::at(&root), &[("db.env", Ok("A=1\n"))], None);
         compose.converge(&with_env("db.env")).await.unwrap();
+        clean_up(&root).await;
         let seen = compose.seen();
         assert!(
             seen[0]
@@ -237,24 +295,32 @@ fn plaintext_is_written_only_under_the_tmpfs_workspace() {
                 .iter()
                 .all(|path| path.starts_with(&root))
         );
-        assert!(root.starts_with("/dev/shm"));
-        clean_up(&root).await;
     });
 }
 
 #[test]
-fn a_file_not_encrypted_to_this_hosts_key_fails_that_stack_and_leaves_nothing() {
+fn a_file_not_encrypted_to_this_hosts_key_fails_that_stack_and_the_next_one_still_runs() {
     runtime().block_on(async {
         let root = root("denied");
-        let files = [("db.env", Err("no matching key"))];
+        let files = [
+            ("db.env", Ok("DB=1\n")),
+            ("denied.env", Err("no matching key")),
+            ("other.env", Ok("OTHER=2\n")),
+        ];
         let compose = decorated(&TmpfsStore::at(&root), &files, None);
-        let first = compose.converge(&with_env("db.env")).await;
-        let second = compose.converge(&request("other", vec![], vec![])).await;
+        let both = vec![app(vec![
+            env_file("db.env", Presence::Required),
+            env_file("denied.env", Presence::Required),
+        ])];
+        let first = compose.converge(&request("web", both, vec![])).await;
+        let second = compose.converge(&with_env_in("other", "other.env")).await;
         let message = first.unwrap_err().to_string();
-        assert!(message.contains("db.env"), "{message}");
+        assert!(message.contains("denied.env"), "{message}");
         assert!(message.contains("no matching key"), "{message}");
         assert!(second.is_ok());
-        assert_eq!(compose.seen().len(), 1);
+        let seen = compose.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].workspace["env-app-0"], "OTHER=2\n");
         assert!(!root.join("aegis-web").exists());
         clean_up(&root).await;
     });
@@ -275,29 +341,59 @@ fn a_missing_required_file_fails_the_stack() {
 #[cfg(test)]
 async fn rejected_dotenv(line: &'static str) -> String {
     let root = root("reserved");
-    let compose = decorated(&TmpfsStore::at(&root), &[(".env", Ok(line))], None);
-    let outcome = compose.converge(&request("web", vec![], vec![])).await;
+    let files = [("db.env", Ok("DB=1\n")), (".env", Ok(line))];
+    let compose = decorated(&TmpfsStore::at(&root), &files, None);
+    let outcome = compose.converge(&with_env("db.env")).await;
     assert!(compose.seen().is_empty());
+    assert!(
+        !root.join("aegis-web").exists(),
+        "an earlier file was left behind"
+    );
     clean_up(&root).await;
     outcome.unwrap_err().to_string()
+}
+
+#[cfg(test)]
+async fn assert_rejects(dotenv: &'static str, name: &str) {
+    let message = rejected_dotenv(dotenv).await;
+    assert!(message.contains(&format!(".env sets {name}")), "{message}");
+    assert!(!message.contains("evil"), "{message}");
 }
 
 #[test]
 fn a_dotenv_that_sets_a_variable_compose_reads_rejects_the_stack_without_the_value() {
     runtime().block_on(async {
-        let compose_file = rejected_dotenv("COMPOSE_FILE=evil.yaml").await;
-        let docker_host = rejected_dotenv("export DOCKER_HOST=tcp://x").await;
-        let path = rejected_dotenv("PATH=/evil").await;
-        assert!(
-            compose_file.contains(".env sets COMPOSE_FILE"),
-            "{compose_file}"
-        );
-        assert!(
-            docker_host.contains(".env sets DOCKER_HOST"),
-            "{docker_host}"
-        );
-        assert!(path.contains(".env sets PATH"), "{path}");
-        assert!(!compose_file.contains("evil") && !docker_host.contains("tcp"));
+        assert_rejects("COMPOSE_FILE=evil.yaml", "COMPOSE_FILE").await;
+        assert_rejects("export DOCKER_HOST=evil", "DOCKER_HOST").await;
+        assert_rejects("export\tCOMPOSE_PROFILES=evil", "COMPOSE_PROFILES").await;
+        assert_rejects("COMPOSE_PROJECT_NAME: evil", "COMPOSE_PROJECT_NAME").await;
+        assert_rejects("\u{feff}DOCKER_CONTEXT=evil", "DOCKER_CONTEXT").await;
+        assert_rejects("OK=1\nPATH=/evil", "PATH").await;
+        assert_rejects("COMPOSE_PATH_SEPARATOR", "COMPOSE_PATH_SEPARATOR").await;
+    });
+}
+
+#[test]
+fn a_dotenv_line_that_is_not_a_plain_name_is_refused_without_echoing_it() {
+    runtime().block_on(async {
+        let message = rejected_dotenv("COMPOSE_ s3cr3t value=1").await;
+        assert!(message.contains("plain variable name"), "{message}");
+        assert!(!message.contains("s3cr3t"), "{message}");
+    });
+}
+
+#[test]
+fn ordinary_variables_in_a_dotenv_are_accepted() {
+    runtime().block_on(async {
+        let root = root("plain-dotenv");
+        let files = [(
+            ".env",
+            Ok("# note\n\nTAG=1.2\nexport REGION=eu\nA_B.c-d: x\n"),
+        )];
+        let compose = decorated(&TmpfsStore::at(&root), &files, None);
+        let outcome = compose.converge(&request("web", vec![], vec![])).await;
+        assert!(outcome.is_ok());
+        clean_up(&root).await;
     });
 }
 
@@ -341,31 +437,28 @@ fn a_stack_without_secret_files_creates_no_workspace() {
     });
 }
 
-#[cfg(test)]
-/// Whether the file system that holds this crate is tmpfs, which a test of the refusal needs not.
-async fn checkout_is_on_tmpfs() -> bool {
-    let mounts = tokio::fs::read_to_string("/proc/self/mountinfo").await;
-    let here = tokio::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).await;
-    let (mounts, here) = (mounts.unwrap(), here.unwrap());
-    mounts.lines().any(|line| {
-        let point = line.split(' ').nth(4).unwrap_or("/nowhere");
-        line.contains(" - tmpfs ") && here.starts_with(point) && point != "/"
-    })
-}
-
-#[cfg(test)]
-async fn refused(disk: &PathBuf) -> bool {
-    let compose = decorated(&TmpfsStore::at(disk), &[("db.env", Ok("A=1\n"))], None);
-    let outcome = compose.converge(&with_env("db.env")).await;
-    let message = outcome.unwrap_err().to_string();
-    message.contains("not on tmpfs") && compose.seen().is_empty()
-}
-
 #[test]
-fn the_store_refuses_a_directory_that_is_not_tmpfs() {
+fn a_link_that_leaves_the_stack_directory_is_refused() {
     runtime().block_on(async {
-        let disk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/aegis-not-tmpfs");
-        assert!(checkout_is_on_tmpfs().await || refused(&disk).await);
-        clean_up(&disk).await;
+        let root = root("link");
+        let checkout = root.join("checkout");
+        let other = checkout.join("hosts/host/other");
+        let stack = checkout.join("hosts/host/web");
+        tokio::fs::create_dir_all(&other).await.unwrap();
+        tokio::fs::create_dir_all(&stack).await.unwrap();
+        tokio::fs::write(other.join("db.env"), "sealed")
+            .await
+            .unwrap();
+        tokio::fs::symlink("../other", stack.join("sub"))
+            .await
+            .unwrap();
+        let files = [("db.env", Ok("STOLEN=1\n"))];
+        let store = TmpfsStore::at(root.join("store"));
+        let compose = decorated_in(&checkout, &store, &files);
+        let outcome = compose.converge(&with_env("sub/db.env")).await;
+        let message = outcome.unwrap_err().to_string();
+        assert!(message.contains("inside the stack directory"), "{message}");
+        assert!(compose.seen().is_empty());
+        clean_up(&root).await;
     });
 }

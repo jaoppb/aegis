@@ -125,6 +125,12 @@ impl Extras {
         }
     }
 
+    /// The same extras that merge `files` after the stack's own compose file.
+    #[must_use]
+    pub fn with_files(self, files: ExtraFiles) -> Self {
+        Self { files, ..self }
+    }
+
     /// The same extras with the decrypted `.env` at `dotenv`, which Compose reads instead of the
     /// stack's own `.env`.
     #[must_use]
