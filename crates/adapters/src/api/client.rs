@@ -1,29 +1,10 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{HEALTH_PATH, Health};
-use std::time::Duration;
 
 use reqwest::StatusCode;
 
-/// How long a call may take before it fails.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The root URL of a server, such as `http://100.64.0.7:7480`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaseUrl(String);
-
-impl BaseUrl {
-    /// The server at `url`; a trailing slash is dropped.
-    #[must_use]
-    pub fn new(url: impl Into<String>) -> Self {
-        let url: String = url.into();
-        Self(url.trim_end_matches('/').to_owned())
-    }
-
-    pub(crate) fn join(&self, path: &str) -> String {
-        format!("{}{path}", self.0)
-    }
-}
+use crate::http::BaseUrl;
 
 /// A call to the API failed.
 #[derive(Debug, thiserror::Error)]
@@ -51,10 +32,7 @@ impl ApiClient {
     ///
     /// Returns a [`ClientError`] when the HTTP client cannot be built.
     pub fn new(base: BaseUrl) -> Result<Self, ClientError> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
+        let http = BaseUrl::client()?;
         Ok(Self { http, base })
     }
 
