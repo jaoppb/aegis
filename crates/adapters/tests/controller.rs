@@ -612,32 +612,41 @@ async fn guarded(caller: Option<&'static str>) -> String {
     url
 }
 
-/// The HTTP status the controller answered to a status read and to an enrolment request.
+/// What a call to the controller came to.
 #[cfg(test)]
-async fn statuses_of(url: &str) -> (Option<StatusCode>, Option<StatusCode>) {
-    let client = ApiClient::new(BaseUrl::new(url)).unwrap();
-    let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
-    let status = client.controller_status().await.err();
-    let enroll = client.enroll(&request).await.err();
-    (refused(status.as_ref()), refused(enroll.as_ref()))
+#[derive(Debug, PartialEq)]
+enum Reply {
+    Answered,
+    Refused(StatusCode),
+    Broken,
 }
 
 #[cfg(test)]
-const fn refused(error: Option<&ClientError>) -> Option<StatusCode> {
-    match error {
-        Some(ClientError::Rejected(status)) => Some(*status),
-        _ => None,
+const fn reply<Answer>(result: &Result<Answer, ClientError>) -> Reply {
+    match result {
+        Ok(_) => Reply::Answered,
+        Err(ClientError::Rejected(status)) => Reply::Refused(*status),
+        Err(_) => Reply::Broken,
     }
+}
+
+/// How the controller answered a status read and an enrolment request.
+#[cfg(test)]
+async fn replies_of(url: &str) -> (Reply, Reply) {
+    let client = ApiClient::new(BaseUrl::new(url)).unwrap();
+    let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let status = reply(&client.controller_status().await);
+    (status, reply(&client.enroll(&request).await))
 }
 
 #[test]
 fn one_router_serves_status_and_enrolment_to_agents_only() {
     runtime().block_on(async {
-        let (status, enroll) = statuses_of(&guarded(Some("tag:aegis-agent")).await).await;
-        assert_eq!(status, None);
-        assert_eq!(enroll, Some(StatusCode::BAD_GATEWAY));
-        let (status, enroll) = statuses_of(&guarded(None).await).await;
-        assert_eq!(status, Some(StatusCode::FORBIDDEN));
-        assert_eq!(enroll, Some(StatusCode::FORBIDDEN));
+        let (status, enroll) = replies_of(&guarded(Some("tag:aegis-agent")).await).await;
+        assert_eq!(status, Reply::Answered);
+        assert_eq!(enroll, Reply::Refused(StatusCode::BAD_GATEWAY));
+        let (status, enroll) = replies_of(&guarded(None).await).await;
+        assert_eq!(status, Reply::Refused(StatusCode::FORBIDDEN));
+        assert_eq!(enroll, Reply::Refused(StatusCode::FORBIDDEN));
     });
 }
