@@ -113,7 +113,6 @@ fn entry_value(entry: &str) -> String {
 const REFERENCE_PREFIXES: &[&str] = &[
     "service:",
     "docker-image://",
-    "git@",
     "github.com/",
     "https://",
     "http://",
@@ -123,9 +122,11 @@ const REFERENCE_PREFIXES: &[&str] = &[
 /// An additional build context: `Some` path in the checkout, `None` for a known reference, and
 /// a refusal for any other scheme (`oci-layout://` is a host directory), so the unknown fails closed.
 fn additional_context(value: String) -> Result<Option<String>, ParseError> {
-    if REFERENCE_PREFIXES
-        .iter()
-        .any(|prefix| value.starts_with(prefix))
+    let scp_git = value.starts_with("git@") && value.contains(':');
+    if scp_git
+        || REFERENCE_PREFIXES
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
     {
         return Ok(None);
     }

@@ -576,3 +576,27 @@ fn driver_options_without_a_dollar_are_accepted() {
         "volumes:\n  v:\n    driver_opts: {type: nfs, o: 'addr=10.0.0.1,rw', device: ':/export'}\n";
     assert!(compose::parse(text).is_ok());
 }
+
+#[test]
+fn a_git_at_context_without_a_host_and_path_is_a_checkout_path() {
+    let found = extra_contexts("\n        a: git@x/../../..\n");
+    assert_eq!(found.unwrap(), ["git@x/../../.."]);
+}
+
+#[test]
+fn additional_contexts_with_other_schemes_are_refused() {
+    for value in [
+        "oci-layout:///etc",
+        "https_x://y",
+        "foo://bar",
+        "HTTPS://x/y",
+    ] {
+        let text = format!(
+            "services:\n  app:\n    build:\n      context: .\n      additional_contexts:\n        a: {value}\n"
+        );
+        assert!(
+            rejection(&text).contains("scheme Aegis does not support"),
+            "{value}"
+        );
+    }
+}
