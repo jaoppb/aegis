@@ -6,6 +6,12 @@ use std::time::Duration;
 /// How long a call may take before it fails.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Make the pure-Rust `ring` provider the process default for TLS, which `reqwest` needs and
+/// does not choose itself. A provider that is already installed stays in place.
+fn install_crypto_provider() {
+    drop(rustls::crypto::ring::default_provider().install_default());
+}
+
 /// The root URL of a server, such as `http://100.64.0.7:7480`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaseUrl(String);
@@ -21,6 +27,7 @@ impl BaseUrl {
     /// A client for the servers behind a base URL: it never follows a redirect, so a credential is
     /// never forwarded to another host, and it gives up after the request timeout.
     pub(crate) fn client() -> Result<reqwest::Client, reqwest::Error> {
+        install_crypto_provider();
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
