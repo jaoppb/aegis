@@ -22,7 +22,9 @@ deny = [
     { crate = "async-trait" },
     { crate = "openssl-sys" },
 ]
-skip = [{ crate = "syn", reason = "arch-lint pulls syn 3 beside the syn 2 the workspace pins (same exception as clippy.toml)" }]
+skip = [
+    { crate = "syn", reason = "arch-lint pulls syn 3 beside the syn 2 the workspace pins (same exception as clippy.toml)" },
+]
 
 [sources]
 unknown-registry = "deny"
