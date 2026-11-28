@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_application::{
     AuthKey, EnrollError, Enrolled, Enroller, EnrollmentRequest, KeyMinter, SidecarEnroller,
-    StateVolume, TagError, TailnetError, TailnetNames,
+    SidecarIdentity, StateVolume, TagError, TailnetError, TailnetNames,
 };
-use aegis_domain::{NodeLabel, TailnetName, TailnetTag, TailnetTags};
+use aegis_domain::{NodeLabel, StackName, TailnetName, TailnetTag, TailnetTags};
 
 #[derive(Default)]
 #[cfg(test)]
@@ -56,7 +56,9 @@ fn tags(names: &[&str]) -> TailnetTags {
 
 #[cfg(test)]
 fn request(state: StateVolume, wanted: &[&str]) -> EnrollmentRequest {
-    EnrollmentRequest::new(NodeLabel::new("vaultwarden").unwrap(), tags(wanted), state)
+    let node = NodeLabel::new("vaultwarden").unwrap();
+    let identity = SidecarIdentity::new(StackName::new("vault").unwrap(), node);
+    EnrollmentRequest::new(identity, tags(wanted), state)
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ pub enum SidecarVolume {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollRequest {
+    stack: String,
     hostname: String,
     tags: Vec<String>,
     state: SidecarVolume,
@@ -29,7 +30,8 @@ pub struct EnrollRequest {
 
 impl EnrollRequest {
     /// A request for the node `hostname`, tagged `tags` such as `tag:app`, whose state volume is
-    /// `state`.
+    /// `state`. It names no stack yet: [`EnrollRequest::for_stack`] does, and the controller
+    /// refuses a request without one.
     #[must_use]
     pub fn new<Host: Into<String>>(
         hostname: Host,
@@ -37,10 +39,28 @@ impl EnrollRequest {
         state: SidecarVolume,
     ) -> Self {
         Self {
+            stack: String::new(),
             hostname: hostname.into(),
             tags,
             state,
         }
+    }
+
+    /// The same request, made for the stack named `stack`: the controller mints only for a stack
+    /// that the desired state places on the calling host and that exposes a service named
+    /// `hostname`, with exactly the tags of the stack.
+    #[must_use]
+    pub fn for_stack<Name: Into<String>>(self, stack: Name) -> Self {
+        Self {
+            stack: stack.into(),
+            ..self
+        }
+    }
+
+    /// The stack the node is for.
+    #[must_use]
+    pub fn stack(&self) -> &str {
+        &self.stack
     }
 
     /// The hostname of the node, a DNS label.
@@ -110,17 +130,24 @@ mod tests {
             "vaultwarden",
             vec!["tag:app".to_owned()],
             SidecarVolume::Empty,
-        );
+        )
+        .for_stack("vault");
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(
             json,
-            r#"{"hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}"#
+            r#"{"stack":"vault","hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}"#
         );
     }
 
     #[test]
     fn an_enroll_request_with_an_unknown_field_is_refused() {
-        let json = r#"{"hostname":"a","tags":[],"state":"populated","extra":1}"#;
+        let json = r#"{"stack":"s","hostname":"a","tags":[],"state":"populated","extra":1}"#;
+        assert!(serde_json::from_str::<EnrollRequest>(json).is_err());
+    }
+
+    #[test]
+    fn an_enroll_request_without_a_stack_is_refused() {
+        let json = r#"{"hostname":"a","tags":[],"state":"populated"}"#;
         assert!(serde_json::from_str::<EnrollRequest>(json).is_err());
     }
 

@@ -19,8 +19,10 @@ impl WhoIs for Scripted {
 #[cfg(test)]
 mod cases {
     use super::Scripted;
-    use aegis_application::{AccessError, Admit, Authorizer, PeerAddress, Reason, WhoIsError};
-    use aegis_domain::{Login, Logins, PeerIdentity, TailnetTag, TailnetTags};
+    use aegis_application::{
+        AccessError, Admit, Authorizer, Caller, PeerAddress, Reason, WhoIsError,
+    };
+    use aegis_domain::{HostName, Login, Logins, PeerIdentity, TailnetTag, TailnetTags};
 
     fn tag(name: &str) -> TailnetTag {
         TailnetTag::new(name).unwrap()
@@ -141,5 +143,33 @@ mod cases {
             verdict_for(lookup, Admit::Either, &listed("")),
             Err(AccessError::Denied)
         );
+    }
+
+    #[test]
+    fn a_tagged_caller_is_an_agent_with_its_node_and_a_person_is_an_operator() {
+        let authorizer = Authorizer::new(peer_with(&[]), tag("tag:aegis-agent"));
+        let tags = TailnetTags::new(vec![tag("tag:aegis-agent")]);
+        let node = HostName::new("jao-server").unwrap();
+        let agent = PeerIdentity::new(tags).with_node(node.clone());
+        let caller = authorizer.caller_of(&agent);
+        assert_eq!(caller.node(), Some(&node));
+        let person = PeerIdentity::default().with_login(Login::new("ada@example.com").unwrap());
+        assert_eq!(authorizer.caller_of(&person), Caller::Operator);
+        assert_eq!(Caller::Operator.node(), None);
+    }
+
+    fn hosts_of(node: &str) -> Vec<String> {
+        let tags = TailnetTags::new(vec![tag("tag:aegis-agent")]);
+        let identity = PeerIdentity::new(tags).with_node(HostName::new(node).unwrap());
+        let names = Caller::Agent(identity).hosts();
+        names.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn an_agent_node_stands_for_the_host_it_is_named_after_or_bootstrapped_for() {
+        assert_eq!(hosts_of("jao-server"), ["jao-server"]);
+        let bootstrapped = hosts_of("jao-server-aegis-agent");
+        assert_eq!(bootstrapped, ["jao-server-aegis-agent", "jao-server"]);
+        assert!(Caller::Operator.hosts().is_empty());
     }
 }

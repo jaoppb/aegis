@@ -144,10 +144,11 @@ impl<Lookup> Clone for Door<Lookup> {
     }
 }
 
-/// Let the request through when the identity [`identify`] resolved is one the route admits.
+/// Let the request through when the identity [`identify`] resolved is one the route admits, and
+/// keep who the caller is for the route's own checks.
 async fn admit<Lookup>(
     State(door): State<Door<Lookup>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode>
 where
@@ -158,6 +159,8 @@ where
     door.gate
         .admits(known, door.admit)
         .map_err(|error| status_of(&error))?;
+    let caller = door.gate.caller_of(known);
+    request.extensions_mut().insert(caller);
     Ok(next.run(request).await)
 }
 

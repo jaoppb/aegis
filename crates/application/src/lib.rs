@@ -7,8 +7,10 @@ pub mod deploy;
 pub mod enroll;
 pub mod fleet;
 pub mod loader;
+pub mod mint_limit;
 pub mod outcome;
 pub mod parse;
+pub mod placement;
 pub mod poll;
 pub mod purge;
 pub mod reconcile;
@@ -20,7 +22,7 @@ pub mod source;
 pub mod tailnet;
 pub mod validate;
 
-pub use access::{AccessError, Admit, Authorizer, PeerAddress, WhoIs, WhoIsError};
+pub use access::{AccessError, Admit, Authorizer, Caller, PeerAddress, WhoIs, WhoIsError};
 pub use bootstrap::{
     AegisNodes, AgeRecipient, AgentEndpoint, AgentEndpoints, AgentUrl, Bootstrap, BootstrapError,
     BootstrapPlan, BootstrapReport, ControllerChoice, ControllerSetup, ControllerUrl, Existing,
@@ -31,11 +33,15 @@ pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,
     Extras, GitError, Target, Upstream,
 };
-pub use enroll::{Enroller, EnrollmentRequest, Grant, SidecarEnroller, StateProbe, TailnetNames};
+pub use enroll::{
+    Enroller, EnrollmentRequest, Grant, SidecarEnroller, SidecarIdentity, StateProbe, TailnetNames,
+};
 pub use fleet::{Fleet, Goal, Invalid, Notice, Observation, Order};
 pub use loader::load_desired_state;
+pub use mint_limit::{Allowance, Exceeded, MintLimiter, MintLimits, Minting, Scope};
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
+pub use placement::{Misplaced, check_enrollment, knows_stack, purges_node};
 pub use poll::Poller;
 pub use purge::{OrphanSweep, Purge, Removal, Remover, Retain};
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};

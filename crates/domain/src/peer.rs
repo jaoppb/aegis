@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::policy::TailnetTags;
-use crate::value::{TailnetTag, ValueError, collection};
+use crate::value::{HostName, TailnetTag, ValueError, collection};
 
 /// Which side of the controller-agent API a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,19 +119,24 @@ impl Logins {
     }
 }
 
-/// A tailnet node as the Tailscale local API resolved it: the ACL tags it carries and, for a node
-/// owned by a person, the login of that person.
+/// A tailnet node as the Tailscale local API resolved it: the ACL tags it carries, the name it has
+/// on the tailnet and, for a node owned by a person, the login of that person.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerIdentity {
     tags: TailnetTags,
     login: Option<Login>,
+    node: Option<HostName>,
 }
 
 impl PeerIdentity {
     /// A peer carrying `tags`; an untagged node carries none.
     #[must_use]
     pub const fn new(tags: TailnetTags) -> Self {
-        Self { tags, login: None }
+        Self {
+            tags,
+            login: None,
+            node: None,
+        }
     }
 
     /// The same peer, owned by the person with `login`.
@@ -141,6 +146,22 @@ impl PeerIdentity {
             login: Some(login),
             ..self
         }
+    }
+
+    /// The same peer, named `node` on the tailnet: the first label of its `MagicDNS` name, which
+    /// Tailscale keeps unique, so another node cannot take it.
+    #[must_use]
+    pub fn with_node(self, node: HostName) -> Self {
+        Self {
+            node: Some(node),
+            ..self
+        }
+    }
+
+    /// The name of the peer on the tailnet, when the lookup gave a valid one.
+    #[must_use]
+    pub const fn node(&self) -> Option<&HostName> {
+        self.node.as_ref()
     }
 
     /// Whether the peer carries `tag`.

@@ -7,7 +7,7 @@ use std::future::Future;
 use aegis_domain::{
     CommitSha, Deployment, Detail, Host, HostName, HostPaths, Origin, ProjectName, ProjectNames,
     Rejection, RepoPath, Report, ReservedStacks, Stack, StackName, StackReport, StackReports,
-    StackState, Tombstone, TombstoneError, ValueError, exposed_node, mounted_paths,
+    StackState, Tombstone, TombstoneError, ValueError, mounted_paths,
 };
 
 use crate::deploy::{
@@ -16,6 +16,7 @@ use crate::deploy::{
 use crate::loader::load_desired_state;
 use crate::outcome::Outcome;
 use crate::parse::StackParser;
+use crate::placement::node_is_held;
 use crate::purge::{Removal, Retain};
 use crate::sidecar::Exposure;
 use crate::source::RepoSource;
@@ -300,18 +301,9 @@ fn paths_unverifiable(outcome: &Outcome, tombstone: &Tombstone, scope: &Scope<'_
     !tombstone.paths().is_empty() && outcome.rejected().iter().any(unknown)
 }
 
-/// Whether a stack that is not purged exposes the hostname the tombstone's node has, on this host
-/// or another, or a stack is rejected and may still run with it: the node is then someone's, and
-/// deleting it would break the owner.
+/// Whether the node of the tombstone must stay (see [`node_is_held`]).
 fn node_must_stay(outcome: &Outcome, tombstone: &Tombstone) -> bool {
-    let state = outcome.state();
-    let hosted = state.hosts().iter().flat_map(|host| host.stacks().iter());
-    let live = hosted
-        .chain(state.reserved().iter())
-        .filter(|stack| stack.policy().state() == StackState::Active);
-    let nodes = live.filter_map(exposed_node);
-    let claimed = nodes.into_iter().any(|node| Some(node) == tombstone.node());
-    claimed || !outcome.rejected().is_empty()
+    node_is_held(outcome, tombstone.node().as_ref())
 }
 
 /// A purged stack that cannot be purged, and the directory it lives in.

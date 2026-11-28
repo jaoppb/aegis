@@ -4,17 +4,34 @@
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+#[path = "world/mod.rs"]
+pub mod world;
+
 use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{ApiClient, ControllerDesk, node_routes, serve_controller};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
-use aegis_application::{NodeDeleter, PeerAddress, WhoIs, WhoIsError};
-use aegis_domain::{NodeLabel, PeerIdentity, TailnetTag, TailnetTags};
+use aegis_application::{MintLimits, NodeDeleter, PeerAddress, WhoIs, WhoIsError};
+use aegis_domain::{HostName, NodeLabel, PeerIdentity, TailnetTag, TailnetTags};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+
+#[cfg(test)]
+/// A stack `old` of the host `h` that is purged and exposed `vault`.
+const OLD: [(&str, &str); 2] = [
+    (
+        "hosts/h/old/compose.yaml",
+        "services:\n  vault:\n    image: nginx:1.27\n",
+    ),
+    (
+        "hosts/h/old/aegis.toml",
+        "state = \"purged\"\ntailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"vault\"\nport = 80\n",
+    ),
+];
 
 #[cfg(test)]
 struct Peer(Option<&'static str>);
@@ -26,7 +43,8 @@ impl WhoIs for Peer {
         _peer: &PeerAddress,
     ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
         let tags = self.0.map(|name| TailnetTag::new(name).unwrap());
-        ready(Ok(PeerIdentity::new(tags.into_iter().collect())))
+        let identity = PeerIdentity::new(tags.into_iter().collect());
+        ready(Ok(identity.with_node(HostName::new("h").unwrap())))
     }
 }
 
@@ -108,10 +126,12 @@ async fn controller_removing(
     let api = TailscaleApi::with_base(serve(app).await, credentials).unwrap();
     let allowed = TailnetTags::new(vec![TailnetTag::new(only).unwrap()]);
     let api = api.for_stack_nodes(allowed);
+    let hub = world::loaded_hub("nodes", &OLD, MintLimits::standard()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let root = format!("http://{}", listener.local_addr().unwrap());
     let base = BaseUrl::new(root.clone());
-    tokio::spawn(serve_controller(listener, Peer(peer), node_routes(api)));
+    let routes = node_routes(api, hub.binding());
+    tokio::spawn(serve_controller(listener, Peer(peer), routes));
     Served { base, root, log }
 }
 
@@ -191,10 +211,10 @@ fn a_hostname_that_is_not_a_dns_label_is_a_bad_request() {
 fn a_device_outside_the_allowed_tags_is_left_alone() {
     runtime().block_on(async {
         let other =
-            json!({ "id": "9", "hostname": "nas", "name": "nas.t.ts.net", "tags": ["tag:server"] });
+            json!({ "id": "9", "hostname": "vault", "name": "vault.t.ts.net", "tags": ["tag:server"] });
         let served = controller_removing(Some("tag:aegis-agent"), vec![other], "tag:app").await;
         let desk = ControllerDesk::new(ApiClient::new(served.base).unwrap());
-        desk.delete_node(&node("nas")).await.unwrap();
+        desk.delete_node(&node("vault")).await.unwrap();
         assert!(served.log.lock().unwrap().is_empty());
     });
 }
@@ -233,12 +253,13 @@ fn an_unreachable_tailscale_is_a_bad_gateway() {
         let api = TailscaleApi::with_base(dead, credentials)
             .unwrap()
             .for_stack_nodes(allowed);
+        let hub = world::loaded_hub("nodes-down", &OLD, MintLimits::standard()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let root = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(serve_controller(
             listener,
             Peer(Some("tag:aegis-agent")),
-            node_routes(api),
+            node_routes(api, hub.binding()),
         ));
         let answer = reqwest::Client::new()
             .delete(format!("{root}/v1/nodes/vault"))

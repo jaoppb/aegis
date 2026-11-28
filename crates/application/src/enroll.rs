@@ -4,32 +4,57 @@
 use std::future::Future;
 use std::sync::OnceLock;
 
-use aegis_domain::{NodeLabel, ProjectName, TailnetName, TailnetTag, TailnetTags};
+use aegis_domain::{NodeLabel, ProjectName, StackName, TailnetName, TailnetTag, TailnetTags};
 
 use crate::source::Reason;
 use crate::tailnet::{
     EnrollError, Enrolled, Enrollment, KeyMinter, StateVolume, TagError, TailnetError,
 };
 
+/// The sidecar an agent asks a node for: the stack it belongs to and the hostname of the node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidecarIdentity {
+    stack: StackName,
+    node: NodeLabel,
+}
+
+impl SidecarIdentity {
+    /// The node `node` of the sidecar of the stack `stack`.
+    #[must_use]
+    pub const fn new(stack: StackName, node: NodeLabel) -> Self {
+        Self { stack, node }
+    }
+}
+
 /// What an agent asks the controller for a sidecar's node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrollmentRequest {
-    node: NodeLabel,
+    identity: SidecarIdentity,
     tags: TailnetTags,
     state: StateVolume,
 }
 
 impl EnrollmentRequest {
-    /// A request for the node `node`, tagged `tags`, whose state volume is `state`.
+    /// A request for the node of `identity`, tagged `tags`, whose state volume is `state`.
     #[must_use]
-    pub const fn new(node: NodeLabel, tags: TailnetTags, state: StateVolume) -> Self {
-        Self { node, tags, state }
+    pub const fn new(identity: SidecarIdentity, tags: TailnetTags, state: StateVolume) -> Self {
+        Self {
+            identity,
+            tags,
+            state,
+        }
+    }
+
+    /// The stack the node is for.
+    #[must_use]
+    pub const fn stack(&self) -> &StackName {
+        &self.identity.stack
     }
 
     /// The hostname of the node.
     #[must_use]
     pub const fn node(&self) -> &NodeLabel {
-        &self.node
+        &self.identity.node
     }
 
     /// The ACL tags the node asks for.

@@ -7,12 +7,13 @@ mod controller;
 mod controller_env;
 mod enroll;
 mod nodes;
+mod refusal;
 mod server;
 mod wire;
 
 pub use agent::{reconcile_routes, serve_agent, serve_agent_from_env};
 pub use client::{ApiClient, ClientError};
-pub use controller::{AgentAddress, Hub};
+pub use controller::{AgentAddress, Binding, Hub};
 pub use controller_env::{REPOSITORY_REQUIRED, serve_controller_from_env};
 pub use enroll::{
     CLIENT_ID_VAR, CLIENT_SECRET_VAR, CONTROLLER_REQUIRED, ControllerDesk, enroll_routes,

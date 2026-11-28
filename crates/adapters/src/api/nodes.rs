@@ -5,35 +5,33 @@
 use std::sync::Arc;
 
 use aegis_api::version_1::{NODE_GONE, NODE_PATH};
-use aegis_application::TailnetError;
+use aegis_application::{Caller, TailnetError};
 use aegis_domain::{HostName, NodeLabel};
-use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::delete;
+use axum::{Extension, Router};
 
+use super::Binding;
+use super::refusal::Refusal;
 use crate::tailscale::StackNodes;
 
-/// The `DELETE /v1/nodes/{hostname}` route: delete the stack node with `remover`, which refuses
-/// any device a stack may not own. It is meant to be served behind the tag check of the
-/// controller.
-pub fn node_routes(remover: StackNodes) -> Router {
+/// What the deletion handler works with: what deletes the node, and how a request is bound to its
+/// caller.
+struct Removal {
+    remover: StackNodes,
+    binding: Binding,
+}
+
+/// The `DELETE /v1/nodes/{hostname}` route: delete the stack node with `remover`.
+///
+/// `remover` refuses any device a stack may not own, and `binding` first checks that the desired
+/// state marks a stack of the caller's host purged for that node and no other or rejected stack
+/// still holds the name. The route is meant to be served behind the tag check of the controller.
+pub fn node_routes(remover: StackNodes, binding: Binding) -> Router {
     Router::new()
         .route(NODE_PATH, delete(remove))
-        .with_state(Arc::new(remover))
-}
-
-/// A refused deletion: a status and a short plain-text reason that holds no secrets.
-struct Refusal {
-    status: StatusCode,
-    reason: String,
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        (self.status, self.reason).into_response()
-    }
+        .with_state(Arc::new(Removal { remover, binding }))
 }
 
 fn reason_of(error: &TailnetError) -> String {
@@ -53,26 +51,25 @@ const fn status_of(error: &TailnetError) -> StatusCode {
     }
 }
 
-fn device_of(hostname: &str) -> Result<HostName, Refusal> {
-    let invalid = |error: aegis_domain::ValueError| Refusal {
-        status: StatusCode::BAD_REQUEST,
-        reason: error.to_string(),
-    };
-    let label = NodeLabel::new(hostname).map_err(invalid)?;
-    let name = HostName::new(label.as_str()).map_err(invalid)?;
-    Ok(name)
+fn label_of(hostname: &str) -> Result<NodeLabel, Refusal> {
+    NodeLabel::new(hostname).map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))
+}
+
+fn device_of(label: &NodeLabel) -> Result<HostName, Refusal> {
+    HostName::new(label.as_str()).map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))
 }
 
 async fn remove(
-    State(remover): State<Arc<StackNodes>>,
+    State(removal): State<Arc<Removal>>,
+    Extension(caller): Extension<Caller>,
     Path(hostname): Path<String>,
 ) -> Result<StatusCode, Refusal> {
-    let device = device_of(&hostname)?;
-    let outcome = remover.remove(&device).await;
+    let host = removal.binding.host_of(&caller)?;
+    let label = label_of(&hostname)?;
+    removal.binding.admit_deletion(&host, &label)?;
+    let device = device_of(&label)?;
+    let outcome = removal.remover.remove(&device).await;
     outcome
         .map(|()| StatusCode::NO_CONTENT)
-        .map_err(|error| Refusal {
-            status: status_of(&error),
-            reason: reason_of(&error),
-        })
+        .map_err(|error| Refusal::new(status_of(&error), &reason_of(&error)))
 }
