@@ -2,14 +2,19 @@
 //! implement the application ports.
 
 pub mod api;
+pub mod cli;
 pub mod compose;
+mod docker_compose;
 mod filesystem;
+mod git;
 mod parser;
 pub mod policy;
 mod sops;
 mod whois;
 
+pub use docker_compose::DockerCompose;
 pub use filesystem::FsRepo;
+pub use git::GitCheckout;
 pub use parser::SerdeStackParser;
 pub use sops::SopsCheck;
 pub use whois::TailscaleWhois;

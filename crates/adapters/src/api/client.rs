@@ -1,9 +1,12 @@
 //! The client side of the `/v1` API.
 
-use aegis_api::version_1::{HEALTH_PATH, Health};
 use std::time::Duration;
 
-use reqwest::StatusCode;
+use aegis_api::version_1::{
+    HEALTH_PATH, Health, RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport,
+};
+use reqwest::{Response, StatusCode};
+use serde::Serialize;
 
 /// How long a call may take before it fails.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,11 +69,42 @@ impl ApiClient {
     /// [`ClientError::Transport`] when the call or the answer fails.
     pub async fn health(&self) -> Result<Health, ClientError> {
         let response = self.http.get(self.base.join(HEALTH_PATH)).send().await?;
-        let status = response.status();
-        let accepted = status.is_success();
-        accepted
-            .then_some(())
-            .ok_or(ClientError::Rejected(status))?;
+        Ok(accepted(response)?.json().await?)
+    }
+
+    /// Tell an agent to converge its host to `request`'s commit, and read what it did.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`].
+    pub async fn reconcile(&self, request: &ReconcileRequest) -> Result<StatusReport, ClientError> {
+        let response = self.post(RECONCILE_PATH, request).await?;
         Ok(response.json().await?)
     }
+
+    /// Send the controller what an agent did.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`].
+    pub async fn report_status(&self, report: &StatusReport) -> Result<(), ClientError> {
+        self.post(STATUS_PATH, report).await.map(drop)
+    }
+
+    async fn post<Body: Serialize + Sync>(
+        &self,
+        path: &str,
+        body: &Body,
+    ) -> Result<Response, ClientError> {
+        let call = self.http.post(self.base.join(path)).json(body);
+        accepted(call.send().await?)
+    }
+}
+
+fn accepted(response: Response) -> Result<Response, ClientError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    Err(ClientError::Rejected(status))
 }

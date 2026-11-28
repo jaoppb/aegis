@@ -24,6 +24,8 @@ pub enum ValueError {
     BadTag,
     /// A port is zero.
     ZeroPort,
+    /// A commit id is not 7 to 64 characters long.
+    BadCommit,
 }
 
 impl fmt::Display for ValueError {
@@ -38,6 +40,7 @@ impl fmt::Display for ValueError {
             Self::Interpolation => formatter.write_str("path must not contain `$`"),
             Self::BadTag => formatter.write_str("tailnet tag must look like `tag:<name>`"),
             Self::ZeroPort => formatter.write_str("port must not be zero"),
+            Self::BadCommit => formatter.write_str("commit must be 7 to 64 hex digits"),
         }
     }
 }
