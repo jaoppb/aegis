@@ -637,3 +637,111 @@ async fn unreadable_case(broken: &str) {
 fn nothing_is_taken_down_when_the_reserved_directory_cannot_be_read() {
     runtime().block_on(unreadable_case("aegis"));
 }
+
+#[test]
+fn a_purged_peer_exposing_the_same_hostname_does_not_claim_the_node() {
+    runtime().block_on(async {
+        let files = checkout(
+            "peers",
+            &[
+                WEB,
+                ("hosts/host2/app/compose.yaml", APP),
+                ("hosts/host2/app/aegis.toml", PURGED_EXPOSED),
+                ("hosts/host/old/aegis.toml", PURGED_EXPOSED),
+                ("hosts/host/old/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().contains(&"node app".to_owned()));
+    });
+}
+
+#[test]
+fn a_rejected_stack_of_another_host_does_not_block_host_path_purges() {
+    runtime().block_on(async {
+        let broken = (
+            "hosts/other/bad/compose.yaml",
+            "services:\n  x:\n    volumes:\n      - ./missing:/x\n",
+        );
+        let files = checkout(
+            "otherhost",
+            &[
+                WEB,
+                broken,
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", OLD_COMPOSE),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().iter().any(|event| event.starts_with("path")));
+    });
+}
+
+#[test]
+fn a_user_stack_named_like_a_reserved_stack_is_never_purged() {
+    runtime().block_on(async {
+        let files = checkout(
+            "namesake",
+            &[
+                WEB,
+                ("aegis/old/compose.yaml", APP),
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", OLD_COMPOSE),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().is_empty());
+        assert!(matches!(
+            deployment(&report, "hosts/host/old"),
+            Deployment::Failed(_)
+        ));
+    });
+}
+
+#[test]
+fn a_path_a_same_named_stack_of_another_host_mounts_is_never_deleted() {
+    runtime().block_on(async {
+        let files = checkout(
+            "samename",
+            &[
+                WEB,
+                ("hosts/host2/old/compose.yaml", OLD_COMPOSE),
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", OLD_COMPOSE),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(!fake.events().iter().any(|event| event.starts_with("path")));
+    });
+}
+
+#[test]
+fn the_node_is_kept_while_any_stack_is_rejected() {
+    runtime().block_on(async {
+        let broken = (
+            "hosts/host2/bad/compose.yaml",
+            "services:\n  x:\n    volumes:\n      - ./missing:/x\n",
+        );
+        let files = checkout(
+            "rejectednode",
+            &[
+                WEB,
+                broken,
+                ("hosts/host/old/aegis.toml", PURGED_EXPOSED),
+                ("hosts/host/old/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(!fake.events().iter().any(|event| event.starts_with("node")));
+    });
+}

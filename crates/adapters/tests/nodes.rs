@@ -85,14 +85,14 @@ struct Served {
 
 #[cfg(test)]
 async fn controller(peer: Option<&'static str>, devices_found: Vec<Value>) -> Served {
-    controller_removing(peer, devices_found, None).await
+    controller_removing(peer, devices_found, "tag:app").await
 }
 
 #[cfg(test)]
 async fn controller_removing(
     peer: Option<&'static str>,
     devices_found: Vec<Value>,
-    only: Option<&str>,
+    only: &str,
 ) -> Served {
     let log = Log::default();
     let upstream = Upstream {
@@ -106,10 +106,8 @@ async fn controller_removing(
         .with_state(upstream);
     let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
     let api = TailscaleApi::with_base(serve(app).await, credentials).unwrap();
-    let api = match only {
-        Some(tag) => api.removing_only(TailnetTags::new(vec![TailnetTag::new(tag).unwrap()])),
-        None => api,
-    };
+    let allowed = TailnetTags::new(vec![TailnetTag::new(only).unwrap()]);
+    let api = api.for_stack_nodes(allowed);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let root = format!("http://{}", listener.local_addr().unwrap());
     let base = BaseUrl::new(root.clone());
@@ -194,8 +192,7 @@ fn a_device_outside_the_allowed_tags_is_left_alone() {
     runtime().block_on(async {
         let other =
             json!({ "id": "9", "hostname": "nas", "name": "nas.t.ts.net", "tags": ["tag:server"] });
-        let served =
-            controller_removing(Some("tag:aegis-agent"), vec![other], Some("tag:app")).await;
+        let served = controller_removing(Some("tag:aegis-agent"), vec![other], "tag:app").await;
         let desk = ControllerDesk::new(ApiClient::new(served.base).unwrap());
         desk.delete_node(&node("nas")).await.unwrap();
         assert!(served.log.lock().unwrap().is_empty());
@@ -232,7 +229,10 @@ fn an_unreachable_tailscale_is_a_bad_gateway() {
         let dead = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
         drop(listener);
         let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
-        let api = TailscaleApi::with_base(dead, credentials).unwrap();
+        let allowed = TailnetTags::new(vec![TailnetTag::new("tag:app").unwrap()]);
+        let api = TailscaleApi::with_base(dead, credentials)
+            .unwrap()
+            .for_stack_nodes(allowed);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let root = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(serve_controller(

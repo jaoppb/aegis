@@ -46,7 +46,6 @@ pub struct TailscaleApi {
     http: reqwest::Client,
     base: BaseUrl,
     credentials: OAuthCredentials,
-    removable: Option<TailnetTags>,
 }
 
 impl TailscaleApi {
@@ -74,18 +73,15 @@ impl TailscaleApi {
             http,
             base,
             credentials,
-            removable: None,
         })
     }
 
-    /// The same client that deletes a device by hostname only when all its tags are in `tags`,
-    /// so a node that was not enrolled for a stack is never removed.
+    /// The same client as a remover of stack nodes: it deletes a device by hostname only when
+    /// all its tags are in `allowed`, so a node that was not enrolled for a stack is never
+    /// removed.
     #[must_use]
-    pub fn removing_only(self, tags: TailnetTags) -> Self {
-        Self {
-            removable: Some(tags),
-            ..self
-        }
+    pub const fn for_stack_nodes(self, allowed: TailnetTags) -> StackNodes {
+        StackNodes { api: self, allowed }
     }
 
     async fn token(&self, scope: Scope) -> Result<String, TailnetError> {
@@ -110,17 +106,49 @@ impl TailscaleApi {
     async fn find(&self, hostname: &HostName, token: &str) -> Result<DeviceId, TailnetError> {
         let url = self.base.join(DEVICES_PATH);
         let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
-        let name = hostname.as_str();
-        let any = || list.ids_of(name);
-        let ids = self
-            .removable
-            .as_ref()
-            .map_or_else(any, |allowed| list.ids_of_allowed(name, allowed));
-        match ids.as_slice() {
-            [only] => DeviceId::new(*only).map_err(|failure| unavailable(&failure)),
-            [] => Err(TailnetError::NoSuchDevice),
-            _ => Err(TailnetError::AmbiguousHostname),
-        }
+        only_one(&list.ids_of(hostname.as_str()))
+    }
+
+    async fn delete_device(&self, device: &DeviceId, token: String) -> Result<(), TailnetError> {
+        let url = self.base.join(&format!("/api/v2/device/{device}"));
+        delete(self.http.delete(url).bearer_auth(token)).await
+    }
+}
+
+fn hostname_of(node: &DeviceRef) -> Result<&HostName, TailnetError> {
+    match node {
+        DeviceRef::Hostname(hostname) => Ok(hostname),
+        DeviceRef::Identifier(_) => Err(TailnetError::Rejected(Reason::new(
+            &"only a hostname is accepted",
+        ))),
+    }
+}
+
+fn only_one(ids: &[&str]) -> Result<DeviceId, TailnetError> {
+    match ids {
+        [only] => DeviceId::new(*only).map_err(|failure| unavailable(&failure)),
+        [] => Err(TailnetError::NoSuchDevice),
+        _ => Err(TailnetError::AmbiguousHostname),
+    }
+}
+
+/// Removes the nodes of stacks: devices called `hostname` whose tags are all ones stacks may
+/// carry. It never deletes by ID, and never a device Aegis or a person enrolled for another
+/// purpose.
+#[derive(Debug, Clone)]
+pub struct StackNodes {
+    api: TailscaleApi,
+    allowed: TailnetTags,
+}
+
+impl NodeRemover for StackNodes {
+    async fn remove(&self, node: &DeviceRef) -> Result<(), TailnetError> {
+        let hostname = hostname_of(node)?;
+        let token = self.api.token(Scope::Devices).await?;
+        let url = self.api.base.join(DEVICES_PATH);
+        let list: DeviceList = fetch(self.api.http.get(url).bearer_auth(&token)).await?;
+        let device = only_one(&list.ids_of_allowed(hostname.as_str(), &self.allowed))?;
+        self.api.delete_device(&device, token).await
     }
 }
 
@@ -149,8 +177,7 @@ impl NodeRemover for TailscaleApi {
     async fn remove(&self, node: &DeviceRef) -> Result<(), TailnetError> {
         let token = self.token(Scope::Devices).await?;
         let device = self.resolve(node, &token).await?;
-        let url = self.base.join(&format!("/api/v2/device/{device}"));
-        delete(self.http.delete(url).bearer_auth(token)).await
+        self.delete_device(&device, token).await
     }
 }
 

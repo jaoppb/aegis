@@ -205,7 +205,7 @@ pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
         variable: CLIENT_ID_VAR,
         cause: error.to_string(),
     })?;
-    let removing = api.clone().removing_only(allowed.clone());
+    let removing = api.clone().for_stack_nodes(allowed.clone());
     let enroll = enroll_routes(Enroller::new(api.clone(), api, allowed));
     Ok(enroll.merge(super::node_routes(removing)))
 }

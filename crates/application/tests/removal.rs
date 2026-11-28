@@ -99,6 +99,50 @@ fn system_locations_are_refused_even_when_deep() {
 }
 
 #[test]
+fn lookalikes_of_system_locations_are_not_refused() {
+    for fine in [
+        "/etcetera/a/b",
+        "/var/lib/dockerx/a",
+        "/usr2/a/b",
+        "/var/lib/other/x",
+    ] {
+        assert!(check(fine, &[]).is_ok(), "{fine}");
+    }
+}
+
+#[cfg(test)]
+const SYSTEM: [&str; 17] = [
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var/lib/docker",
+    "/var/run",
+    "/lib64",
+    "/nix",
+    "/var/lib/containerd",
+    "/var/lib/containers",
+];
+
+#[test]
+fn every_system_location_is_refused() {
+    for location in SYSTEM {
+        let below = format!("{location}/a/b");
+        assert!(
+            matches!(check(&below, &[]), Err(Refusal::System(_))),
+            "{below}"
+        );
+    }
+}
+
+#[test]
 fn a_path_with_a_comma_is_unusable() {
     assert!(matches!(
         check("/srv/da,ta/web", &[]),

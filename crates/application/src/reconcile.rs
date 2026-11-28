@@ -7,7 +7,7 @@ use std::future::Future;
 use aegis_domain::{
     CommitSha, Deployment, Detail, Host, HostName, HostPaths, Origin, ProjectName, ProjectNames,
     Rejection, RepoPath, Report, ReservedStacks, Stack, StackName, StackReport, StackReports,
-    StackState, Tombstone, ValueError, exposed_node, mounted_paths,
+    StackState, Tombstone, TombstoneError, ValueError, exposed_node, mounted_paths,
 };
 
 use crate::deploy::{
@@ -250,16 +250,19 @@ async fn sweep<Removing: Removal + Sync>(pass: &Pass<'_, Removing>) -> StackRepo
 /// fixed.
 fn paths_unverifiable(outcome: &Outcome, tombstone: &Tombstone, scope: &Scope<'_>) -> bool {
     let own = RepoPath::hosts_root().listed(scope.host.as_str());
-    let roots = [own, RepoPath::reserved_root(), RepoPath::hosts_root()];
+    let reserved = RepoPath::reserved_root();
     let unknown = |rejection: &Rejection| {
         let directory = rejection.directory();
-        roots.iter().any(|root| directory.is_within(root))
+        directory.is_within(&own)
+            || directory.is_within(&reserved)
+            || *directory == RepoPath::hosts_root()
     };
     !tombstone.paths().is_empty() && outcome.rejected().iter().any(unknown)
 }
 
 /// Whether a stack that is not purged exposes the hostname the tombstone's node has, on this host
-/// or another: the node is then that stack's, and deleting it would break the new owner.
+/// or another, or a stack is rejected and may still run with it: the node is then someone's, and
+/// deleting it would break the owner.
 fn node_is_claimed(outcome: &Outcome, tombstone: &Tombstone) -> bool {
     let state = outcome.state();
     let hosted = state.hosts().iter().flat_map(|host| host.stacks().iter());
@@ -267,7 +270,8 @@ fn node_is_claimed(outcome: &Outcome, tombstone: &Tombstone) -> bool {
         .chain(state.reserved().iter())
         .filter(|stack| stack.policy().state() == StackState::Active);
     let nodes = live.filter_map(exposed_node);
-    nodes.into_iter().any(|node| Some(node) == tombstone.node())
+    let claimed = nodes.into_iter().any(|node| Some(node) == tombstone.node());
+    claimed || !outcome.rejected().is_empty()
 }
 
 /// A purged stack that cannot be purged, and the directory it lives in.
@@ -289,26 +293,56 @@ fn tombstones(outcome: &Outcome, scope: &Scope<'_>) -> Vec<Result<Tombstone, Ref
     let own = hosts.filter(|candidate| candidate.name() == scope.host);
     let listed = own.flat_map(unit_stacks);
     let purged = listed.filter(|unit| unit.stack.policy().state() == StackState::Purged);
-    let attempt = |unit: Unit<'_>| {
-        Tombstone::of(unit.directory.clone(), unit.stack).map_err(|reason| Refused {
-            directory: unit.directory,
-            reason,
-        })
-    };
-    purged.map(attempt).collect()
+    let reserved = reserved_projects(outcome);
+    purged.map(|unit| attempt(unit, &reserved)).collect()
 }
 
-/// Every absolute path another stack of the repository mounts.
+/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own: a user stack
+/// named like a reserved stack shares its project, and purging it would delete the reserved
+/// stack's data.
+fn attempt(unit: Unit<'_>, reserved: &[ProjectName]) -> Result<Tombstone, Refused> {
+    let project = ProjectName::of(unit.stack.name()).ok();
+    let shared = project.is_some_and(|name| reserved.contains(&name));
+    let made = Tombstone::of(unit.directory.clone(), unit.stack);
+    let allowed = if shared {
+        Err(TombstoneError::Reserved)
+    } else {
+        made
+    };
+    allowed.map_err(|reason| Refused {
+        directory: unit.directory,
+        reason,
+    })
+}
+
+/// The projects of Aegis's own stacks, loaded or rejected, whether or not this host runs them.
+fn reserved_projects(outcome: &Outcome) -> Vec<ProjectName> {
+    let loaded = outcome.state().reserved().iter();
+    let names = loaded.filter_map(|stack| ProjectName::of(stack.name()).ok());
+    let root = RepoPath::reserved_root();
+    let broken = outcome.rejected().iter();
+    let within = broken.filter(|each| each.directory().is_within(&root));
+    let stacks = within.filter_map(|each| StackName::new(last_segment(each.directory())).ok());
+    names
+        .chain(stacks.filter_map(|name| ProjectName::of(&name).ok()))
+        .collect()
+}
+
+/// Every absolute path another stack of the repository mounts: any stack in another directory,
+/// whatever its name.
 fn taken_by_others(outcome: &Outcome, tombstone: &Tombstone) -> HostPaths {
     let state = outcome.state();
-    let hosted = state.hosts().iter().flat_map(|host| host.stacks().iter());
-    let everyone = hosted.chain(state.reserved().iter());
-    let others = everyone.filter(|stack| stack.name().as_str() != tombstone.project().stack_name());
-    HostPaths::new(
-        others
-            .flat_map(|stack| mounted_paths(stack).into_iter())
-            .collect(),
-    )
+    let hosts = state.hosts().iter().flat_map(unit_stacks);
+    let parent = RepoPath::reserved_root();
+    let reserved = state.reserved().iter().map(|stack| Unit {
+        directory: parent.listed(stack.name().as_str()),
+        stack,
+    });
+    let others = hosts
+        .chain(reserved)
+        .filter(|unit| unit.directory != *tombstone.directory());
+    let paths = others.flat_map(|unit| mounted_paths(unit.stack).into_iter());
+    HostPaths::new(paths.collect())
 }
 
 /// The projects the repository still declares: every loaded stack, every rejected stack

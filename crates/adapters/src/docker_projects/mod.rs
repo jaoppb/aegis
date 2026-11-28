@@ -241,7 +241,7 @@ impl Default for DockerPurger {
 /// path one segment at a time and refuses a symlink in any of them, so the delete can never
 /// follow a link out of the path that was checked. A path that is already gone is a success, and
 /// anything that is not a directory (a socket, a device, a file) is refused.
-pub const REMOVE_SCRIPT: &str = "set -f; IFS=/; p=\"$2\"; for s in $1; do [ -z \"$s\" ] && continue; p=\"$p/$s\"; [ -L \"$p\" ] && exit 2; done; [ -e \"$p\" ] || exit 0; [ -d \"$p\" ] || exit 3; rm -rf -- \"$p\"";
+const REMOVE_SCRIPT: &str = "set -f; IFS=/; p=\"$2\"; for s in $1; do [ -z \"$s\" ] && continue; p=\"$p/$s\"; [ -L \"$p\" ] && exit 2; done; [ -e \"$p\" ] || exit 0; [ -d \"$p\" ] || exit 3; rm -rf -- \"$p\"";
 
 /// Where the host's root is mounted in the throw-away container.
 const HOST_ROOT: &str = "/host";
@@ -296,3 +296,6 @@ impl Purger for DockerPurger {
         succeed(command).await.map(drop)
     }
 }
+
+#[cfg(test)]
+mod tests;

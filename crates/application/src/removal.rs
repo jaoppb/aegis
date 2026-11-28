@@ -104,7 +104,7 @@ pub struct SafePath(HostPath);
 
 /// The system locations a purge never deletes in or above: sockets, devices and the host's own
 /// state are mounted read-write by many stacks.
-const SYSTEM: [&str; 13] = [
+const SYSTEM: [&str; 17] = [
     "/bin",
     "/boot",
     "/dev",
@@ -118,6 +118,10 @@ const SYSTEM: [&str; 13] = [
     "/usr",
     "/var/lib/docker",
     "/var/run",
+    "/lib64",
+    "/nix",
+    "/var/lib/containerd",
+    "/var/lib/containers",
 ];
 
 /// The segments of `path` without empty and `.` segments, so `/srv/data/` and `/srv//data`

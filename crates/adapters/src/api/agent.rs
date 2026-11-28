@@ -207,7 +207,10 @@ impl Settings {
         let sweep = OrphanSweep::new(host, projects, docker.clone());
         let checkout = HostPath::new(self.checkout.to_string_lossy())
             .map_err(|error| invalid(CHECKOUT_VAR, &error))?;
-        let protected = HostPaths::new(vec![checkout]);
+        let home = std::env::var("HOME")
+            .ok()
+            .and_then(|text| HostPath::new(text).ok());
+        let protected = HostPaths::new(std::iter::once(checkout).chain(home).collect());
         let purge = Purge::new(docker, desk, DockerPurger::default()).protecting(protected);
         Ok(Remover::new(sweep, purge))
     }
