@@ -77,9 +77,7 @@ fn failed(output: &Output) -> Reason {
 async fn volume_exists(program: &str, name: &str) -> Result<bool, Reason> {
     let filter = format!("name={name}");
     let output = query(program, &["volume", "ls", "--quiet", "--filter", &filter]).await?;
-    if !output.status.success() {
-        return Err(failed(&output));
-    }
+    cli::succeeded(&output, "docker")?;
     let listed = String::from_utf8_lossy(&output.stdout);
     Ok(listed.lines().any(|line| line.trim() == name))
 }

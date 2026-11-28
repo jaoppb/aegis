@@ -33,6 +33,22 @@ pub const GIT_INHERITED: [&str; 6] = [
     "GIT_SSL_CAINFO",
 ];
 
+/// Whether `output` is a success, as a [`Reason`] that names `program` and the exit status but
+/// never its output.
+///
+/// # Errors
+///
+/// Returns a [`Reason`] when the program exited unsuccessfully.
+pub fn succeeded(output: &Output, program: &str) -> Result<(), Reason> {
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(Reason::new(&format!(
+        "{program} exited with {}",
+        output.status
+    )))
+}
+
 /// Clear the environment of `command` and give it back only the variables in `names` that the
 /// current process has set, so nothing else of the agent's environment can steer the child.
 pub fn inherit_only(command: &mut Command, names: &[&str]) {

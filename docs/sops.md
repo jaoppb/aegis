@@ -33,7 +33,7 @@ The decrypted `.env` may not set `COMPOSE_*` or `DOCKER_*` variables, nor `PATH`
 
 ## The agent's key
 
-Generating the key and installing it is part of the bootstrap flow ([#22](https://github.com/jaoppb/aegis/issues/22)). Until then, create it by hand on each host:
+`aegis bootstrap` generates the key for you and prints its recipient ([docs/bootstrap.md](bootstrap.md)). On a host you set up by hand, create it with:
 
 ```sh
 age-keygen -o /var/lib/aegis/age/keys.txt

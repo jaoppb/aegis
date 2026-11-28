@@ -34,8 +34,17 @@ const SIDECAR: &str = r#"  tailscale:
     environment:
       TS_AUTHKEY: "${TS_AUTHKEY:-}"
       TS_HOSTNAME: "@@NODE@@"
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "true"
       TS_STATE_DIR: /var/lib/tailscale
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "tailscale --socket=/var/run/tailscale/tailscaled.sock status --json | grep -q '\"BackendState\": \"Running\"'"
+      interval: 5s
+      timeout: 5s
+      retries: 24
     volumes:
       - "@@VOLUME@@:/var/lib/tailscale"
       - "/dev/net/tun:/dev/net/tun"
@@ -47,7 +56,8 @@ const AGENT: &str = r#"  agent:
     restart: unless-stopped
     network_mode: "service:tailscale"
     depends_on:
-      - tailscale
+      tailscale:
+        condition: service_healthy
     environment:
       AEGIS_HOST: "@@HOST@@"
       AEGIS_LISTEN: "@@LISTEN@@"
@@ -69,7 +79,8 @@ const CONTROLLER: &str = r#"  controller:
     restart: unless-stopped
     network_mode: "service:tailscale"
     depends_on:
-      - tailscale
+      tailscale:
+        condition: service_healthy
     env_file:
       - "@@ENV_FILE@@"
     environment:

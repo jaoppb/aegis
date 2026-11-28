@@ -7,18 +7,24 @@ use std::collections::BTreeMap;
 
 use aegis_domain::ValueError;
 
-/// The switches, which take no value.
-const SWITCHES: [&str; 1] = ["--with-controller"];
+/// The flags one command accepts: switches take no value, valued flags take one.
+struct Spec {
+    switches: &'static [&'static str],
+    valued: &'static [&'static str],
+}
 
-/// The flags that take a value.
-const VALUED: [&str; 6] = [
-    "--repo",
-    "--host",
-    "--controller",
-    "--checkout",
-    "--stacks",
-    "--image-tag",
-];
+/// The flags of `aegis bootstrap`.
+const BOOTSTRAP: Spec = Spec {
+    switches: &["--with-controller"],
+    valued: &[
+        "--repo",
+        "--host",
+        "--controller",
+        "--checkout",
+        "--stacks",
+        "--image-tag",
+    ],
+};
 
 /// The command line is not one Aegis understands.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -86,16 +92,18 @@ pub enum Invocation {
     Help,
 }
 
-fn collect(rest: &[String], flags: Flags) -> Result<Flags, UsageError> {
+fn collect(rest: &[String], spec: &Spec, flags: Flags) -> Result<Flags, UsageError> {
     match rest {
         [] => Ok(flags),
-        [switch, tail @ ..] if SWITCHES.contains(&switch.as_str()) => {
-            collect(tail, flags.with(switch, ""))
+        [switch, tail @ ..] if spec.switches.contains(&switch.as_str()) => {
+            collect(tail, spec, flags.with(switch, ""))
         }
-        [name, value, tail @ ..] if VALUED.contains(&name.as_str()) => {
-            collect(tail, flags.with(name, value))
+        [name, value, tail @ ..] if spec.valued.contains(&name.as_str()) => {
+            collect(tail, spec, flags.with(name, value))
         }
-        [name] if VALUED.contains(&name.as_str()) => Err(UsageError::MissingValue(name.clone())),
+        [name] if spec.valued.contains(&name.as_str()) => {
+            Err(UsageError::MissingValue(name.clone()))
+        }
         [other, ..] => Err(UsageError::UnknownArgument(other.clone())),
     }
 }
@@ -109,7 +117,7 @@ pub fn parse(arguments: &[String]) -> Result<Invocation, UsageError> {
     match arguments {
         [] => Ok(Invocation::Help),
         [command, rest @ ..] if command == "bootstrap" => {
-            collect(rest, Flags::default()).map(Invocation::Bootstrap)
+            collect(rest, &BOOTSTRAP, Flags::default()).map(Invocation::Bootstrap)
         }
         [command, ..] if matches!(command.as_str(), "help" | "--help" | "-h") => {
             Ok(Invocation::Help)

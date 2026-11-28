@@ -1,8 +1,6 @@
 //! The Tailscale OAuth client of the controller, read from the environment of `aegis bootstrap`
 //! and never from its arguments, so it shows up in no process list.
 
-use std::fmt;
-
 use aegis_domain::Secret;
 
 use crate::tailscale::{ClientId, ClientSecret, OAuthCredentials};
@@ -11,27 +9,15 @@ const CLIENT_ID_VAR: &str = "TS_OAUTH_CLIENT_ID";
 const CLIENT_SECRET_VAR: &str = "TS_OAUTH_CLIENT_SECRET";
 
 /// The OAuth credentials are missing or cannot be written to a dotenv file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialsError {
     /// The variable is not set.
+    #[error("{0} is not set")]
     Missing(&'static str),
     /// The variable holds a character outside letters, digits, `-` and `_`.
+    #[error("{0} may hold only letters, digits, `-` and `_`")]
     Unsupported(&'static str),
 }
-
-impl fmt::Display for CredentialsError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing(name) => write!(formatter, "{name} is not set"),
-            Self::Unsupported(name) => write!(
-                formatter,
-                "{name} may hold only letters, digits, `-` and `_`"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CredentialsError {}
 
 /// The credentials as the minter takes them and as the controller's dotenv file holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -239,6 +239,16 @@ impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> Enrollment<State, Min
         tags: &TailnetTags,
     ) -> Result<Enrolled, EnrollError> {
         check_tags(tags).map_err(EnrollError::Tags)?;
+        self.enroll_tagged(node, tags).await
+    }
+
+    /// The same enrolment without the tag check, for the nodes of Aegis itself, whose role tags
+    /// a stack may not claim.
+    pub(crate) async fn enroll_tagged(
+        &self,
+        node: &HostName,
+        tags: &TailnetTags,
+    ) -> Result<Enrolled, EnrollError> {
         let volume = self.state.volume(node).await.map_err(EnrollError::State)?;
         match volume {
             StateVolume::Populated => Ok(Enrolled::AlreadyEnrolled),

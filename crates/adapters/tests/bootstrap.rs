@@ -39,7 +39,12 @@ fn mode_of(path: &Path) -> u32 {
 /// A scratch directory that starts empty.
 #[cfg(test)]
 fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("aegis-bootstrap-{}-{name}", std::process::id()));
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let root = std::env::temp_dir().join(format!(
+        "aegis-bootstrap-{}-{unique}-{name}",
+        std::process::id()
+    ));
     block_on(tokio::fs::remove_dir_all(&root)).ok();
     block_on(tokio::fs::create_dir_all(&root)).unwrap();
     root
@@ -78,6 +83,18 @@ mod files {
         let directory = key.parent().unwrap();
         let mode = mode_of(directory);
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn a_foreign_key_file_is_never_overwritten_and_never_printed() {
+        let root = scratch("garbage");
+        let key = root.join("config/sops/age/keys.txt");
+        block_on(tokio::fs::create_dir_all(key.parent().unwrap())).unwrap();
+        block_on(tokio::fs::write(&key, "not-a-key super-secret-material")).unwrap();
+        let failure = block_on(host_in(&root).ensure_age_key()).unwrap_err();
+        assert!(matches!(failure, BootstrapError::AgeKey(_)));
+        assert!(!failure.to_string().contains("super-secret"), "{failure}");
+        assert_eq!(read(&key), "not-a-key super-secret-material");
     }
 
     #[test]
@@ -382,6 +399,12 @@ impl StackRunner for &Started {
 
 #[cfg(test)]
 fn render_to_disk(root: &Path, choice: ControllerChoice) -> PathBuf {
+    bootstrap_on_disk(root, choice);
+    root.join("stacks")
+}
+
+#[cfg(test)]
+fn bootstrap_on_disk(root: &Path, choice: ControllerChoice) -> aegis_application::BootstrapReport {
     let host = host_in(root);
     let key = block_on(host.ensure_age_key()).unwrap();
     let sources = Sources::new(
@@ -394,8 +417,7 @@ fn render_to_disk(root: &Path, choice: ControllerChoice) -> PathBuf {
     let disk = Disk { host, key };
     let started = Started::default();
     let bootstrap = Bootstrap::new(HostSide::new(disk, SopsEncrypt), Joined, &started);
-    block_on(bootstrap.run(&plan.with_controller(choice))).unwrap();
-    root.join("stacks")
+    block_on(bootstrap.run(&plan.with_controller(choice))).unwrap()
 }
 
 #[cfg(test)]
@@ -440,6 +462,18 @@ mod rendered {
         let before = read(&env);
         render_to_disk(&root, controller());
         assert_eq!(read(&env), before);
+    }
+
+    #[test]
+    fn a_second_bootstrap_reports_nothing_to_do_and_keeps_every_file_byte_identical() {
+        let root = scratch("noop");
+        let first = bootstrap_on_disk(&root, controller());
+        let compose = root.join("stacks/aegis/agent/compose.yaml");
+        let before = read(&compose);
+        let second = bootstrap_on_disk(&root, controller());
+        assert!(!first.is_noop());
+        assert!(second.is_noop(), "{second}");
+        assert_eq!(read(&compose), before);
     }
 
     #[test]

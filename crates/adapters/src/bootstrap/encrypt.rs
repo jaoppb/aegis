@@ -37,9 +37,7 @@ fn command(recipient: &AgeRecipient) -> Command {
 }
 
 fn ciphertext(output: &Output) -> Result<FileText, Reason> {
-    if !output.status.success() {
-        return Err(Reason::new(&format!("sops exited with {}", output.status)));
-    }
+    cli::succeeded(output, "sops")?;
     let text = String::from_utf8(output.stdout.clone());
     text.map(FileText::new)
         .map_err(|_| Reason::new(&"sops printed text that is not UTF-8"))

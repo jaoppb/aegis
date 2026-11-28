@@ -17,9 +17,9 @@ pub mod validate;
 pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
 pub use bootstrap::{
     AgeRecipient, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice,
-    ControllerUrl, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag, Joined, Joiner,
-    NodeKeys, Outcomes, RenderedFile, RepoUrl, SecretEncryptor, Sources, StackOutcome, StackRunner,
-    Written, sidecar_volume,
+    ControllerUrl, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag, Joined, NodeKeys,
+    Outcomes, RenderedFile, RepoUrl, SecretEncryptor, Sources, StackOutcome, StackRunner, Written,
+    sidecar_volume,
 };
 pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,

@@ -12,7 +12,9 @@ use aegis_domain::{
 
 use crate::render::{self, Content, PlannedFile, RenderedStack, Stacks};
 use crate::source::Reason;
-use crate::tailnet::{AuthKey, KeyMinter, SidecarState, StateVolume, TailnetError};
+use crate::tailnet::{
+    AuthKey, EnrollError, Enrolled, Enrollment, KeyMinter, SidecarState, TailnetError,
+};
 
 /// Define a validated text value: private field, validating constructor, `as_str`.
 macro_rules! text_value {
@@ -47,7 +49,7 @@ const fn is_age_char(candidate: char) -> bool {
 }
 
 fn validate_recipient(value: &str) -> Result<(), ValueError> {
-    let body = value.strip_prefix("age1").ok_or(ValueError::BadTag)?;
+    let body = value.strip_prefix("age1").ok_or(ValueError::BadPrefix)?;
     if body.is_empty() {
         return Err(ValueError::Empty);
     }
@@ -83,12 +85,28 @@ fn validate_repo_url(value: &str) -> Result<(), ValueError> {
     let forbidden = value
         .chars()
         .find(|candidate| candidate.is_whitespace() || candidate.is_control());
-    forbidden.map_or(Ok(()), |found| Err(ValueError::ForbiddenChar(found)))
+    if let Some(found) = forbidden {
+        return Err(ValueError::ForbiddenChar(found));
+    }
+    reject_password(value)
+}
+
+/// Refuse `scheme://user:password@host`: a password in the URL would be visible in the process
+/// list and written to the checkout's git config. `ssh://git@host` and scp-style remotes pass.
+fn reject_password(value: &str) -> Result<(), ValueError> {
+    let authority = value
+        .split_once("://")
+        .map(|(_, rest)| rest.split('/').next().unwrap_or_default());
+    let userinfo = authority.and_then(|found| found.rsplit_once('@'));
+    let password = userinfo.is_some_and(|(user, _)| user.contains(':'));
+    password
+        .then_some(())
+        .map_or(Ok(()), |()| Err(ValueError::EmbeddedPassword))
 }
 
 fn validate_controller_url(value: &str) -> Result<(), ValueError> {
     if !(value.starts_with("http://") || value.starts_with("https://")) {
-        return Err(ValueError::BadTag);
+        return Err(ValueError::BadScheme);
     }
     let forbidden = value.chars().find(|candidate| {
         candidate.is_whitespace()
@@ -109,7 +127,8 @@ text_value!(
     validate_image_tag
 );
 text_value!(
-    /// The git remote of the repository, which may carry credentials.
+    /// The git remote of the repository. It never carries a password: use an SSH key or a git
+    /// credential helper.
     RepoUrl,
     validate_repo_url
 );
@@ -226,7 +245,8 @@ pub enum ControllerChoice {
     /// Only the agent.
     Skip,
     /// The controller as well, with the dotenv text holding its Tailscale OAuth credentials. The
-    /// text is encrypted before it is written and never reaches a compose environment.
+    /// text is encrypted to the host key before it is written, so it is never plaintext in git or
+    /// on disk. The running controller container's environment still holds the decrypted values.
     Install(Secret),
 }
 
@@ -477,41 +497,34 @@ pub fn sidecar_volume(node: &HostName) -> Result<VolumeName, ValueError> {
     VolumeName::new(format!("{node}-tailscale"))
 }
 
-/// Mints a key for an Aegis node only while its sidecar has no state, so a rerun never creates a
-/// second node. Unlike a stack's own enrolment, the node carries an Aegis role tag.
-#[derive(Debug)]
-pub struct Joiner<State, Minter> {
-    state: State,
-    minter: Minter,
-}
-
-impl<State, Minter> Joiner<State, Minter> {
-    /// A joiner that reads sidecar state from `state` and mints keys with `minter`.
-    #[must_use]
-    pub const fn new(state: State, minter: Minter) -> Self {
-        Self { state, minter }
+fn enrol_failure(failure: EnrollError) -> BootstrapError {
+    match failure {
+        EnrollError::State(reason) => BootstrapError::State(reason),
+        EnrollError::Mint(error) => BootstrapError::Mint(error),
+        EnrollError::Tags(refused) => {
+            BootstrapError::Mint(TailnetError::Rejected(Reason::new(&refused)))
+        }
     }
 }
 
-impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> Joiner<State, Minter> {
-    async fn mint(&self, role: AegisRole) -> Result<Option<AuthKey>, BootstrapError> {
-        let tags = TailnetTags::new(vec![role.tag()?]);
-        let key = self.minter.mint(&tags).await;
-        key.map(Some).map_err(BootstrapError::Mint)
-    }
-}
-
-impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> NodeKeys for Joiner<State, Minter> {
+/// An Aegis node carries its role tag, which a stack's own enrolment refuses, so this goes
+/// around the tag check and nothing else: the key is still minted only while the sidecar has no
+/// state, so a rerun never creates a second node.
+impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> NodeKeys for Enrollment<State, Minter> {
     async fn key_for(
         &self,
         node: &HostName,
         role: AegisRole,
     ) -> Result<Option<AuthKey>, BootstrapError> {
-        let volume = self.state.volume(node).await;
-        match volume.map_err(BootstrapError::State)? {
-            StateVolume::Populated => Ok(None),
-            StateVolume::Empty => self.mint(role).await,
-        }
+        let tags = TailnetTags::new(vec![role.tag()?]);
+        let enrolled = self
+            .enroll_tagged(node, &tags)
+            .await
+            .map_err(enrol_failure)?;
+        Ok(match enrolled {
+            Enrolled::Minted(key) => Some(key),
+            Enrolled::AlreadyEnrolled => None,
+        })
     }
 }
 

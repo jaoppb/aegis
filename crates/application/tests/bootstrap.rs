@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_application::{
     AgeRecipient, AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice,
-    ControllerUrl, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag, Joiner, KeyMinter,
-    NodeKeys, Reason, RenderedFile, RepoUrl, SecretEncryptor, SidecarState, Sources, StackRunner,
-    StateVolume, TailnetError, Written,
+    ControllerUrl, Enrollment, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag,
+    KeyMinter, NodeKeys, Reason, RenderedFile, RepoUrl, SecretEncryptor, SidecarState, Sources,
+    StackRunner, StateVolume, TailnetError, Written,
 };
 use aegis_domain::{AegisRole, HostName, HostPath, Secret, StackName, TailnetTags};
 
@@ -25,6 +25,7 @@ struct Files {
     written: Mutex<Vec<RenderedFile>>,
     existing: Mutex<Vec<Existing>>,
     outcome: Option<Written>,
+    checkout_error: Option<BootstrapError>,
 }
 
 #[cfg(test)]
@@ -62,7 +63,7 @@ impl HostFiles for &Files {
         &self,
         _repo: &RepoUrl,
     ) -> impl Future<Output = Result<(), BootstrapError>> + Send {
-        ready(Ok(()))
+        ready(self.checkout_error.clone().map_or(Ok(()), Err))
     }
 
     fn write(
@@ -95,6 +96,20 @@ impl SecretEncryptor for Cipher {
 struct Keys(Option<&'static str>);
 
 #[cfg(test)]
+struct PerRole;
+
+#[cfg(test)]
+impl NodeKeys for PerRole {
+    fn key_for(
+        &self,
+        _node: &HostName,
+        role: AegisRole,
+    ) -> impl Future<Output = Result<Option<AuthKey>, BootstrapError>> + Send {
+        ready(Ok(Some(AuthKey::new(format!("key-for-{role:?}")))))
+    }
+}
+
+#[cfg(test)]
 impl NodeKeys for Keys {
     fn key_for(
         &self,
@@ -109,7 +124,8 @@ impl NodeKeys for Keys {
 #[derive(Default)]
 struct Runner {
     started: Mutex<Vec<String>>,
-    keys: Mutex<Vec<Option<String>>>,
+    keys: Mutex<Vec<(String, Option<String>)>>,
+    failing: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -121,8 +137,13 @@ impl StackRunner for &Runner {
     ) -> impl Future<Output = Result<(), BootstrapError>> + Send {
         self.started.lock().unwrap().push(stack.to_string());
         let key = key.map(|key| key.expose().to_owned());
-        self.keys.lock().unwrap().push(key);
-        ready(Ok(()))
+        self.keys.lock().unwrap().push((stack.to_string(), key));
+        let broken = self.failing == Some(stack.as_str());
+        ready(
+            broken
+                .then(|| BootstrapError::Run(Reason::new(&"boom")))
+                .map_or(Ok(()), Err),
+        )
     }
 }
 
@@ -170,10 +191,19 @@ impl Scenario {
 }
 
 #[cfg(test)]
-fn run(files: &Files, runner: &Runner, scenario: Scenario) -> aegis_application::BootstrapReport {
+fn try_run(
+    files: &Files,
+    runner: &Runner,
+    scenario: Scenario,
+) -> Result<aegis_application::BootstrapReport, BootstrapError> {
     let host = HostSide::new(files, Cipher);
     let bootstrap = Bootstrap::new(host, Keys(scenario.key), runner);
-    block_on(bootstrap.run(&plan(scenario.choice))).unwrap()
+    block_on(bootstrap.run(&plan(scenario.choice)))
+}
+
+#[cfg(test)]
+fn run(files: &Files, runner: &Runner, scenario: Scenario) -> aegis_application::BootstrapReport {
+    try_run(files, runner, scenario).unwrap()
 }
 
 #[cfg(test)]
@@ -207,14 +237,17 @@ mod cases {
         let compose = files.text_of("aegis/agent/compose.yaml");
         assert!(!compose.contains(AUTH_KEY));
         assert!(compose.contains("${TS_AUTHKEY:-}"));
-        assert_eq!(*runner.keys.lock().unwrap(), [Some(AUTH_KEY.to_owned())]);
+        assert_eq!(
+            *runner.keys.lock().unwrap(),
+            [("agent".to_owned(), Some(AUTH_KEY.to_owned()))]
+        );
     }
 
     #[test]
     fn a_rerun_with_an_enrolled_sidecar_mints_nothing_and_reports_nothing_to_do() {
         let (files, runner) = (Files::unchanged(), Runner::default());
         let report = run(&files, &runner, Scenario::new(None, ControllerChoice::Skip));
-        assert_eq!(*runner.keys.lock().unwrap(), [None]);
+        assert_eq!(*runner.keys.lock().unwrap(), [("agent".to_owned(), None)]);
         assert!(report.is_noop());
         assert!(report.to_string().contains("nothing to do"));
         assert!(report.to_string().contains(RECIPIENT));
@@ -297,9 +330,78 @@ mod cases {
         assert!(RepoUrl::new("--upload-pack=evil").is_err());
         assert!(RepoUrl::new("a b").is_err());
         assert_eq!(
-            format!("{:?}", RepoUrl::new("https://user:token@host/r").unwrap()),
+            format!("{:?}", RepoUrl::new("ssh://git@host/r").unwrap()),
             "RepoUrl(<redacted>)"
         );
+    }
+
+    #[test]
+    fn a_failed_checkout_writes_nothing_and_starts_nothing() {
+        let failure = BootstrapError::Checkout(Reason::new(&"git exited with 128"));
+        let files = Files {
+            checkout_error: Some(failure.clone()),
+            ..Files::default()
+        };
+        let runner = Runner::default();
+        let result = try_run(&files, &runner, Scenario::new(Some(AUTH_KEY), install()));
+        assert_eq!(result.unwrap_err(), failure);
+        assert!(files.paths().is_empty());
+        assert!(runner.started.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failing_controller_start_leaves_the_agent_unstarted() {
+        let files = Files::default();
+        let runner = Runner {
+            failing: Some("controller"),
+            ..Runner::default()
+        };
+        let result = try_run(&files, &runner, Scenario::new(Some(AUTH_KEY), install()));
+        assert!(matches!(result, Err(BootstrapError::Run(_))));
+        assert_eq!(*runner.started.lock().unwrap(), ["controller"]);
+    }
+
+    #[test]
+    fn each_stack_gets_the_key_of_its_own_role() {
+        let (files, runner) = (Files::default(), Runner::default());
+        let host = HostSide::new(&files, Cipher);
+        let bootstrap = Bootstrap::new(host, PerRole, &runner);
+        block_on(bootstrap.run(&plan(install()))).unwrap();
+        assert_eq!(
+            *runner.keys.lock().unwrap(),
+            [
+                (
+                    "controller".to_owned(),
+                    Some("key-for-Controller".to_owned())
+                ),
+                ("agent".to_owned(), Some("key-for-Agent".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repository_url_with_a_password_is_refused() {
+        let refused = RepoUrl::new("https://user:token@host/r.git");
+        assert_eq!(
+            refused.unwrap_err(),
+            aegis_domain::ValueError::EmbeddedPassword
+        );
+        assert!(RepoUrl::new("ssh://git@github.com/me/infra.git").is_ok());
+        assert!(RepoUrl::new("https://github.com/me/infra.git").is_ok());
+    }
+
+    #[test]
+    fn the_rendered_sidecar_uses_kernel_networking_and_waits_to_be_healthy() {
+        let (files, runner) = (Files::default(), Runner::default());
+        run(
+            &files,
+            &runner,
+            Scenario::new(Some(AUTH_KEY), ControllerChoice::Skip),
+        );
+        let compose = files.text_of("aegis/agent/compose.yaml");
+        assert!(compose.contains("TS_USERSPACE: \"false\""));
+        assert!(compose.contains("condition: service_healthy"));
+        assert!(compose.contains("healthcheck:"));
     }
 }
 
@@ -310,6 +412,29 @@ struct Volume(StateVolume);
 impl SidecarState for Volume {
     fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
         ready(Ok(self.0))
+    }
+}
+
+#[cfg(test)]
+struct Broken(Result<StateVolume, Reason>);
+
+#[cfg(test)]
+impl SidecarState for Broken {
+    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
+        ready(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+struct Refusing;
+
+#[cfg(test)]
+impl KeyMinter for Refusing {
+    fn mint(
+        &self,
+        _tags: &TailnetTags,
+    ) -> impl Future<Output = Result<AuthKey, TailnetError>> + Send {
+        ready(Err(TailnetError::Rejected(Reason::new(&"403"))))
     }
 }
 
@@ -344,16 +469,41 @@ mod joining {
     #[test]
     fn a_populated_sidecar_mints_nothing() {
         let minter = Minter::default();
-        let joiner = Joiner::new(Volume(StateVolume::Populated), &minter);
+        let joiner = Enrollment::new(Volume(StateVolume::Populated), &minter);
         let key = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap();
         assert!(key.is_none());
         assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
     }
 
     #[test]
+    fn an_agent_key_is_tagged_as_an_agent() {
+        let minter = Minter::default();
+        let joiner = Enrollment::new(Volume(StateVolume::Empty), &minter);
+        block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap();
+        assert_eq!(*minter.tags.lock().unwrap(), ["tag:aegis-agent"]);
+    }
+
+    #[test]
+    fn an_unreadable_state_mints_nothing_and_says_so() {
+        let minter = Minter::default();
+        let broken = Err(Reason::new(&"docker down"));
+        let joiner = Enrollment::new(Broken(broken), &minter);
+        let failure = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap_err();
+        assert!(matches!(failure, BootstrapError::State(_)));
+        assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_refused_mint_is_reported_as_a_mint_failure() {
+        let joiner = Enrollment::new(Volume(StateVolume::Empty), Refusing);
+        let failure = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap_err();
+        assert!(matches!(failure, BootstrapError::Mint(_)));
+    }
+
+    #[test]
     fn an_empty_sidecar_mints_one_key_tagged_with_its_role() {
         let minter = Minter::default();
-        let joiner = Joiner::new(Volume(StateVolume::Empty), &minter);
+        let joiner = Enrollment::new(Volume(StateVolume::Empty), &minter);
         let key = block_on(joiner.key_for(&node(), AegisRole::Controller)).unwrap();
         assert!(key.is_some());
         assert_eq!(*minter.tags.lock().unwrap(), ["tag:aegis-controller"]);

@@ -10,7 +10,7 @@ use aegis_adapters::bootstrap::{
 use aegis_adapters::tailscale::TailscaleApi;
 use aegis_application::{
     Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice, ControllerUrl,
-    HostSide, ImageTag, Joiner, Reason, RepoUrl, Sources, TailnetError,
+    Enrollment, HostSide, ImageTag, Reason, RepoUrl, Sources, TailnetError,
 };
 use aegis_domain::{HostName, HostPath, ValueError};
 
@@ -100,7 +100,7 @@ pub async fn run(flags: &Flags) -> Result<BootstrapReport, BootstrapFailure> {
         LocalHost::new(Layout::new(checkout, stacks.clone(), key)),
         SopsEncrypt,
     );
-    let keys = Joiner::new(DockerVolumes::new(), api);
+    let keys = Enrollment::new(DockerVolumes::new(), api);
     let bootstrap = Bootstrap::new(host, keys, ComposeStacks::new(stacks));
     Ok(bootstrap.run(&plan).await?)
 }
@@ -167,5 +167,22 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_overrides_replace_the_defaults() {
+        let line =
+            format!("{REQUIRED} --image-tag 9.9.9 --checkout /srv/repo --stacks /srv/stacks");
+        let plan = plan(&flags(&line), &oauth()).unwrap();
+        assert_eq!(plan.image().as_str(), "9.9.9");
+        assert_eq!(plan.sources().checkout().as_str(), "/srv/repo");
+        let stacks = path_of(&flags(&line), "--stacks", DEFAULT_STACKS).unwrap();
+        assert_eq!(stacks.as_str(), "/srv/stacks");
+    }
+
+    #[test]
+    fn a_flag_of_another_command_is_not_accepted_by_bootstrap() {
+        let words: Vec<String> = ["bootstrap", "--force"].map(str::to_owned).to_vec();
+        assert!(parse(&words).is_err());
     }
 }

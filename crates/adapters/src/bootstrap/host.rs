@@ -2,7 +2,6 @@
 //! checkout and the stack files below the bootstrap directory.
 
 use std::path::{Path, PathBuf};
-use std::process::Output;
 use std::time::Duration;
 
 use aegis_application::{
@@ -80,16 +79,6 @@ fn age_command(arguments: &[&str]) -> Command {
     command
 }
 
-fn succeeded(output: &Output, program: &str) -> Result<(), Reason> {
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(Reason::new(&format!(
-        "{program} exited with {}",
-        output.status
-    )))
-}
-
 async fn private_directory(path: &Path) -> Result<(), Reason> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -115,14 +104,14 @@ async fn generate(path: &Path) -> Result<(), Reason> {
     private_directory(path).await?;
     let command = age_command(&["-o", &path.to_string_lossy()]);
     let output = cli::run(command, String::new(), AGE_TIMEOUT).await?;
-    succeeded(&output, "age-keygen")
+    cli::succeeded(&output, "age-keygen")
 }
 
 /// The recipient of the key at `path`, printed by `age-keygen -y`.
 async fn recipient_of(path: &Path) -> Result<AgeRecipient, Reason> {
     let command = age_command(&["-y", &path.to_string_lossy()]);
     let output = cli::run(command, String::new(), AGE_TIMEOUT).await?;
-    succeeded(&output, "age-keygen")?;
+    cli::succeeded(&output, "age-keygen")?;
     let printed = String::from_utf8_lossy(&output.stdout);
     AgeRecipient::new(printed.trim()).map_err(|failure| Reason::new(&failure))
 }
@@ -157,7 +146,7 @@ async fn checkout(repo: &RepoUrl, directory: &Path) -> Result<(), Reason> {
         clone_command(repo, directory)
     };
     let output = cli::run(command, String::new(), GIT_TIMEOUT).await?;
-    succeeded(&output, "git")
+    cli::succeeded(&output, "git")
 }
 
 async fn current(path: &Path) -> Result<Option<String>, Reason> {
