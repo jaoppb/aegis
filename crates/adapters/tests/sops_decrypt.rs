@@ -288,15 +288,25 @@ fn flat_keys_are_trimmed_and_key_groups_need_an_age_group() {
             "[sops]\nkey_groups__list_x__map_age__list_0__map_enc = e\n",
         )
         .await;
-        let upper = "key_groups__list_0__MAP_AGE__LIST_0__map_hc_vault__list_0__map_vault_address";
-        assert_refused("j.env", &format!("A=1\nsops_{upper}=http://x\n")).await;
-        assert_refused("k.ini", &format!("[sops]\n{upper} = http://x\n")).await;
-        assert_refused("l.env", "A=1\nSOPS_HC_VAULT__list_0__map_x=1\n").await;
         assert_refused(
             "m.env",
             "A=1\nsops_key_groups__list___map_age__list_0__map_enc=e\n",
         )
         .await;
+    });
+}
+
+#[test]
+fn flattened_metadata_keys_with_upper_case_letters_are_refused() {
+    runtime().block_on(async {
+        // The lowercase twin of this key is accepted by the tokenizer; only the case guard refuses it.
+        let upper = "key_groups__list_0__MAP_AGE__LIST_0__map_hc_vault__list_0__map_vault_address";
+        assert_refused("j.env", &format!("A=1\nsops_{upper}=http://x\n")).await;
+        assert_refused("k.ini", &format!("[sops]\n{upper} = http://x\n")).await;
+        // An upper-case `SOPS_` prefix still counts as metadata, and a lower-case prefix with an
+        // upper-case key is refused on its own.
+        assert_refused("l.env", "A=1\nSOPS_HC_VAULT__list_0__map_x=1\n").await;
+        assert_refused("n.env", "A=1\nsops_MAC=m\n").await;
     });
 }
 
@@ -352,6 +362,7 @@ fn every_metadata_key_and_age_only_key_groups_are_accepted() {
         accepted("comment.env", "# note\n\nA=ENC[x]\nsops_mac=m\n").await;
         let groups = "A=ENC[x]\nsops_key_groups__list_0__map_age__list_0__map_recipient=age1a\nsops_key_groups__list_1__map_age__list_0__map_enc=e\nsops_shamir_threshold=2\nsops_lastmodified=t\nsops_mac=m\n";
         accepted("groups.env", groups).await;
+        // Deliberate: `sops` never writes these shapes, but they hold no group.
         accepted("empty.env", "A=ENC[x]\nsops_key_groups__list_0__map_age=\nsops_mac=m\n").await;
         accepted("map.env", "A=ENC[x]\nsops_mac__map_x=1\nsops_mac=m\n").await;
         accepted("data.env", "APP_KMS__ARN=x\nsops_mac=m\n").await;

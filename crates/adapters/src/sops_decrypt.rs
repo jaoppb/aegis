@@ -155,13 +155,17 @@ fn flat_key_is_age_only(key: &str) -> bool {
     group.map_or_else(|| first_token_is_metadata(key), key_group_is_age_only)
 }
 
-/// Dotenv: every `sops_<key>=` entry must be age-only metadata. Other entries are the file's data.
+/// The prefix of the flattened metadata entries of a dotenv file.
+const DOTENV_PREFIX: &str = "sops_";
+
+/// Dotenv: every entry whose key starts with `sops_` (in any case, stricter than `sops`) must be
+/// age-only metadata. Other entries are the file's data.
 fn dotenv_is_age_only(text: &str) -> bool {
     let entries = text.lines().filter_map(|line| line.split_once('='));
     let keys = entries.map(|(key, _)| key.trim());
-    let mut metadata = keys.filter_map(|key| key.split_at_checked("sops_".len()));
-    metadata
-        .all(|(prefix, rest)| !prefix.eq_ignore_ascii_case("sops_") || flat_key_is_age_only(rest))
+    let split = keys.filter_map(|key| key.split_at_checked(DOTENV_PREFIX.len()));
+    let mut metadata = split.filter(|(prefix, _)| prefix.eq_ignore_ascii_case(DOTENV_PREFIX));
+    metadata.all(|(_, rest)| flat_key_is_age_only(rest))
 }
 
 /// Whether an INI line is one physical line for every reader. The INI reader in `sops` joins a line
@@ -214,7 +218,8 @@ fn ini_step(section: Section, line: &str) -> Option<Section> {
     fine.then_some(section)
 }
 
-/// INI: every key of a `[sops]` section must be age-only metadata, and no line may
+/// INI: every key of a `[sops]` section (the header in any case, stricter than `sops`) must be
+/// age-only metadata, and no line may
 /// be one that readers could split or join differently.
 fn ini_is_age_only(text: &str) -> bool {
     text.lines().try_fold(Section::Other, ini_step).is_some()

@@ -204,3 +204,25 @@ fn placing_the_same_slot_again_replaces_the_content() {
         tokio::fs::remove_dir_all(&root).await.ok();
     });
 }
+
+#[cfg(test)]
+async fn place_and_read_back(store: &TmpfsStore, rounds: u32) {
+    for round in 0..rounds {
+        let text = format!("A={round}");
+        let path = store
+            .place(&slot(), &Secret::new(text.clone()))
+            .await
+            .unwrap();
+        let read = tokio::fs::read_to_string(path.as_str()).await.unwrap();
+        assert_eq!(read, text, "round {round}");
+    }
+}
+
+#[test]
+fn a_placed_secret_is_readable_at_once() {
+    runtime().block_on(async {
+        let root = root("flush");
+        place_and_read_back(&TmpfsStore::at(&root), 200).await;
+        tokio::fs::remove_dir_all(&root).await.ok();
+    });
+}
