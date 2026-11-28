@@ -7,10 +7,12 @@ use aegis_application::ParseError;
 use aegis_domain::{
     Access, AdditionalContexts, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile,
     EnvFiles, FileReference, HostPath, ImageRef, Line, Mount, Mounts, Presence, ReferenceKind,
-    ReferencedFiles, RepoPath, SecretFiles, Service, ServiceName, ServiceSource, Services,
-    ValueError, VolumeName, Volumes,
+    ReferencedFiles, RepoPath, SecretFile, SecretFiles, SecretName, Service, ServiceName,
+    ServiceSource, Services, ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
+
+use crate::allowlist;
 
 #[derive(Deserialize)]
 struct RawCompose {
@@ -107,10 +109,41 @@ fn entry_value(entry: &str) -> String {
     value.to_owned()
 }
 
-/// Whether an additional build context is a path in the checkout, not an image, URL or service.
-fn is_path_context(value: &str) -> bool {
-    let reference = value.contains("://") || value.starts_with("service:");
-    !reference && !value.starts_with("git@") && !value.starts_with("github.com/")
+/// Contexts that are references, not paths in the checkout.
+const REFERENCE_PREFIXES: &[&str] = &[
+    "service:",
+    "docker-image://",
+    "github.com/",
+    "https://",
+    "http://",
+    "git://",
+];
+
+/// Whether `value` is the scp form `git@host:path`: a host without a `/` before the first colon,
+/// as `BuildKit` reads it. Anything else starting with `git@` is a local path.
+fn is_scp_git(value: &str) -> bool {
+    let host = value
+        .strip_prefix("git@")
+        .and_then(|rest| rest.split_once(':'));
+    host.is_some_and(|(name, _)| !name.is_empty() && !name.contains('/'))
+}
+
+/// An additional build context: `Some` path in the checkout, `None` for a known reference, and
+/// a refusal for any other scheme (`oci-layout://` is a host directory), so the unknown fails closed.
+fn additional_context(value: String) -> Result<Option<String>, ParseError> {
+    if is_scp_git(&value)
+        || REFERENCE_PREFIXES
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+    {
+        return Ok(None);
+    }
+    if value.contains("://") {
+        return Err(ParseError::Invalid(format!(
+            "build: additional context `{value}` has a scheme Aegis does not support"
+        )));
+    }
+    Ok(Some(value))
 }
 
 #[derive(Deserialize)]
@@ -163,19 +196,17 @@ fn yaml(error: &serde_norway::Error) -> ParseError {
     }
 }
 
-fn file_paths(
-    scope: &str,
-    paths: impl Iterator<Item = String>,
-) -> Result<Vec<RepoPath>, ParseError> {
-    paths
-        .map(|path| RepoPath::new(path).map_err(|error| in_scope(scope, &error)))
-        .collect()
-}
-
 fn secret_files(raw: &RawCompose) -> Result<SecretFiles, ParseError> {
-    let sources = raw.files.secrets.iter().flat_map(BTreeMap::values);
-    let files = sources.filter_map(|source| source.file.clone());
-    Ok(SecretFiles::new(file_paths("secrets", files)?))
+    let entries = raw.files.secrets.iter().flat_map(BTreeMap::iter);
+    let files = entries.filter_map(|(name, source)| Some((name, source.file.as_ref()?)));
+    files
+        .map(|(name, path)| {
+            let name = SecretName::new(name).map_err(|error| in_scope("secrets", &error))?;
+            let path = RepoPath::new(path).map_err(|error| in_scope("secrets", &error))?;
+            Ok(SecretFile::new(name, path))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(SecretFiles::new)
 }
 
 fn reference_paths(
@@ -225,28 +256,34 @@ fn include_path_list(path: &RawIncludePath) -> Vec<String> {
 fn read_document(text: &str) -> Result<Option<RawCompose>, ParseError> {
     let mut document: serde_norway::Value =
         serde_norway::from_str(text).map_err(|error| yaml(&error))?;
+    refuse(
+        "YAML tags are not supported: remove the tag at",
+        &allowlist::tags(&document),
+    )?;
     document
         .apply_merge()
         .map_err(|error| ParseError::Invalid(error.to_string()))?;
-    if has_merge_key(&document) {
-        return Err(ParseError::Invalid(
-            "chained YAML merge keys (`<<`) are not supported: write the merged content out"
-                .to_owned(),
-        ));
-    }
+    refuse(
+        "chained YAML merge keys (`<<`) are not supported: write the merged content out at",
+        &allowlist::merge_keys(&document),
+    )?;
+    refuse(
+        "keys Aegis does not support (remove them or use an `x-` extension key):",
+        &allowlist::unsupported_keys(&document),
+    )?;
     serde_norway::from_value(document).map_err(|error| yaml(&error))
 }
 
-/// Whether a `<<` key is left anywhere, which `apply_merge` does for a merge inside a merged
-/// anchor. Compose resolves those, so what is left unread here would slip past the rules.
-fn has_merge_key(value: &serde_norway::Value) -> bool {
-    match value {
-        serde_norway::Value::Mapping(mapping) => mapping
-            .iter()
-            .any(|(key, inner)| key.as_str() == Some("<<") || has_merge_key(inner)),
-        serde_norway::Value::Sequence(items) => items.iter().any(has_merge_key),
-        _ => false,
+/// Fail with every path in `found`, or pass when there is none.
+fn refuse(reason: &str, found: &[String]) -> Result<(), ParseError> {
+    if found.is_empty() {
+        return Ok(());
     }
+    let paths: Vec<String> = found.iter().map(|path| format!("`{path}`")).collect();
+    Err(ParseError::Invalid(format!(
+        "{reason} {}",
+        paths.join(", ")
+    )))
 }
 
 fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, ParseError> {
@@ -254,7 +291,7 @@ fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, 
     declared
         .into_iter()
         .map(|(name, volume)| {
-            reject_bind_device(&name, volume.as_ref())?;
+            reject_unsafe_driver_options(&name, volume.as_ref())?;
             VolumeName::new(name).map_err(|error| in_scope("volumes", &error))
         })
         .collect()
@@ -270,21 +307,31 @@ fn is_absolute_path(device: &serde_norway::Value) -> bool {
     device.as_str().is_some_and(|path| path.starts_with('/'))
 }
 
-/// A named volume that binds a device that is not an absolute host path is a bind mount of a path
-/// the repository or the home directory decides, so the mount rules cannot see it. A number is
-/// not an absolute path either.
-fn reject_bind_device(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
+/// Refuse the driver options the rules cannot check: an interpolated one, and a bind of a device
+/// that is not an absolute host path (a bind mount of a path the repository or the home directory
+/// decides, which the mount rules cannot see). A number is not an absolute path either.
+fn reject_unsafe_driver_options(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
     let options = raw.and_then(|volume| volume.driver_opts.as_ref());
-    let Some(options) = options.filter(|options| binds_a_device(options)) else {
+    let Some(options) = options else {
         return Ok(());
     };
-    let acceptable = options.get("device").is_none_or(is_absolute_path);
+    if options.values().any(is_interpolated) {
+        return Err(ParseError::Invalid(format!(
+            "volume `{name}` interpolates a driver option (`$`): write the value out"
+        )));
+    }
+    let acceptable = !binds_a_device(options) || options.get("device").is_none_or(is_absolute_path);
     if acceptable {
         return Ok(());
     }
     Err(ParseError::Invalid(format!(
         "volume `{name}` binds a device that is not an absolute host path: use an absolute host path"
     )))
+}
+
+/// Compose interpolates driver options, so a `$` hides what the bind rules would check.
+fn is_interpolated(value: &serde_norway::Value) -> bool {
+    value.as_str().is_some_and(|text| text.contains('$'))
 }
 
 fn in_scope(scope: &str, error: &impl Display) -> ParseError {
@@ -345,7 +392,8 @@ fn detailed_build(
     let extra = additional
         .map(RawAdditionalContexts::values)
         .unwrap_or_default();
-    let extra = extra.into_iter().filter(|value| is_path_context(value));
+    let extra = extra.into_iter().map(additional_context);
+    let extra = extra.collect::<Result<Vec<_>, _>>()?.into_iter().flatten();
     let extra = extra
         .map(DeclaredPath::new)
         .collect::<Result<AdditionalContexts, _>>()
@@ -421,8 +469,12 @@ fn short(spec: &str) -> Result<Mount, ParseError> {
     }
 }
 
+/// The last `ro` or `rw` option wins, as in Compose.
 fn short_access(options: &str) -> Access {
-    if options.split(',').any(|option| option == "ro") {
+    let last = options
+        .split(',')
+        .rfind(|option| matches!(*option, "ro" | "rw"));
+    if last == Some("ro") {
         Access::ReadOnly
     } else {
         Access::ReadWrite

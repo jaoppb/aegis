@@ -4,6 +4,7 @@
 //! reason about and the stack policy, and knows nothing about files, wire formats or processes.
 
 pub mod compose;
+pub mod deployment;
 pub mod peer;
 pub mod policy;
 pub mod state;
@@ -12,8 +13,12 @@ pub mod violation;
 
 pub use compose::{
     Access, AdditionalContexts, Build, ComposeSummary, EnvFile, EnvFiles, FileReference, Mount,
-    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFiles, Service, ServiceSource,
-    Services, Volumes,
+    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFile, SecretFiles, Service,
+    ServiceSource, Services, Volumes,
+};
+pub use deployment::{
+    CommitSha, Deployment, Detail, Origin, ProjectName, Report, ReservedStacks, StackReport,
+    StackReports,
 };
 pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
@@ -22,6 +27,6 @@ pub use state::{
 };
 pub use value::{
     ComposeSource, ContainerPath, DeclaredPath, HostName, HostPath, ImageRef, Line, Port, RepoPath,
-    ServiceName, StackName, TailnetTag, ValueError, VolumeName,
+    Secret, SecretName, ServiceName, SlotName, StackName, TailnetTag, ValueError, VolumeName,
 };
 pub use violation::{FileRole, Location, Problem, Rejection, Rejections, Violation, Violations};

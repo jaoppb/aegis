@@ -252,9 +252,9 @@ fn file_violations(context: &Context<'_>) -> Vec<Violation> {
     let env_files = compose.services().iter().flat_map(Service::env_files);
     found.extend(env_files.filter_map(|file| secret_violation(context, &env_reference(file))));
     found.extend(implicit_env_violation(context));
-    for path in compose.secret_files() {
+    for file in compose.secret_files() {
         let reference = Reference {
-            path,
+            path: file.path(),
             role: FileRole::Secret,
             presence: Presence::Required,
         };

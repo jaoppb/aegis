@@ -23,7 +23,7 @@ use tokio::net::TcpListener;
 use crate::whois::TailscaleWhois;
 
 /// The environment variable that names the address to listen on, normally a tailnet address.
-const LISTEN_VAR: &str = "AEGIS_LISTEN";
+pub(super) const LISTEN_VAR: &str = "AEGIS_LISTEN";
 
 /// A server could not start or stopped.
 #[derive(Debug, thiserror::Error)]
@@ -51,11 +51,34 @@ pub enum ServeError {
     /// The required ACL tag is not valid.
     #[error("invalid ACL tag: {0}")]
     Tag(#[from] ValueError),
+    /// Decrypted files left by an earlier run could not be removed.
+    #[error("cannot remove stale decrypted files: {0}")]
+    Sweep(aegis_application::StoreError),
+    /// A required environment variable is not set.
+    #[error("{0} is not set")]
+    Missing(&'static str),
+    /// An environment variable holds an invalid value.
+    #[error("{variable} is invalid: {cause}")]
+    Invalid {
+        /// The variable.
+        variable: &'static str,
+        /// What is wrong with it.
+        cause: String,
+    },
+    /// The client for the controller could not be built.
+    #[error("cannot build the controller client: {0}")]
+    Client(#[from] super::ClientError),
 }
 
 /// The address a server listens on, normally an address of the tailnet interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListenAddress(SocketAddr);
+
+impl ListenAddress {
+    pub(super) const fn socket(self) -> SocketAddr {
+        self.0
+    }
+}
 
 impl FromStr for ListenAddress {
     type Err = std::net::AddrParseError;
@@ -115,8 +138,9 @@ async fn admit(_admitted: Admitted, request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// The `/v1` routes of a server with `role`, behind the tag check of `authorizer`.
-fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>) -> Router
+/// The `/v1` routes of a server with `role`, and the `extra` routes it adds, all behind the tag
+/// check of `authorizer`.
+fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>, extra: Router) -> Router
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
@@ -126,6 +150,7 @@ where
             HEALTH_PATH,
             get(move || async move { Json(Health::of(role)) }),
         )
+        .merge(extra)
         .layer(from_fn_with_state(gate, admit))
 }
 
@@ -144,8 +169,38 @@ pub async fn serve<Lookup>(
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
-    let authorizer = Authorizer::for_server(whois, role_of(role))?;
-    let service = router(role, authorizer).into_make_service_with_connect_info::<SocketAddr>();
+    serve_routes(listener, Guard::new(role, whois), Router::new()).await
+}
+
+/// Who a server is and how it resolves its peers.
+pub(super) struct Guard<Lookup> {
+    role: Role,
+    whois: Lookup,
+}
+
+impl<Lookup> Guard<Lookup> {
+    /// A guard for a server with `role` that resolves peers with `whois`.
+    pub(super) const fn new(role: Role, whois: Lookup) -> Self {
+        Self { role, whois }
+    }
+}
+
+/// Like [`serve`], with the `extra` routes added behind the same tag check.
+///
+/// # Errors
+///
+/// The same as [`serve`].
+pub(super) async fn serve_routes<Lookup>(
+    listener: TcpListener,
+    guard: Guard<Lookup>,
+    extra: Router,
+) -> Result<(), ServeError>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let authorizer = Authorizer::for_server(guard.whois, role_of(guard.role))?;
+    let service =
+        router(guard.role, authorizer, extra).into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, service)
         .await
         .map_err(ServeError::Serve)
@@ -161,7 +216,7 @@ async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
     serve(listener, role, TailscaleWhois::new()).await
 }
 
-fn listen_from(variable: Result<String, VarError>) -> Result<ListenAddress, ServeError> {
+pub(super) fn listen_from(variable: Result<String, VarError>) -> Result<ListenAddress, ServeError> {
     let text = variable.map_err(|_| ServeError::NotConfigured)?;
     Ok(text.parse()?)
 }

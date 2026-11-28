@@ -1,7 +1,8 @@
 //! The part of a compose file the validation rules reason about.
 
 use crate::value::{
-    ContainerPath, DeclaredPath, HostPath, ImageRef, RepoPath, ServiceName, VolumeName, collection,
+    ContainerPath, DeclaredPath, HostPath, ImageRef, RepoPath, SecretName, ServiceName, VolumeName,
+    collection,
 };
 
 /// Whether a mount lets the container write to its source.
@@ -208,10 +209,37 @@ collection!(
     EnvFiles,
     EnvFile
 );
+/// One top-level `secrets` entry that reads a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretFile {
+    name: SecretName,
+    path: RepoPath,
+}
+
+impl SecretFile {
+    /// The secret `name` read from `path`, relative to the stack directory.
+    #[must_use]
+    pub const fn new(name: SecretName, path: RepoPath) -> Self {
+        Self { name, path }
+    }
+
+    /// The name the compose file gives the secret.
+    #[must_use]
+    pub const fn name(&self) -> &SecretName {
+        &self.name
+    }
+
+    /// The path, relative to the stack directory.
+    #[must_use]
+    pub const fn path(&self) -> &RepoPath {
+        &self.path
+    }
+}
+
 collection!(
-    /// The files the top-level `secrets` of a compose file read, relative to the stack directory.
+    /// The top-level `secrets` of a compose file that read a file.
     SecretFiles,
-    RepoPath
+    SecretFile
 );
 /// Why a compose file points at another file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

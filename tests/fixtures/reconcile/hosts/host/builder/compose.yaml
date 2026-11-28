@@ -1,0 +1,5 @@
+services:
+  App:
+    build: ./app
+  db:
+    image: postgres:17
