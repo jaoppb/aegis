@@ -185,7 +185,7 @@ fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
 ///
 /// Returns a [`ServeError`] when a variable is missing or invalid, or the Tailscale client cannot
 /// be built.
-pub fn enroll_routes_from_env() -> Result<Router, ServeError> {
+pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
     let credentials = OAuthCredentials::new(
         ClientId::new(required(CLIENT_ID_VAR)?),
         ClientSecret::new(required(CLIENT_SECRET_VAR)?),

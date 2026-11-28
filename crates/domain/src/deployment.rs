@@ -120,6 +120,12 @@ impl Detail {
 }
 
 collection!(
+    /// A set of hosts, such as the hosts a controller has an agent for.
+    HostNames,
+    HostName
+);
+
+collection!(
     /// The reserved `aegis/` stacks a host opts in to deploy.
     ReservedStacks,
     StackName
