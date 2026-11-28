@@ -53,6 +53,14 @@ deny-advisories:
 # Run every check that needs no network: format, lint, workflow lint, dependency policy, architecture rules and tests.
 check-offline: fmt-check lint workflows-check deny arch-check test
 
+# Build every release artifact the way release.yml does: the static musl binaries and the controller and agent images, for the host architecture (needs nix; no network beyond the Nix caches).
+build-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for package in aegis aegis-controller aegis-agent aegis-controller-image aegis-agent-image; do
+        nix build ".#${package}" --no-link --print-build-logs
+    done
+
 # Fail on unpinned or mismatched action references (reads action versions through `gh`, so it needs network).
 actions-check:
     tools actions check
