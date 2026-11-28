@@ -40,7 +40,7 @@ A stack that exposes a service (`expose` in its `aegis.toml`) also needs the Doc
 
 ## `POST /v1/reconcile`
 
-Callable only by a node tagged `tag:aegis-controller` (see the ACL snippet in [tailscale-acl.md](tailscale-acl.md)). The body names the commit as 7 to 64 lower-case hex digits:
+Callable only by a node tagged `tag:aegis-controller` (see the ACL snippet in [tailscale-acl.md](tailscale-acl.md)). The body names the commit as 7 to 64 lower-case hex digits, and may name one stack with `"stack"` (a stack name, such as `{"commit":"3fe0623","stack":"web"}`; `aegis sync --stack` sends it through the controller):
 
 ```sh
 curl -X POST -H 'content-type: application/json' -d '{"commit":"3fe0623"}' \
@@ -56,12 +56,12 @@ The answer is the status report: the host, the commit and one entry per stack wi
 | Status | Meaning |
 |--------|---------|
 | `200` | The reconcile ran; each stack's state is in the body. One failing stack does not stop the others. |
-| `400` | The commit is not 7 to 64 lower-case hex digits. A body that is not JSON with a `commit` string gets the framework's `415` or `422`. |
+| `400` | The commit is not 7 to 64 lower-case hex digits, or the stack is not a valid stack name. A body that is not JSON with a `commit` string gets the framework's `415` or `422`. |
 | `403` | The caller is not tagged `tag:aegis-controller`. |
 | `502` | The checkout could not be moved to the commit; nothing was deployed. The body names the failure. |
 | `503` | The whois lookup failed. |
 
-Only one reconcile runs at a time; a second request waits for the first.
+Only one reconcile runs at a time; a second request waits for the first. A reconcile of one stack deploys, reports and removes that stack alone (no orphan sweep) and answers a report that lists that stack only; the agent does not post it to the controller, because it would stand for the whole host.
 
 The agent also posts the same report to the controller's `POST /v1/status` ([controller.md](controller.md)). The post is best effort: a failure is ignored, and the answer above is the report either way.
 
@@ -73,6 +73,6 @@ Removal is declarative and never deletes data on its own.
 - **`state = "purged"` in `aegis.toml`.** The tombstone stays in git. The agent, in order: refuses unsafe paths before touching anything, runs `compose down`, asks the controller to delete the tailnet node (`DELETE /v1/nodes/{hostname}`, the exposed service's name, skipped when another live stack exposes the same name, or while any stack of the repository is rejected, because it may still expose that name; the controller deletes only a device whose tags are all in `AEGIS_ENROLL_TAGS`; a `404` that says `no such node` counts as already gone, any other `404` and a `409` for an ambiguous hostname fail), deletes the named volumes labelled `com.docker.compose.project=aegis-<stack>` (never `external` volumes or another project's), then deletes the stack's read-write absolute host paths. Any failure stops the chain and reports `failed`; the tombstone is still in git, so the next reconcile retries. When it finishes the stack reports `purged` ("purged, safe to delete dir"); delete the directory in a later commit. Only a user stack can be purged, and a tombstone on a stack that fails validation does nothing.
 - **Host path safety.** A path is deleted only if it has at least three segments, is plain (no `.`, empty segment or `:`), is not the checkout or inside or above it, and is not inside or above a path another stack of the repository mounts. Host paths are not deleted while a stack of the host, or of the reserved `aegis/` directory, is rejected, because its mounts are unknown. The delete runs in a throw-away container that mounts the host's root, so it also reaches files a rootless daemon owns, and it refuses a symlink in any segment of the path, so it never follows a link out; a path that is already gone counts as deleted, and anything that is not a directory (a socket, a device, a file) is left alone. System locations such as `/etc`, `/dev`, `/run`, `/var/run` and `/var/lib/docker` are never deleted.
 - **Known limits.** The path guard knows the paths the repository declares, so it cannot see the host paths a removed (orphaned) stack kept, the `driver_opts` bind devices of named volumes, a named volume another stack uses as `external`, or a filesystem mounted under a purged path (the delete crosses it). Keep such data out of a purged stack's volumes and paths. A user stack named like a reserved `aegis/` stack is never purged (rename it), and no stack is purged while the `aegis/` directory cannot be read; both report `failed` with the reason and are retried. The controller deletes any node whose tags are all in `AEGIS_ENROLL_TAGS` for any agent that asks; tying the delete to the purged stack's hostname is part of #76.
-- **Reporting.** `orphaned` and `purged` are stack states in the status report, carried like `running`; `aegis status` (#21) shows them.
+- **Reporting.** `orphaned` and `purged` are stack states in the status report, carried like `running`; `aegis status` and `aegis diff` ([cli.md](cli.md)) show them.
 
 The controller needs the `devices:core` scope on its Tailscale OAuth client for the node delete.

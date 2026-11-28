@@ -13,7 +13,7 @@ use aegis_application::{
 };
 use aegis_domain::{
     CommitSha, Deployment, Detail, HostName, HostPath, HostPaths, Leftover, Leftovers, NodeLabel,
-    ProjectName, Remains, Report, Tombstone,
+    ProjectName, Remains, Report, StackName, Tombstone,
 };
 
 /// A checkout in a scratch directory, written file by file.
@@ -179,7 +179,11 @@ impl Checkout for FakeGit {
 type Removing = Remover<OrphanSweep<Fake, Fake>, Purge<Fake, Fake, Fake>>;
 
 #[cfg(test)]
-async fn reconcile(files: &Scratch, fake: &Fake, compose: &FakeCompose) -> Report {
+fn reconciler(
+    files: &Scratch,
+    fake: &Fake,
+    compose: &FakeCompose,
+) -> Reconciler<FakeGit, FakeCompose, Removing> {
     let repository = Repository::new(FsRepo::new(&files.root), SerdeStackParser, SopsCheck);
     let ports = ReconcilePorts::new(FakeGit, compose.clone(), repository);
     let host = HostName::new("host").unwrap();
@@ -191,9 +195,23 @@ async fn reconcile(files: &Scratch, fake: &Fake, compose: &FakeCompose) -> Repor
     let purge = Purge::new(fake.clone(), fake.clone(), fake.clone())
         .protecting(HostPaths::new(paths.collect()));
     let removal: Removing = Remover::new(sweep, purge);
-    let reconciler = Reconciler::new(host, ports).with_removal(removal);
+    Reconciler::new(host, ports).with_removal(removal)
+}
+
+#[cfg(test)]
+async fn reconcile(files: &Scratch, fake: &Fake, compose: &FakeCompose) -> Report {
     let commit = CommitSha::new("abc1234").unwrap();
+    let reconciler = reconciler(files, fake, compose);
     reconciler.reconcile(commit).await.unwrap()
+}
+
+/// A reconcile of the one stack `name`.
+#[cfg(test)]
+async fn reconcile_only(files: &Scratch, fake: &Fake, name: &str) -> Report {
+    let commit = CommitSha::new("abc1234").unwrap();
+    let reconciler = reconciler(files, fake, &FakeCompose::default());
+    let stack = StackName::new(name).unwrap();
+    reconciler.reconcile_only(commit, stack).await.unwrap()
 }
 
 #[cfg(test)]
@@ -267,6 +285,53 @@ fn a_deleted_stack_never_reaches_the_purger_even_when_it_has_data() {
         };
         reconcile(&files, &fake, &FakeCompose::default()).await;
         assert!(!fake.events().iter().any(|event| destroys(event)));
+    });
+}
+
+#[test]
+fn a_sync_of_one_stack_takes_no_leftover_project_down() {
+    runtime().block_on(async {
+        let files = checkout("scoped-orphan", &[WEB]).await;
+        let fake = Fake {
+            leftovers: vec![("aegis-old", &["aegis-old_data"])],
+            ..Fake::default()
+        };
+        let report = reconcile_only(&files, &fake, "web").await;
+        assert!(fake.events().is_empty());
+        assert_eq!(report.stacks().len(), 1);
+    });
+}
+
+#[test]
+fn a_sync_of_one_stack_purges_that_stack_and_no_other() {
+    runtime().block_on(async {
+        let files = checkout(
+            "scoped-purge",
+            &[
+                WEB,
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", OLD_COMPOSE),
+                ("hosts/host/other/aegis.toml", PURGED),
+                ("hosts/host/other/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        let report = reconcile_only(&files, &fake, "old").await;
+        assert_eq!(deployment(&report, "hosts/host/old"), &Deployment::Purged);
+        assert_eq!(report.stacks().len(), 1);
+        assert!(!fake.events().iter().any(|event| event.contains("other")));
+    });
+}
+
+#[test]
+fn a_sync_of_another_stack_leaves_a_tombstone_alone() {
+    runtime().block_on(async {
+        let files = tombstoned("scoped-other", OLD_COMPOSE, PURGED).await;
+        let fake = Fake::default();
+        let report = reconcile_only(&files, &fake, "web").await;
+        assert!(fake.events().is_empty());
+        assert_eq!(report.stacks().len(), 1);
     });
 }
 

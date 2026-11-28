@@ -1,17 +1,20 @@
 //! Wires a full controller from its environment.
 
 use std::path::{Component, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use aegis_application::{Poller, Repository};
-use aegis_domain::HostName;
+use aegis_domain::{HostName, Logins};
 use axum::Router;
 use tokio::net::TcpListener;
 
 use super::agent::{invalid, required};
 use super::controller::{AgentAddress, Hub};
 use super::enroll::enroll_routes_from_env;
-use super::server::{LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_controller};
+use super::server::{
+    LISTEN_VAR, ListenAddress, Operated, ServeError, listen_from, serve_controller_for,
+};
 use crate::git::Remote;
 use crate::http::BaseUrl;
 use crate::{FsRepo, GitFollower, SerdeStackParser, SopsCheck, TailscaleWhois};
@@ -21,6 +24,7 @@ const REPO_BRANCH_VAR: &str = "AEGIS_REPO_BRANCH";
 const WORKDIR_VAR: &str = "AEGIS_WORKDIR";
 const POLL_VAR: &str = "AEGIS_POLL_SECS";
 const AGENTS_VAR: &str = "AEGIS_AGENTS";
+const OPERATORS_VAR: &str = "AEGIS_OPERATORS";
 
 /// The variables of the controller's own settings that it refuses to start without, besides
 /// `AEGIS_LISTEN` and the enrolment variables of [`super::CONTROLLER_REQUIRED`].
@@ -49,10 +53,17 @@ struct Serving {
     enroll: Router,
 }
 
-/// How often to look and which agents to tell.
+/// How often to look, which agents to tell and which people may operate the controller.
 struct Watch {
     interval: Duration,
     agents: Vec<AgentAddress>,
+    operators: Logins,
+}
+
+/// The logins of `AEGIS_OPERATORS`, comma-separated; unset or empty means nobody, so no operator
+/// is admitted.
+fn operators_from(variable: Option<&str>) -> Result<Logins, ServeError> {
+    Logins::parse_list(variable.unwrap_or_default()).map_err(|error| invalid(OPERATORS_VAR, &error))
 }
 
 /// The `host=url` pairs of `AEGIS_AGENTS`, comma-separated; unset or empty means none.
@@ -111,6 +122,7 @@ impl Settings {
         let watch = Watch {
             interval: interval_from(std::env::var(POLL_VAR).ok().as_deref())?,
             agents: agents_from(std::env::var(AGENTS_VAR).ok().as_deref())?,
+            operators: operators_from(std::env::var(OPERATORS_VAR).ok().as_deref())?,
         };
         let serving = Serving {
             listen,
@@ -124,10 +136,10 @@ impl Settings {
         })
     }
 
-    fn poller(&self) -> Poller<GitFollower> {
+    fn poller(&self) -> Arc<Poller<GitFollower>> {
         let git = GitFollower::new(&self.workdir, self.remote.clone());
         let repository = Repository::new(FsRepo::new(&self.workdir), SerdeStackParser, SopsCheck);
-        Poller::new(git, repository)
+        Arc::new(Poller::new(git, repository))
     }
 }
 
@@ -138,8 +150,13 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
         .map_err(|cause| ServeError::Bind { address, cause })?;
     let hub = Hub::new(&settings.watch.agents)?;
     let poller = settings.poller();
-    let routes = hub.routes().merge(settings.serving.enroll);
-    let served = serve_controller(listener, TailscaleWhois::new(), routes);
+    let routes = hub.grouped(settings.serving.enroll, Arc::clone(&poller));
+    let operators = settings.watch.operators.clone();
+    let served = serve_controller_for(
+        listener,
+        Operated::new(TailscaleWhois::new(), operators),
+        routes,
+    );
     tokio::select! {
         done = served => done,
         never = hub.run(&poller, settings.watch.interval) => match never {},
@@ -212,6 +229,18 @@ mod tests {
         ));
         assert!(matches!(
             agents_from(Some("../x=http://h")),
+            Err(ServeError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn operators_are_comma_separated_logins_and_nobody_by_default() {
+        assert!(operators_from(None).unwrap().is_empty());
+        assert!(operators_from(Some(" , ")).unwrap().is_empty());
+        let listed = operators_from(Some("Ada@Example.com, bob@example.com")).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(matches!(
+            operators_from(Some("ada lovelace")),
             Err(ServeError::Invalid { .. })
         ));
     }

@@ -118,10 +118,16 @@ severity = "error"
 # loader is synchronous, and async callers wrap it in `spawn_blocking`. Everything else stays under
 # the rule. Its integration test builds scratch directories the same way. The architecture checker
 # is a synchronous test-time tool that reads the workspace files, and its tests read fixtures.
+# `aegis validate` and `aegis diff` check that a path is a checkout before they hand it to that
+# reader (`operator/checkout.rs`), a one-shot synchronous command with no async runtime in sight;
+# their tests, and the command line tests, build scratch checkouts the same way.
 [rules.no-sync-io]
 exclude_files = [
     "crates/adapters/src/filesystem.rs",
+    "crates/adapters/src/operator/checkout.rs",
     "crates/adapters/tests/filesystem.rs",
+    "crates/adapters/tests/operator.rs",
+    "crates/cli/tests/commands.rs",
     "tests/architecture/src/workspace.rs",
     "tests/architecture/tests/rules.rs",
 ]

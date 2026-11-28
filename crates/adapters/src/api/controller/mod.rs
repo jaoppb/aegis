@@ -4,6 +4,8 @@
 //! The controller keeps no state on disk. Its view is derived: a restart looks at the repository
 //! again and tells every agent again, and a reconcile is idempotent.
 
+mod sync;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,9 +19,10 @@ use aegis_application::{Fleet, Goal, Invalid, Notice, Observation, Order, Poller
 use aegis_domain::{CommitSha, HostName, HostNames};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use super::Routes;
 use super::wire::rejection_status;
 use super::{ApiClient, ClientError};
 use crate::http::BaseUrl;
@@ -55,9 +58,23 @@ impl Book {
         self.reports.insert(verified.host, verified.report);
     }
 
+    /// The call to `host` is over: its `outcome` is recorded like a reconcile of the poll, or
+    /// there is none to record (the report was for one stack) and the host is only freed.
+    fn conclude(&mut self, host: &HostName, outcome: Option<Result<Verified, String>>) {
+        match outcome {
+            Some(answer) => self.settle(host, answer),
+            None => self.release(host),
+        }
+    }
+
+    /// The call to `host` is over, and a new one may start.
+    fn release(&mut self, host: &HostName) {
+        self.flying.remove(host);
+    }
+
     /// The reconcile call to `host` ended: either its report counts, or the reason is kept.
     fn settle(&mut self, host: &HostName, outcome: Result<Verified, String>) {
-        self.flying.remove(host);
+        self.release(host);
         match outcome {
             Ok(verified) => self.record(verified),
             Err(reason) => drop(self.failures.insert(host.clone(), reason)),
@@ -69,6 +86,8 @@ impl Book {
 struct Shared {
     book: Mutex<Book>,
     agents: BTreeMap<HostName, ApiClient>,
+    /// Held while the repository is fetched, so a poll and a sync never fetch at the same time.
+    fetching: tokio::sync::Mutex<()>,
 }
 
 impl Shared {
@@ -177,12 +196,6 @@ fn describe(error: &ClientError) -> String {
     }
 }
 
-/// An agent answered a reconcile, or failed to: the call is over, and one lock records it.
-fn finish(shared: &Shared, host: &HostName, answer: Result<StatusReport, ClientError>) {
-    let outcome = judge(shared, host, answer);
-    shared.book().settle(host, outcome);
-}
-
 fn invalid_commit(found: &Invalid) -> InvalidCommit {
     let details = found.violations().iter().map(ToString::to_string);
     InvalidCommit::new(found.commit().as_str(), details.collect())
@@ -198,38 +211,46 @@ fn target_status(goal: &Goal) -> TargetStatus {
     TargetStatus::new(goal.commit().as_str(), rejected.collect())
 }
 
-/// One reconcile call of one host, run in its own task, so a slow deploy on one host delays
-/// neither the others nor the next poll.
-struct Call {
-    shared: Arc<Shared>,
-    client: ApiClient,
-    host: HostName,
-    request: ReconcileRequest,
+/// What came of asking the agent of a host to reconcile.
+enum Asked {
+    /// The agent was not called, for this reason.
+    Skipped(&'static str),
+    /// The agent answered, or the call failed: what the answer is worth.
+    Answered(Result<Verified, String>),
 }
 
-impl Call {
-    async fn run(self) {
-        let answer = self.client.reconcile(&self.request).await;
-        finish(&self.shared, &self.host, answer);
-    }
-}
-
-/// Start the call to `host` unless one is already running or the host has no agent. A call for an
-/// older commit that is still running holds the host back until it ends.
-fn launch(shared: &Arc<Shared>, host: &HostName, commit: &CommitSha) {
-    let Some(client) = shared.agents.get(host).cloned() else {
-        return;
+/// Ask the agent of `host` to reconcile `request`, unless the host has no agent or a call to it is
+/// already running. The host stays claimed until the caller records the answer with
+/// [`Book::settle`] or frees it with [`Book::release`].
+async fn ask(shared: &Shared, host: &HostName, request: &ReconcileRequest) -> Asked {
+    let Some(client) = shared.agents.get(host) else {
+        return Asked::Skipped("the host has no agent");
     };
     if !shared.book().flying.insert(host.clone()) {
-        return;
+        return Asked::Skipped("a reconcile is already running on this host");
     }
-    let call = Call {
-        shared: Arc::clone(shared),
-        client,
-        host: host.clone(),
-        request: ReconcileRequest::new(commit.as_str()),
-    };
-    drop(tokio::spawn(call.run()));
+    let answer = client.reconcile(request).await;
+    Asked::Answered(judge(shared, host, answer))
+}
+
+/// One reconcile call of the poll, run in its own task, so a slow deploy on one host delays neither
+/// the others nor the next poll.
+async fn poll_call(shared: Arc<Shared>, host: HostName, request: ReconcileRequest) {
+    if let Asked::Answered(outcome) = ask(&shared, &host, &request).await {
+        shared.book().settle(&host, outcome);
+    }
+}
+
+/// Start the call to `host` in a task of its own. The task does nothing when the host has no agent
+/// or a call to it is already running (see [`ask`]), so a call for an older commit that is still
+/// running holds the host back until it ends.
+fn launch(shared: &Arc<Shared>, host: &HostName, commit: &CommitSha) {
+    let request = ReconcileRequest::new(commit.as_str());
+    drop(tokio::spawn(poll_call(
+        Arc::clone(shared),
+        host.clone(),
+        request,
+    )));
 }
 
 /// Start telling every host of `order` to converge.
@@ -279,6 +300,7 @@ impl Hub {
         let shared = Shared {
             book: Mutex::new(book),
             agents: clients.0,
+            fetching: tokio::sync::Mutex::new(()),
         };
         Ok(Self {
             shared: Arc::new(shared),
@@ -289,17 +311,53 @@ impl Hub {
     /// `403` or `503`). `POST` answers `204`, `400` for a malformed host or commit and `404` for a
     /// host that has no agent address; `GET` answers a [`ControllerStatus`].
     pub fn routes(&self) -> Router {
-        let methods = get(snapshot).post(receive);
+        self.read_routes().merge(self.report_routes())
+    }
+
+    /// `GET /v1/status` alone: the status an operator reads, answering a [`ControllerStatus`].
+    pub fn read_routes(&self) -> Router {
         Router::new()
-            .route(STATUS_PATH, methods)
+            .route(STATUS_PATH, get(snapshot))
             .with_state(Arc::clone(&self.shared))
+    }
+
+    /// `POST /v1/status` alone: the reports of agents, answering `204`, `400` for a malformed
+    /// host or commit and `404` for a host that has no agent address.
+    pub fn report_routes(&self) -> Router {
+        Router::new()
+            .route(STATUS_PATH, post(receive))
+            .with_state(Arc::clone(&self.shared))
+    }
+
+    /// Every route of a controller, grouped by who may call it: the `agents` routes (and the
+    /// reports of agents) are for the tagged peer alone, `GET /v1/status` is for an agent or an
+    /// operator, and the sync routes, which look at the repository with `poller`, are for an
+    /// operator alone.
+    pub fn grouped<Up>(&self, agents: Router, poller: Arc<Poller<Up>>) -> Routes
+    where
+        Up: Upstream + Send + Sync + 'static,
+    {
+        Routes::default()
+            .tagged(self.report_routes().merge(agents))
+            .either(self.read_routes())
+            .operators(self.sync_routes(poller))
+    }
+
+    /// The sync routes, which look at the repository with `poller` when asked and make the agents
+    /// converge: `POST /v1/syncs` for every host and `POST /v1/hosts/{host}/syncs` for one. They
+    /// are to be served behind the operator check (which answers `403` or `503`); the answers are
+    /// listed with [`aegis_api::version_1::SYNCS_PATH`].
+    pub fn sync_routes<Up>(&self, poller: Arc<Poller<Up>>) -> Router
+    where
+        Up: Upstream + Send + Sync + 'static,
+    {
+        sync::routes(Arc::clone(&self.shared), poller)
     }
 
     /// Look at the repository once and tell the hosts that have not confirmed the newest good
     /// commit to converge to it. A failed fetch or an unreadable commit changes nothing that runs.
     pub async fn tick<Up: Upstream + Sync>(&self, poller: &Poller<Up>) {
-        let observation = poller.observe().await;
-        let order = plan(&self.shared, observation);
+        let order = look(&self.shared, poller).await;
         tell(&self.shared, order);
     }
 
@@ -342,6 +400,14 @@ fn tell(shared: &Arc<Shared>, order: Option<Order>) {
     if let Some(due) = order {
         converge(shared, &due);
     }
+}
+
+/// Fetch and load the repository, never at the same time as another look, and say whom to tell
+/// about the goal it found.
+async fn look<Up: Upstream + Sync>(shared: &Arc<Shared>, poller: &Poller<Up>) -> Option<Order> {
+    let _fetching = shared.fetching.lock().await;
+    let observation = poller.observe().await;
+    plan(shared, observation)
 }
 
 /// Take in what the repository looked like, and say whom to tell about the goal.

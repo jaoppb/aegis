@@ -9,7 +9,7 @@ use aegis_application::{
     OrphanSweep, Purge, Reconcile, ReconcilePorts, Reconciler, Remover, Repository, SecretStore,
     WhoIs,
 };
-use aegis_domain::{CommitSha, HostName, HostPath, HostPaths, ReservedStacks, StackName};
+use aegis_domain::{CommitSha, HostName, HostPath, HostPaths, Report, ReservedStacks, StackName};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -18,7 +18,9 @@ use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
+use super::server::{
+    Guard, LISTEN_VAR, ListenAddress, Routes, ServeError, listen_from, serve_routes,
+};
 use super::wire::status_report;
 use super::{ApiClient, ControllerDesk};
 use crate::http::BaseUrl;
@@ -95,6 +97,43 @@ impl IntoResponse for Refusal {
     }
 }
 
+/// The stack a request limits the reconcile to, when it names one.
+fn focus_of(request: &ReconcileRequest) -> Result<Option<StackName>, Refusal> {
+    let named = request.stack().map(StackName::new);
+    named
+        .transpose()
+        .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))
+}
+
+/// Converge the host in a task of its own, so dropping the handler (a transport that cancels on
+/// hang-up, or a timeout layer added later) cannot stop the reconcile half way and skip removing
+/// the decrypted files. The HTTP/1 server used today keeps running the handler anyway.
+async fn converge<Run>(
+    agent: &Arc<Agent<Run>>,
+    commit: CommitSha,
+    focus: Option<StackName>,
+) -> Result<Report, Refusal>
+where
+    Run: Reconcile + Send + Sync + 'static,
+{
+    let worker = Arc::clone(agent);
+    let task = tokio::spawn(async move {
+        let _turn = worker.turn.lock().await;
+        match focus {
+            Some(stack) => worker.reconciler.reconcile_only(commit, stack).await,
+            None => worker.reconciler.reconcile(commit).await,
+        }
+    });
+    let failed = || {
+        Refusal::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &"the reconcile task failed",
+        )
+    };
+    let done = task.await.map_err(|_| failed())?;
+    done.map_err(|error| Refusal::new(StatusCode::BAD_GATEWAY, &error))
+}
+
 async fn reconcile<Run>(
     State(agent): State<Arc<Agent<Run>>>,
     Json(request): Json<ReconcileRequest>,
@@ -104,24 +143,14 @@ where
 {
     let commit = CommitSha::new(request.commit())
         .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
-    // The reconcile runs in its own task, so dropping this handler (a transport that cancels on
-    // hang-up, or a timeout layer added later) cannot stop it half way and skip removing the
-    // decrypted files. The HTTP/1 server used today keeps running the handler anyway.
-    let worker = Arc::clone(&agent);
-    let task = tokio::spawn(async move {
-        let _turn = worker.turn.lock().await;
-        worker.reconciler.reconcile(commit).await
-    });
-    let done = task.await.map_err(|_| {
-        Refusal::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &"the reconcile task failed",
-        )
-    })?;
-    let report =
-        status_report(&done.map_err(|error| Refusal::new(StatusCode::BAD_GATEWAY, &error))?);
-    // Reporting is best effort: the controller also gets the report as the answer.
-    agent.controller.report_status(&report).await.ok();
+    let focus = focus_of(&request)?;
+    let whole = focus.is_none();
+    let report = status_report(&converge(&agent, commit, focus).await?);
+    // Reporting is best effort: the controller also gets the report as the answer. A report of one
+    // stack is not pushed, because it would stand for the whole host.
+    if whole {
+        agent.controller.report_status(&report).await.ok();
+    }
     Ok(Json(report))
 }
 
@@ -236,7 +265,12 @@ pub async fn serve_agent<Lookup>(
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
-    serve_routes(listener, Guard::new(Role::Agent, whois), routes).await
+    serve_routes(
+        listener,
+        Guard::new(Role::Agent, whois),
+        Routes::from(routes),
+    )
+    .await
 }
 
 async fn run(settings: Settings) -> Result<(), ServeError> {

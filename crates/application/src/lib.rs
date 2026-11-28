@@ -20,7 +20,7 @@ pub mod source;
 pub mod tailnet;
 pub mod validate;
 
-pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
+pub use access::{AccessError, Admit, Authorizer, PeerAddress, WhoIs, WhoIsError};
 pub use bootstrap::{
     AegisNodes, AgeRecipient, AgentEndpoint, AgentEndpoints, AgentUrl, Bootstrap, BootstrapError,
     BootstrapPlan, BootstrapReport, ControllerChoice, ControllerSetup, ControllerUrl, Existing,

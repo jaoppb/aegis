@@ -7,15 +7,61 @@ use std::collections::BTreeMap;
 
 use aegis_domain::ValueError;
 
-/// The flags one command accepts: switches take no value, valued flags take one.
+/// The flags one command accepts: switches take no value, valued flags take one, and a command
+/// may take one path as its first word.
 struct Spec {
     switches: &'static [&'static str],
     valued: &'static [&'static str],
+    first: First,
 }
+
+/// What a command may take as its first word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum First {
+    /// Only flags.
+    Flag,
+    /// A path, then flags.
+    Path,
+}
+
+/// The name a command's path argument goes by in [`Flags`].
+const PATH: &str = "<path>";
+
+/// The flag that says where the controller is.
+const CONTROLLER_FLAG: &str = "--controller";
+
+/// The flags of `aegis validate`: a path and nothing else.
+const VALIDATE: Spec = Spec {
+    switches: &[],
+    valued: &[],
+    first: First::Path,
+};
+
+/// The flags of `aegis status`.
+const STATUS: Spec = Spec {
+    switches: &[],
+    valued: &[CONTROLLER_FLAG],
+    first: First::Flag,
+};
+
+/// The flags of `aegis diff`: a path and the controller.
+const DIFF: Spec = Spec {
+    switches: &[],
+    valued: &[CONTROLLER_FLAG],
+    first: First::Path,
+};
+
+/// The flags of `aegis sync`.
+const SYNC: Spec = Spec {
+    switches: &[],
+    valued: &[CONTROLLER_FLAG, "--host", "--stack"],
+    first: First::Flag,
+};
 
 /// The flags of `aegis bootstrap`.
 const BOOTSTRAP: Spec = Spec {
     switches: &["--with-controller"],
+    first: First::Flag,
     valued: &[
         "--repo",
         "--host",
@@ -81,6 +127,12 @@ impl Flags {
         self.value(name).ok_or(UsageError::Required(name))
     }
 
+    /// The path the command was given as its first word, if any.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.value(PATH)
+    }
+
     /// Whether the switch `name` was given.
     #[must_use]
     pub fn has(&self, name: &str) -> bool {
@@ -93,6 +145,14 @@ impl Flags {
 pub enum Invocation {
     /// `aegis bootstrap`, with its flags.
     Bootstrap(Flags),
+    /// `aegis validate [path]`.
+    Validate(Flags),
+    /// `aegis status`.
+    Status(Flags),
+    /// `aegis diff [path]`.
+    Diff(Flags),
+    /// `aegis sync`.
+    Sync(Flags),
     /// Print the usage.
     Help,
 }
@@ -109,9 +169,49 @@ fn collect(rest: &[String], spec: &Spec, flags: Flags) -> Result<Flags, UsageErr
         [name] if spec.valued.contains(&name.as_str()) => {
             Err(UsageError::MissingValue(name.clone()))
         }
+        [word, tail @ ..]
+            if spec.first == First::Path && !word.starts_with("--") && !flags.has(PATH) =>
+        {
+            collect(tail, spec, flags.with(PATH, word))
+        }
         [other, ..] => Err(UsageError::UnknownArgument(other.clone())),
     }
 }
+
+/// A command by its name: the flags it accepts and what it makes of them.
+struct Command {
+    name: &'static str,
+    spec: Spec,
+    invoke: fn(Flags) -> Invocation,
+}
+
+const COMMANDS: [Command; 5] = [
+    Command {
+        name: "bootstrap",
+        spec: BOOTSTRAP,
+        invoke: Invocation::Bootstrap,
+    },
+    Command {
+        name: "validate",
+        spec: VALIDATE,
+        invoke: Invocation::Validate,
+    },
+    Command {
+        name: "status",
+        spec: STATUS,
+        invoke: Invocation::Status,
+    },
+    Command {
+        name: "diff",
+        spec: DIFF,
+        invoke: Invocation::Diff,
+    },
+    Command {
+        name: "sync",
+        spec: SYNC,
+        invoke: Invocation::Sync,
+    },
+];
 
 /// Read the command line, without the program name.
 ///
@@ -119,15 +219,14 @@ fn collect(rest: &[String], spec: &Spec, flags: Flags) -> Result<Flags, UsageErr
 ///
 /// Returns a [`UsageError`] for an unknown command or flag, or a flag without its value.
 pub fn parse(arguments: &[String]) -> Result<Invocation, UsageError> {
-    match arguments {
-        [] => Ok(Invocation::Help),
-        [command, rest @ ..] if command == "bootstrap" => {
-            collect(rest, &BOOTSTRAP, Flags::default()).map(Invocation::Bootstrap)
-        }
-        [command, ..] if matches!(command.as_str(), "help" | "--help" | "-h") => {
-            Ok(Invocation::Help)
-        }
-        [command, ..] => Err(UsageError::UnknownCommand(command.clone())),
+    let [command, rest @ ..] = arguments else {
+        return Ok(Invocation::Help);
+    };
+    let known = COMMANDS.iter().find(|each| each.name == command);
+    match known {
+        Some(found) => collect(rest, &found.spec, Flags::default()).map(found.invoke),
+        None if matches!(command.as_str(), "help" | "--help" | "-h") => Ok(Invocation::Help),
+        None => Err(UsageError::UnknownCommand(command.clone())),
     }
 }
 
@@ -149,7 +248,7 @@ mod tests {
         let parsed = parse(&words("bootstrap --repo git@host:r.git --with-controller")).unwrap();
         let flags = match parsed {
             Invocation::Bootstrap(flags) => flags,
-            Invocation::Help => panic!("not a bootstrap"),
+            other => panic!("not a bootstrap: {other:?}"),
         };
         assert_eq!(flags.value("--repo"), Some("git@host:r.git"));
         assert!(flags.has("--with-controller"));
@@ -159,8 +258,56 @@ mod tests {
     #[test]
     fn an_unknown_command_is_refused() {
         assert_eq!(
-            parse(&words("sync")),
-            Err(UsageError::UnknownCommand("sync".to_owned()))
+            parse(&words("frobnicate")),
+            Err(UsageError::UnknownCommand("frobnicate".to_owned()))
+        );
+    }
+
+    fn flags_of(line: &str) -> Flags {
+        match parse(&words(line)) {
+            Ok(
+                Invocation::Validate(flags)
+                | Invocation::Diff(flags)
+                | Invocation::Sync(flags)
+                | Invocation::Status(flags),
+            ) => flags,
+            other => panic!("not an operator command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_and_diff_take_an_optional_path() {
+        assert_eq!(flags_of("validate ./repo").path(), Some("./repo"));
+        let diff = flags_of("diff ./repo --controller http://c:7480");
+        assert_eq!(diff.path(), Some("./repo"));
+        assert_eq!(diff.value("--controller"), Some("http://c:7480"));
+        assert_eq!(flags_of("validate").path(), None);
+    }
+
+    #[test]
+    fn a_second_path_is_refused() {
+        assert_eq!(
+            parse(&words("validate a b")),
+            Err(UsageError::UnknownArgument("b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn status_and_sync_take_no_path_and_sync_takes_a_host_and_a_stack() {
+        assert_eq!(
+            parse(&words("status ./repo")),
+            Err(UsageError::UnknownArgument("./repo".to_owned()))
+        );
+        let flags = flags_of("sync --host h --stack web");
+        assert_eq!(flags.value("--host"), Some("h"));
+        assert_eq!(flags.value("--stack"), Some("web"));
+    }
+
+    #[test]
+    fn a_flag_of_another_command_is_refused_by_validate() {
+        assert_eq!(
+            parse(&words("validate --controller http://c")),
+            Err(UsageError::UnknownArgument("--controller".to_owned()))
         );
     }
 

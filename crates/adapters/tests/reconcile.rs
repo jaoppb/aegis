@@ -234,6 +234,44 @@ fn a_purged_stack_is_refused_not_deployed_when_removal_is_not_configured() {
 }
 
 #[test]
+fn a_sync_of_one_stack_deploys_that_stack_alone() {
+    let compose = FakeCompose::default();
+    let only = StackName::new("web").unwrap();
+    let report = runtime()
+        .block_on(reconciler(&FakeGit::default(), &compose).reconcile_only(commit(), only))
+        .unwrap();
+    assert_eq!(compose.projects(), ["aegis-web"]);
+    assert_eq!(report.stacks().len(), 1);
+    assert_eq!(stack(&report, "hosts/host/web"), &Deployment::Running);
+}
+
+#[test]
+fn a_sync_of_one_stack_reports_that_stack_when_it_is_invalid() {
+    let compose = FakeCompose::default();
+    let only = StackName::new("broken").unwrap();
+    let report = runtime()
+        .block_on(reconciler(&FakeGit::default(), &compose).reconcile_only(commit(), only))
+        .unwrap();
+    assert!(compose.requests().is_empty());
+    assert_eq!(report.stacks().len(), 1);
+    assert!(matches!(
+        stack(&report, "hosts/host/broken"),
+        Deployment::Invalid(_)
+    ));
+}
+
+#[test]
+fn a_sync_of_a_stack_the_host_does_not_have_does_nothing() {
+    let compose = FakeCompose::default();
+    let only = StackName::new("nowhere").unwrap();
+    let report = runtime()
+        .block_on(reconciler(&FakeGit::default(), &compose).reconcile_only(commit(), only))
+        .unwrap();
+    assert!(compose.requests().is_empty());
+    assert!(report.stacks().is_empty());
+}
+
+#[test]
 fn a_checkout_failure_deploys_nothing() {
     let git = FakeGit {
         failure: Some("no such commit"),

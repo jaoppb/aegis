@@ -15,7 +15,11 @@ workspace = true
 
 [dependencies]
 aegis-adapters.workspace = true
+aegis-api.workspace = true
 aegis-application.workspace = true
 aegis-domain.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true

@@ -2,20 +2,25 @@
 
 use aegis_api::version_1::{
     ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health, NODE_GONE,
-    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport, node_path,
+    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, SYNCS_PATH, StatusReport, SyncRequest,
+    SyncResponse, host_syncs_path, node_path,
 };
 use std::time::Duration;
 
 use reqwest::{Response, StatusCode};
 use serde::Serialize;
 
-use aegis_domain::NodeLabel;
+use aegis_domain::{HostName, NodeLabel};
 
 use crate::http::BaseUrl;
 
 /// How long a reconcile may take: pulling images and starting stacks takes far longer than the
 /// default request timeout.
 const RECONCILE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a sync may take: the controller waits for every agent, and each may take as long as a
+/// reconcile, plus the time to fetch the repository.
+const SYNC_TIMEOUT: Duration = Duration::from_mins(11);
 
 /// A call to the API failed.
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +81,27 @@ impl ApiClient {
     pub async fn reconcile(&self, request: &ReconcileRequest) -> Result<StatusReport, ClientError> {
         let call = self.http.post(self.base.join(RECONCILE_PATH)).json(request);
         let response = accepted(call.timeout(RECONCILE_TIMEOUT).send().await?)?;
+        Ok(response.json().await?)
+    }
+
+    /// Ask the controller to sync `host`, or every host when `host` is `None`, now, and wait for
+    /// what the agents did.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`]; the controller answers `409` when no commit has loaded
+    /// and `502` when the repository cannot be fetched.
+    pub async fn sync(
+        &self,
+        host: Option<&HostName>,
+        request: &SyncRequest,
+    ) -> Result<SyncResponse, ClientError> {
+        let path = host.map_or_else(
+            || SYNCS_PATH.to_owned(),
+            |name| host_syncs_path(name.as_str()),
+        );
+        let call = self.http.post(self.base.join(&path)).json(request);
+        let response = accepted(call.timeout(SYNC_TIMEOUT).send().await?)?;
         Ok(response.json().await?)
     }
 

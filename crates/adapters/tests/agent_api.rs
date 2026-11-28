@@ -11,8 +11,8 @@ use aegis_application::{
     GitError, PeerAddress, Reason, Reconcile, ReconcileError, WhoIs, WhoIsError,
 };
 use aegis_domain::{
-    CommitSha, Deployment, HostName, Origin, PeerIdentity, RepoPath, Report, StackReport,
-    TailnetTag, TailnetTags,
+    CommitSha, Deployment, HostName, Origin, PeerIdentity, RepoPath, Report, StackName,
+    StackReport, TailnetTag, TailnetTags,
 };
 use axum::extract::State;
 use axum::routing::post;
@@ -58,6 +58,15 @@ impl Reconcile for Fixed {
         self.runs.lock().unwrap().push(commit.to_string());
         let failed = |text: &str| Err(ReconcileError::Checkout(GitError::new(Reason::new(&text))));
         ready(self.failure.map_or_else(|| Ok(success(commit)), failed))
+    }
+
+    fn reconcile_only(
+        &self,
+        commit: CommitSha,
+        stack: StackName,
+    ) -> impl Future<Output = Result<Report, ReconcileError>> + Send {
+        self.runs.lock().unwrap().push(format!("{commit}:{stack}"));
+        ready(Ok(success(commit)))
     }
 }
 
@@ -135,6 +144,32 @@ fn the_controller_gets_the_report_and_so_does_the_caller() {
         assert_eq!(answer.stacks()[0].state(), StackState::Running);
         assert_eq!(*running.runs.lock().unwrap(), ["abc1234"]);
         assert_eq!(*running.reports.lock().unwrap(), [answer]);
+    });
+}
+
+#[test]
+fn a_request_for_one_stack_reconciles_it_alone_and_reports_nothing_to_the_controller() {
+    runtime().block_on(async {
+        let running = agent(Some("tag:aegis-controller")).await;
+        let request = ReconcileRequest::new("abc1234").only("web");
+        let answer = running.client.reconcile(&request).await.unwrap();
+        assert_eq!(answer.commit(), "abc1234");
+        assert_eq!(*running.runs.lock().unwrap(), ["abc1234:web"]);
+        assert!(running.reports.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_stack_name_that_is_not_a_name_is_refused_before_anything_runs() {
+    runtime().block_on(async {
+        let running = agent(Some("tag:aegis-controller")).await;
+        let request = ReconcileRequest::new("abc1234").only("../etc");
+        let result = running.client.reconcile(&request).await;
+        assert!(matches!(
+            result,
+            Err(ClientError::Rejected(StatusCode::BAD_REQUEST))
+        ));
+        assert!(running.runs.lock().unwrap().is_empty());
     });
 }
 

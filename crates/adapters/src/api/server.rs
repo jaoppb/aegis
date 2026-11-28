@@ -9,11 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use aegis_api::version_1::{HEALTH_PATH, Health, Role};
-use aegis_application::{AccessError, Authorizer, PeerAddress, WhoIs};
-use aegis_domain::{AegisRole, ValueError};
-use axum::extract::{ConnectInfo, FromRequestParts, Request};
+use aegis_application::{AccessError, Admit, Authorizer, PeerAddress, WhoIs};
+use aegis_domain::{AegisRole, Logins, PeerIdentity, ValueError};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::StatusCode;
-use axum::http::request::Parts;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::get;
@@ -96,31 +95,10 @@ const fn role_of(role: Role) -> AegisRole {
 /// The shared state of the guard: the authorizer every request goes through.
 type Gate<Lookup> = Arc<Authorizer<Lookup>>;
 
-/// Proof that the peer of a request carries the required tag.
-struct Admitted;
-
-impl<Lookup> FromRequestParts<Gate<Lookup>> for Admitted
-where
-    Lookup: WhoIs + Send + Sync + 'static,
-{
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        gate: &Gate<Lookup>,
-    ) -> Result<Self, Self::Rejection> {
-        let peer = peer_of(parts)?;
-        gate.authorize(&peer)
-            .await
-            .map_err(|error| status_of(&error))?;
-        Ok(Self)
-    }
-}
-
 /// The peer address the transport recorded. A request without one means the server was wired
 /// without connection info, and it is refused.
-fn peer_of(parts: &Parts) -> Result<PeerAddress, StatusCode> {
-    let connection = parts.extensions.get::<ConnectInfo<SocketAddr>>();
+fn peer_of(request: &Request) -> Result<PeerAddress, StatusCode> {
+    let connection = request.extensions().get::<ConnectInfo<SocketAddr>>();
     let ConnectInfo(address) = connection.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(PeerAddress::new(address.to_string()))
 }
@@ -132,24 +110,132 @@ const fn status_of(error: &AccessError) -> StatusCode {
     }
 }
 
-async fn admit(_admitted: Admitted, request: Request, next: Next) -> Response {
-    next.run(request).await
+/// Resolve the peer of a request before any route runs, and keep its identity for the route's own
+/// check. A peer that is no tailnet node, or that cannot be resolved, never reaches a route.
+async fn identify<Lookup>(
+    State(gate): State<Gate<Lookup>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let peer = peer_of(&request)?;
+    let identity = gate
+        .identify(&peer)
+        .await
+        .map_err(|error| status_of(&error))?;
+    request.extensions_mut().insert(identity);
+    Ok(next.run(request).await)
 }
 
-/// The `/v1` routes of a server with `role`, and the `extra` routes it adds, all behind the tag
-/// check of `authorizer`.
-fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>, extra: Router) -> Router
+/// The authorizer and the callers one group of routes admits.
+struct Door<Lookup> {
+    gate: Gate<Lookup>,
+    admit: Admit,
+}
+
+impl<Lookup> Clone for Door<Lookup> {
+    fn clone(&self) -> Self {
+        Self {
+            gate: Arc::clone(&self.gate),
+            admit: self.admit,
+        }
+    }
+}
+
+/// Let the request through when the identity [`identify`] resolved is one the route admits.
+async fn admit<Lookup>(
+    State(door): State<Door<Lookup>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let identity = request.extensions().get::<PeerIdentity>();
+    let known = identity.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    door.gate
+        .admits(known, door.admit)
+        .map_err(|error| status_of(&error))?;
+    Ok(next.run(request).await)
+}
+
+/// The routes of a server, by who may call them. A route is open to the tagged peer unless it is
+/// added on purpose for operators, so a new route fails closed.
+#[derive(Debug, Default)]
+pub struct Routes {
+    tagged: Router,
+    operators: Router,
+    either: Router,
+}
+
+impl Routes {
+    /// The routes only the tagged peer may call.
+    #[must_use]
+    pub fn tagged(self, routes: Router) -> Self {
+        Self {
+            tagged: self.tagged.merge(routes),
+            ..self
+        }
+    }
+
+    /// The routes only an operator may call.
+    #[must_use]
+    pub fn operators(self, routes: Router) -> Self {
+        Self {
+            operators: self.operators.merge(routes),
+            ..self
+        }
+    }
+
+    /// The routes both the tagged peer and an operator may call.
+    #[must_use]
+    pub fn either(self, routes: Router) -> Self {
+        Self {
+            either: self.either.merge(routes),
+            ..self
+        }
+    }
+}
+
+impl From<Router> for Routes {
+    fn from(routes: Router) -> Self {
+        Self::default().tagged(routes)
+    }
+}
+
+fn guarded<Lookup>(routes: Router, gate: &Gate<Lookup>, admit_who: Admit) -> Router
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let door = Door {
+        gate: Arc::clone(gate),
+        admit: admit_who,
+    };
+    routes.layer(from_fn_with_state(door, admit::<Lookup>))
+}
+
+/// The `/v1` routes of a server with `role`, and the `routes` it adds, each group behind its own
+/// admission check and all behind the resolution of the peer.
+fn router<Lookup>(role: Role, authorizer: Authorizer<Lookup>, routes: Routes) -> Router
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
     let gate = Arc::new(authorizer);
-    Router::new()
-        .route(
-            HEALTH_PATH,
-            get(move || async move { Json(Health::of(role)) }),
-        )
-        .merge(extra)
-        .layer(from_fn_with_state(gate, admit))
+    let health = Router::new().route(
+        HEALTH_PATH,
+        get(move || async move { Json(Health::of(role)) }),
+    );
+    let guarded_routes = [
+        guarded(routes.tagged, &gate, Admit::Tagged),
+        guarded(routes.operators, &gate, Admit::Operator),
+        guarded(routes.either.merge(health), &gate, Admit::Either),
+    ];
+    let merged = guarded_routes
+        .into_iter()
+        .fold(Router::new(), |all, group| all.merge(group));
+    merged.layer(from_fn_with_state(gate, identify::<Lookup>))
 }
 
 /// Serve the API of a server with `role` on `listener` until it fails. Peers are resolved with
@@ -167,7 +253,7 @@ pub async fn serve<Lookup>(
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
-    serve_routes(listener, Guard::new(role, whois), Router::new()).await
+    serve_routes(listener, Guard::new(role, whois), Routes::default()).await
 }
 
 /// Serve a controller on `listener`: the health endpoint and the extra `routes`, behind the tag
@@ -184,23 +270,69 @@ pub async fn serve_controller<Lookup>(
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
-    serve_routes(listener, Guard::new(Role::Controller, whois), routes).await
+    let guard = Guard::new(Role::Controller, whois);
+    serve_routes(listener, guard, Routes::from(routes)).await
+}
+
+/// A controller's way of knowing its callers: how it resolves a peer, and which people it admits
+/// as operators on the routes opened to them.
+#[derive(Debug)]
+pub struct Operated<Lookup> {
+    whois: Lookup,
+    operators: Logins,
+}
+
+impl<Lookup> Operated<Lookup> {
+    /// Resolve peers with `whois` and admit the people `operators`. With no operators, none is
+    /// admitted.
+    #[must_use]
+    pub const fn new(whois: Lookup, operators: Logins) -> Self {
+        Self { whois, operators }
+    }
+}
+
+/// Serve a controller on `listener` that also admits operators on the routes `routes` opens to
+/// them. Whatever is not opened to operators stays for agents alone.
+///
+/// # Errors
+///
+/// The same as [`serve`].
+pub async fn serve_controller_for<Lookup>(
+    listener: TcpListener,
+    callers: Operated<Lookup>,
+    routes: Routes,
+) -> Result<(), ServeError>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    let guard = Guard::new(Role::Controller, callers.whois).with_operators(callers.operators);
+    serve_routes(listener, guard, routes).await
 }
 
 /// Who a server is and how it resolves its peers.
 pub(super) struct Guard<Lookup> {
     role: Role,
     whois: Lookup,
+    operators: Logins,
 }
 
 impl<Lookup> Guard<Lookup> {
-    /// A guard for a server with `role` that resolves peers with `whois`.
-    pub(super) const fn new(role: Role, whois: Lookup) -> Self {
-        Self { role, whois }
+    /// A guard for a server with `role` that resolves peers with `whois` and admits no operator.
+    pub(super) fn new(role: Role, whois: Lookup) -> Self {
+        Self {
+            role,
+            whois,
+            operators: Logins::default(),
+        }
+    }
+
+    /// The same guard, which also admits `operators` on the routes that allow them.
+    fn with_operators(self, operators: Logins) -> Self {
+        Self { operators, ..self }
     }
 }
 
-/// Like [`serve`], with the `extra` routes added behind the same tag check.
+/// Like [`serve`], with the `routes` added, each group behind its own admission check.
 ///
 /// # Errors
 ///
@@ -208,14 +340,15 @@ impl<Lookup> Guard<Lookup> {
 pub(super) async fn serve_routes<Lookup>(
     listener: TcpListener,
     guard: Guard<Lookup>,
-    extra: Router,
+    routes: Routes,
 ) -> Result<(), ServeError>
 where
     Lookup: WhoIs + Send + Sync + 'static,
 {
     let authorizer = Authorizer::for_server(guard.whois, role_of(guard.role))?;
+    let authorizer = authorizer.with_operators(guard.operators);
     let service =
-        router(guard.role, authorizer, extra).into_make_service_with_connect_info::<SocketAddr>();
+        router(guard.role, authorizer, routes).into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, service)
         .await
         .map_err(ServeError::Serve)

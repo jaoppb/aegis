@@ -68,7 +68,10 @@ impl Repository {
         }
     }
 
-    pub(crate) fn load(&self) -> Outcome {
+    /// Load the stacks of the repository and validate them: the stacks that will be deployed, and
+    /// the ones that were rejected with every violation each one has.
+    #[must_use]
+    pub fn load(&self) -> Outcome {
         let loaded = load_desired_state(&*self.source, &*self.parser);
         validate_desired_state(&loaded, &*self.source, &*self.check)
     }
@@ -104,6 +107,18 @@ pub trait Reconcile {
     fn reconcile(
         &self,
         commit: CommitSha,
+    ) -> impl Future<Output = Result<Report, ReconcileError>> + Send;
+
+    /// Move to `commit` and deploy only the stack `stack` of the host, leaving the others and
+    /// the orphan sweep alone. The report lists that stack alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ReconcileError`] when the checkout cannot be moved to `commit`.
+    fn reconcile_only(
+        &self,
+        commit: CommitSha,
+        stack: StackName,
     ) -> impl Future<Output = Result<Report, ReconcileError>> + Send;
 }
 
@@ -150,10 +165,11 @@ impl<Git, Docker, Removing> Reconciler<Git, Docker, Removing> {
         Self { reserved, ..self }
     }
 
-    const fn scope(&self) -> Scope<'_> {
+    const fn scope<'scope>(&'scope self, only: Option<&'scope StackName>) -> Scope<'scope> {
         Scope {
             host: &self.host,
             reserved: &self.reserved,
+            only,
         }
     }
 }
@@ -165,27 +181,50 @@ where
     Removing: Removal + Sync,
 {
     async fn reconcile(&self, commit: CommitSha) -> Result<Report, ReconcileError> {
-        let git = self.ports.git.sync(&commit);
-        git.await.map_err(ReconcileError::Checkout)?;
-        let outcome = self.ports.repository.load();
-        let units = units(&outcome, &self.scope());
-        let mut stacks = deploy_all(&self.ports.compose, &units, &commit).await;
-        stacks.extend(invalid(&outcome, &self.scope()));
-        stacks.extend(self.removals(&outcome).await);
-        let origin = Origin::new(self.host.clone(), commit);
-        Ok(Report::new(origin, stacks.into_iter().collect()))
+        self.converge(commit, None).await
+    }
+
+    async fn reconcile_only(
+        &self,
+        commit: CommitSha,
+        stack: StackName,
+    ) -> Result<Report, ReconcileError> {
+        self.converge(commit, Some(&stack)).await
     }
 }
 
-impl<Git: Sync, Docker: Sync, Removing: Removal + Sync> Reconciler<Git, Docker, Removing> {
+impl<Git, Docker, Removing> Reconciler<Git, Docker, Removing>
+where
+    Git: Checkout + Sync,
+    Docker: ComposeRunner + Sync,
+    Removing: Removal + Sync,
+{
+    /// Move to `commit`, then deploy the stacks of the scope: all of them, or only `only`.
+    async fn converge(
+        &self,
+        commit: CommitSha,
+        only: Option<&StackName>,
+    ) -> Result<Report, ReconcileError> {
+        let git = self.ports.git.sync(&commit);
+        git.await.map_err(ReconcileError::Checkout)?;
+        let outcome = self.ports.repository.load();
+        let scope = self.scope(only);
+        let units = units(&outcome, &scope);
+        let mut stacks = deploy_all(&self.ports.compose, &units, &commit).await;
+        stacks.extend(invalid(&outcome, &scope));
+        stacks.extend(self.removals(&outcome, &scope).await);
+        let origin = Origin::new(self.host.clone(), commit);
+        Ok(Report::new(origin, stacks.into_iter().collect()))
+    }
+
     /// The tombstones carried out, then the projects the repository no longer declares taken
-    /// down. Nothing is taken down when the repository could not be read completely.
-    async fn removals(&self, outcome: &Outcome) -> Vec<StackReport> {
-        let scope = self.scope();
+    /// down. Nothing is taken down when the repository could not be read completely, and a sync
+    /// of one stack takes nothing down but that stack's own tombstone.
+    async fn removals(&self, outcome: &Outcome, scope: &Scope<'_>) -> Vec<StackReport> {
         let pass = Pass {
             removal: &self.removal,
             outcome,
-            scope: &scope,
+            scope,
         };
         let mut reports = purge_all(&pass).await;
         reports.extend(sweep(&pass).await);
@@ -238,7 +277,8 @@ async fn carry_out<Removing: Removal + Sync>(
 }
 
 async fn sweep<Removing: Removal + Sync>(pass: &Pass<'_, Removing>) -> StackReports {
-    if !sweep_is_safe(pass.outcome, pass.scope) {
+    let whole = pass.scope.only.is_none();
+    if !whole || !sweep_is_safe(pass.outcome, pass.scope) {
         return StackReports::default();
     }
     let declared = declared_projects(pass.outcome, pass.scope);
@@ -292,7 +332,8 @@ fn tombstones(outcome: &Outcome, scope: &Scope<'_>) -> Vec<Result<Tombstone, Ref
     let hosts = outcome.state().hosts().iter();
     let own = hosts.filter(|candidate| candidate.name() == scope.host);
     let listed = own.flat_map(unit_stacks);
-    let purged = listed.filter(|unit| unit.stack.policy().state() == StackState::Purged);
+    let wanted = listed.filter(|unit| scope.includes(unit.stack.name()));
+    let purged = wanted.filter(|unit| unit.stack.policy().state() == StackState::Purged);
     let reserved = reserved_projects(outcome);
     let unknown = outcome
         .rejected()
@@ -392,9 +433,22 @@ struct Unit<'stack> {
 struct Scope<'scope> {
     host: &'scope HostName,
     reserved: &'scope ReservedStacks,
+    only: Option<&'scope StackName>,
 }
 
 impl Scope<'_> {
+    /// Whether the directory of a rejection is in this reconcile: all are, unless one stack was
+    /// asked for and the directory is not that stack's.
+    fn names(&self, directory: &RepoPath) -> bool {
+        self.only
+            .is_none_or(|only| last_segment(directory) == only.as_str())
+    }
+
+    /// Whether the stack `name` is in this reconcile: all of them are, unless one was asked for.
+    fn includes(&self, name: &StackName) -> bool {
+        self.only.is_none_or(|only| only == name)
+    }
+
     fn wants_reserved(&self, stack: &Stack) -> bool {
         self.reserved.iter().any(|name| name == stack.name())
     }
@@ -414,6 +468,7 @@ fn units<'outcome>(outcome: &'outcome Outcome, scope: &Scope<'_>) -> Vec<Unit<'o
     hosted
         .chain(kept)
         .filter(|unit| unit.stack.policy().state() == StackState::Active)
+        .filter(|unit| scope.includes(unit.stack.name()))
         .collect()
 }
 
@@ -479,7 +534,8 @@ fn invalid(outcome: &Outcome, scope: &Scope<'_>) -> StackReports {
     let own = outcome
         .rejected()
         .iter()
-        .filter(|rejection| belongs(rejection, scope));
+        .filter(|rejection| belongs(rejection, scope))
+        .filter(|rejection| scope.names(rejection.directory()));
     own.map(|rejection| {
         let violations = rejection.violations().clone();
         StackReport::new(

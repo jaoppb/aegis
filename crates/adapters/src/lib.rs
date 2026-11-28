@@ -13,6 +13,7 @@ mod docker_state;
 mod filesystem;
 mod git;
 pub(crate) mod http;
+pub mod operator;
 mod parser;
 pub mod policy;
 mod sidecar_compose;

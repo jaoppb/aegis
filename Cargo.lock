@@ -22,8 +22,10 @@ name = "aegis"
 version = "0.1.0"
 dependencies = [
  "aegis-adapters",
+ "aegis-api",
  "aegis-application",
  "aegis-domain",
+ "axum",
  "thiserror",
  "tokio",
 ]
