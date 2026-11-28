@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aegis_api::version_1::{RECONCILE_PATH, ReconcileRequest, Role, StatusReport};
-use aegis_application::{Reconcile, ReconcilePorts, Reconciler, Repository, WhoIs};
+use aegis_application::{Reconcile, ReconcilePorts, Reconciler, Repository, SecretStore, WhoIs};
 use aegis_domain::{CommitSha, HostName, ReservedStacks, StackName};
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,7 +18,13 @@ use tokio::sync::Mutex;
 use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
 use super::wire::status_report;
 use super::{ApiClient, BaseUrl};
-use crate::{DockerCompose, FsRepo, GitCheckout, SerdeStackParser, SopsCheck, TailscaleWhois};
+use crate::{
+    DecryptingCompose, DockerCompose, FsRepo, GitCheckout, SecretPorts, SerdeStackParser,
+    SopsCheck, SopsDecrypt, TailscaleWhois, TmpfsStore,
+};
+
+/// The compose runner of the agent: `docker compose` behind the per-host SOPS decryption.
+type Compose = DecryptingCompose<DockerCompose, SopsDecrypt, TmpfsStore>;
 
 const HOST_VAR: &str = "AEGIS_HOST";
 const CHECKOUT_VAR: &str = "AEGIS_CHECKOUT";
@@ -138,10 +144,15 @@ impl Settings {
         })
     }
 
-    fn reconciler(&self) -> Reconciler<GitCheckout, DockerCompose> {
+    fn compose(&self) -> Compose {
+        let secrets = SecretPorts::new(SopsDecrypt::default(), TmpfsStore::from_environment());
+        DecryptingCompose::new(DockerCompose::new(&self.checkout), secrets, &self.checkout)
+    }
+
+    fn reconciler(&self) -> Reconciler<GitCheckout, Compose> {
         let repository = Repository::new(FsRepo::new(&self.checkout), SerdeStackParser, SopsCheck);
         let git = GitCheckout::new(&self.checkout);
-        let ports = ReconcilePorts::new(git, DockerCompose::new(&self.checkout), repository);
+        let ports = ReconcilePorts::new(git, self.compose(), repository);
         Reconciler::new(self.hosting.host.clone(), ports)
             .with_reserved(self.hosting.reserved.clone())
     }
@@ -170,6 +181,8 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
         .await
         .map_err(|cause| ServeError::Bind { address, cause })?;
     let controller = ApiClient::new(settings.controller.clone())?;
+    let swept = TmpfsStore::from_environment().sweep().await;
+    swept.map_err(|error| ServeError::Sweep(error.to_string()))?;
     let routes = reconcile_routes(settings.reconciler(), controller);
     serve_agent(listener, TailscaleWhois::new(), routes).await
 }

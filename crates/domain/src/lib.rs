@@ -13,8 +13,8 @@ pub mod violation;
 
 pub use compose::{
     Access, AdditionalContexts, Build, ComposeSummary, EnvFile, EnvFiles, FileReference, Mount,
-    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFiles, Service, ServiceSource,
-    Services, Volumes,
+    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFile, SecretFiles, Service,
+    ServiceSource, Services, Volumes,
 };
 pub use deployment::{
     CommitSha, Deployment, Detail, Origin, ProjectName, Report, ReservedStacks, StackReport,
@@ -27,6 +27,6 @@ pub use state::{
 };
 pub use value::{
     ComposeSource, ContainerPath, DeclaredPath, HostName, HostPath, ImageRef, Line, Port, RepoPath,
-    ServiceName, StackName, TailnetTag, ValueError, VolumeName,
+    Secret, SecretName, ServiceName, SlotName, StackName, TailnetTag, ValueError, VolumeName,
 };
 pub use violation::{FileRole, Location, Problem, Rejection, Rejections, Violation, Violations};

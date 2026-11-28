@@ -192,3 +192,17 @@ fn a_failing_compose_is_an_error_and_a_missing_docker_is_too() {
         assert!(run(&missing, &request(&[])).await.is_err());
     });
 }
+
+#[test]
+fn a_decrypted_dotenv_is_passed_with_env_file_before_the_project() {
+    runtime().block_on(async {
+        let sandbox = Sandbox::new("dotenv", 0).await;
+        let dotenv = HostPath::new("/run/user/1000/aegis/aegis-web/dotenv").unwrap();
+        let extras = Extras::default().with_dotenv(dotenv);
+        let request = request(&[]).with_extras(extras);
+        run(&sandbox.runner(), &request).await.unwrap();
+        let recorded = sandbox.recorded().await;
+        let expected = "ARGS:compose --env-file /run/user/1000/aegis/aegis-web/dotenv -p aegis-web";
+        assert!(recorded.contains(expected), "{recorded}");
+    });
+}

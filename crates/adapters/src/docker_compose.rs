@@ -18,20 +18,6 @@ const COMPOSE_TIMEOUT: Duration = Duration::from_mins(30);
 /// The one compose file a stack is deployed from.
 const COMPOSE_FILE: &str = "compose.yaml";
 
-/// The environment Compose inherits from the agent, and nothing else, so `COMPOSE_FILE`,
-/// `COMPOSE_PROJECT_NAME` and the like in the agent's environment cannot change what runs.
-const INHERITED: [&str; 9] = [
-    "PATH",
-    "HOME",
-    "DOCKER_HOST",
-    "DOCKER_CONTEXT",
-    "DOCKER_CONFIG",
-    "DOCKER_CERT_PATH",
-    "DOCKER_TLS_VERIFY",
-    "XDG_RUNTIME_DIR",
-    "SSL_CERT_FILE",
-];
-
 /// Runs `docker compose` against the local Docker daemon, rootless or rootful: the socket comes
 /// from the inherited `DOCKER_HOST`.
 #[derive(Debug, Clone)]
@@ -63,18 +49,22 @@ impl DockerCompose {
         let directory = self.checkout.join(request.target().directory().as_str());
         let mut command = Command::new(&self.program);
         command.current_dir(directory);
-        cli::inherit_only(&mut command, &INHERITED);
+        cli::inherit_only(&mut command, &cli::COMPOSE_INHERITED);
         command.envs(request.extras().environment().variables());
         command.args(arguments(request));
         command
     }
 }
 
-/// The arguments: `compose -p <project> -f compose.yaml [-f <extra>]... [-f -] up -d --build`.
-/// The `-f -` override that tags built images reads its YAML from stdin.
+/// The arguments: `compose [--env-file <dotenv>] -p <project> -f compose.yaml [-f <extra>]...
+/// [-f -] up -d --build`. The `-f -` override that tags built images reads its YAML from stdin.
 fn arguments(request: &DeployRequest) -> Vec<String> {
     let project = request.target().project().to_string();
-    let mut arguments = vec!["compose".to_owned(), "-p".to_owned(), project];
+    let mut arguments = vec!["compose".to_owned()];
+    if let Some(dotenv) = request.extras().dotenv() {
+        arguments.extend(["--env-file".to_owned(), dotenv.to_string()]);
+    }
+    arguments.extend(["-p".to_owned(), project]);
     arguments.extend(["-f".to_owned(), COMPOSE_FILE.to_owned()]);
     for file in request.extras().files().as_slice() {
         arguments.extend(["-f".to_owned(), file.to_string()]);

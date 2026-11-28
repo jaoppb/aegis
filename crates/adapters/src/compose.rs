@@ -7,8 +7,8 @@ use aegis_application::ParseError;
 use aegis_domain::{
     Access, AdditionalContexts, Build, ComposeSummary, ContainerPath, DeclaredPath, EnvFile,
     EnvFiles, FileReference, HostPath, ImageRef, Line, Mount, Mounts, Presence, ReferenceKind,
-    ReferencedFiles, RepoPath, SecretFiles, Service, ServiceName, ServiceSource, Services,
-    ValueError, VolumeName, Volumes,
+    ReferencedFiles, RepoPath, SecretFile, SecretFiles, SecretName, Service, ServiceName,
+    ServiceSource, Services, ValueError, VolumeName, Volumes,
 };
 use serde::Deserialize;
 
@@ -196,19 +196,17 @@ fn yaml(error: &serde_norway::Error) -> ParseError {
     }
 }
 
-fn file_paths(
-    scope: &str,
-    paths: impl Iterator<Item = String>,
-) -> Result<Vec<RepoPath>, ParseError> {
-    paths
-        .map(|path| RepoPath::new(path).map_err(|error| in_scope(scope, &error)))
-        .collect()
-}
-
 fn secret_files(raw: &RawCompose) -> Result<SecretFiles, ParseError> {
-    let sources = raw.files.secrets.iter().flat_map(BTreeMap::values);
-    let files = sources.filter_map(|source| source.file.clone());
-    Ok(SecretFiles::new(file_paths("secrets", files)?))
+    let entries = raw.files.secrets.iter().flat_map(BTreeMap::iter);
+    let files = entries.filter_map(|(name, source)| Some((name, source.file.as_ref()?)));
+    files
+        .map(|(name, path)| {
+            let name = SecretName::new(name).map_err(|error| in_scope("secrets", &error))?;
+            let path = RepoPath::new(path).map_err(|error| in_scope("secrets", &error))?;
+            Ok(SecretFile::new(name, path))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(SecretFiles::new)
 }
 
 fn reference_paths(

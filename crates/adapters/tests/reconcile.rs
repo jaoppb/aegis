@@ -256,3 +256,20 @@ fn reserved_stacks_are_not_deployed_by_default() {
             .any(|found| found.directory().as_str().starts_with("aegis/"))
     );
 }
+
+#[test]
+fn each_request_carries_the_compose_summary_of_its_stack_for_decryption() {
+    let compose = FakeCompose::default();
+    reconcile(&FakeGit::default(), &compose).unwrap();
+    let requests = compose.requests();
+    let builder = requests
+        .iter()
+        .find(|request| request.target().project().as_str() == "aegis-builder")
+        .unwrap();
+    let services = builder.extras().sources().services();
+    let names: Vec<&str> = services
+        .iter()
+        .map(|service| service.name().as_str())
+        .collect();
+    assert_eq!(names, ["App", "db"]);
+}

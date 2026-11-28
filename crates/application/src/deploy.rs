@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 
-use aegis_domain::{CommitSha, HostPath, ProjectName, RepoPath, ServiceName};
+use aegis_domain::{CommitSha, ComposeSummary, HostPath, ProjectName, RepoPath, ServiceName};
 
 use crate::source::Reason;
 
@@ -109,13 +109,49 @@ impl fmt::Debug for Environment {
 pub struct Extras {
     files: ExtraFiles,
     environment: Environment,
+    dotenv: Option<HostPath>,
+    sources: ComposeSummary,
 }
 
 impl Extras {
     /// Extras made of `files` and `environment`.
     #[must_use]
-    pub const fn new(files: ExtraFiles, environment: Environment) -> Self {
-        Self { files, environment }
+    pub fn new(files: ExtraFiles, environment: Environment) -> Self {
+        Self {
+            files,
+            environment,
+            dotenv: None,
+            sources: ComposeSummary::default(),
+        }
+    }
+
+    /// The same extras with the decrypted `.env` at `dotenv`, which Compose reads instead of the
+    /// stack's own `.env`.
+    #[must_use]
+    pub fn with_dotenv(self, dotenv: HostPath) -> Self {
+        Self {
+            dotenv: Some(dotenv),
+            ..self
+        }
+    }
+
+    /// The same extras that remember the stack's compose `sources`: the env and secret files a
+    /// deploy may have to decrypt.
+    #[must_use]
+    pub fn with_sources(self, sources: ComposeSummary) -> Self {
+        Self { sources, ..self }
+    }
+
+    /// The decrypted `.env` Compose reads, if the stack has one.
+    #[must_use]
+    pub const fn dotenv(&self) -> Option<&HostPath> {
+        self.dotenv.as_ref()
+    }
+
+    /// The stack's compose summary, naming the files to decrypt.
+    #[must_use]
+    pub const fn sources(&self) -> &ComposeSummary {
+        &self.sources
     }
 
     /// The extra compose files.
@@ -192,6 +228,14 @@ impl ComposeError {
     #[must_use]
     pub const fn new(reason: Reason) -> Self {
         Self(reason)
+    }
+}
+
+impl ComposeError {
+    /// Why Compose failed.
+    #[must_use]
+    pub const fn reason(&self) -> &Reason {
+        &self.0
     }
 }
 
