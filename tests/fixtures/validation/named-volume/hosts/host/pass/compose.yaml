@@ -1,0 +1,11 @@
+services:
+  app:
+    image: example/app:1
+    volumes:
+      - app-data:/data
+      - /srv/app:/srv
+    tmpfs:
+      - /tmp
+
+volumes:
+  app-data:

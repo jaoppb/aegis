@@ -1,0 +1,5 @@
+services:
+  app:
+    build: ../shared
+  other:
+    build: /opt/src

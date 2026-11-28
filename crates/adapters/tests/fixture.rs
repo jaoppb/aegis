@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 
 use aegis_adapters::{FsRepo, SerdeStackParser};
-use aegis_application::{LoadError, load_desired_state};
+use aegis_application::{Outcome, load_desired_state};
 use aegis_domain::{
-    Access, DesiredState, ImageRef, Mount, RepoPath, Service, Stack, StackKind, StackState,
-    UpdatePolicy,
+    Access, EnvFile, ImageRef, Mount, Presence, Problem, Rejection, Service, Stack, StackKind,
+    StackState, UpdatePolicy, Violation,
 };
 
-fn load(name: &str) -> Result<DesiredState, Vec<LoadError>> {
+fn load(name: &str) -> Outcome {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(name);
@@ -17,7 +17,7 @@ fn load(name: &str) -> Result<DesiredState, Vec<LoadError>> {
 }
 
 fn stack(name: &str) -> Option<Stack> {
-    let host = load("jao-server").ok()?.hosts().iter().next()?.clone();
+    let host = load("jao-server").state().hosts().iter().next()?.clone();
     host.stacks()
         .iter()
         .find(|stack| stack.name().as_str() == name)
@@ -35,7 +35,8 @@ fn service(stack_name: &str, service_name: &str) -> Option<Service> {
 
 #[test]
 fn the_jao_server_stacks_load_into_typed_state() {
-    let state = load("jao-server").unwrap();
+    let outcome = load("jao-server");
+    let state = outcome.state();
     let host = &state.hosts().as_slice()[0];
     let names: Vec<&str> = host
         .stacks()
@@ -64,7 +65,7 @@ fn a_named_volume_and_an_env_file_are_summarised() {
         service.source().image().map(ImageRef::as_str),
         Some("vaultwarden/server:1.34.3")
     );
-    assert_eq!(service.env_files().as_slice()[0].as_str(), ".env");
+    assert_eq!(service.env_files().as_slice()[0].path().as_str(), ".env");
     assert!(
         matches!(&service.mounts().as_slice()[0], Mount::Named { volume, .. } if volume.as_str() == "vaultwarden-data")
     );
@@ -140,8 +141,14 @@ fn the_long_mount_form_is_understood() {
 #[test]
 fn env_file_lists_and_mappings_are_understood() {
     let grafana = service("monitoring", "grafana").unwrap();
-    let paths: Vec<&str> = grafana.env_files().iter().map(RepoPath::as_str).collect();
+    let paths: Vec<&str> = grafana
+        .env_files()
+        .iter()
+        .map(|file| file.path().as_str())
+        .collect();
     assert_eq!(paths, [".env", "./grafana.env"]);
+    let optional: Vec<Presence> = grafana.env_files().iter().map(EnvFile::presence).collect();
+    assert_eq!(optional, [Presence::Required, Presence::Optional]);
 }
 
 #[test]
@@ -168,33 +175,34 @@ fn a_stack_without_a_policy_file_has_the_defaults() {
 
 #[test]
 fn aegis_own_stacks_are_reserved() {
-    let reserved = load("jao-server").unwrap().reserved().clone();
+    let reserved = load("jao-server").state().reserved().clone();
     assert_eq!(reserved.as_slice()[0].name().as_str(), "controller");
     assert_eq!(reserved.as_slice()[0].kind(), StackKind::Reserved);
 }
 
 #[test]
 fn every_problem_in_a_broken_repository_is_reported() {
-    let errors = load("invalid").unwrap_err();
-    let unknown = LoadError::UnknownKey {
-        file: "hosts/jao-server/bad-policy/aegis.toml".to_owned(),
+    let outcome = load("invalid");
+    let found: Vec<&Problem> = outcome
+        .rejected()
+        .iter()
+        .flat_map(Rejection::violations)
+        .map(Violation::problem)
+        .collect();
+    let unknown = Problem::UnknownKey {
         key: "colour".to_owned(),
     };
-    assert_eq!(errors.len(), 3);
-    assert!(errors.contains(&unknown));
+    assert_eq!(found.len(), 3);
+    assert!(found.contains(&&unknown));
+    assert!(found.contains(&&Problem::MissingCompose));
     assert!(
-        errors
+        found
             .iter()
-            .any(|error| matches!(error, LoadError::MissingCompose { .. }))
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|error| matches!(error, LoadError::InvalidCompose { .. }))
+            .any(|problem| matches!(problem, Problem::InvalidCompose { .. }))
     );
 }
 
 #[test]
 fn a_missing_repository_loads_as_empty() {
-    assert_eq!(load("does-not-exist"), Ok(DesiredState::default()));
+    assert_eq!(load("does-not-exist"), Outcome::default());
 }

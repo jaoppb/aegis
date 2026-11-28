@@ -1,0 +1,7 @@
+services:
+  app:
+    build:
+      context: ./app
+      additional_contexts:
+        shared: ../shared
+        base: docker-image://alpine:3

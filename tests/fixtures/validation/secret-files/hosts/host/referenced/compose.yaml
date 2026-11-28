@@ -1,0 +1,11 @@
+include:
+  - ./shared.yaml
+services:
+  app:
+    image: example/app:1
+    extends:
+      file: ./base.yaml
+      service: base
+configs:
+  app_config:
+    file: ./app.conf

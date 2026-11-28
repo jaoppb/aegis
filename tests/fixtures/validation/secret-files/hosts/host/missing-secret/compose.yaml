@@ -1,0 +1,9 @@
+services:
+  app:
+    image: example/app:1
+    secrets:
+      - db_password
+
+secrets:
+  db_password:
+    file: ./secrets/db.yaml

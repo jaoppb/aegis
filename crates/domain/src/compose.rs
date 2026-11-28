@@ -1,7 +1,7 @@
 //! The part of a compose file the validation rules reason about.
 
 use crate::value::{
-    ContainerPath, HostPath, ImageRef, RepoPath, ServiceName, VolumeName, collection,
+    ContainerPath, DeclaredPath, HostPath, ImageRef, RepoPath, ServiceName, VolumeName, collection,
 };
 
 /// Whether a mount lets the container write to its source.
@@ -55,32 +55,87 @@ pub enum Mount {
     },
 }
 
+fn real_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split('/')
+        .filter(|segment| !matches!(*segment, "" | "."))
+}
+
+fn climbs_out(depth: usize, dockerfile: &str) -> bool {
+    if dockerfile.starts_with('/') {
+        return true;
+    }
+    real_segments(dockerfile)
+        .try_fold(depth, step_into)
+        .is_none()
+}
+
+fn step_into(depth: usize, segment: &str) -> Option<usize> {
+    if segment == ".." {
+        return depth.checked_sub(1);
+    }
+    Some(depth.saturating_add(1))
+}
+
 /// A service image built from the repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Build {
-    context: RepoPath,
-    dockerfile: Option<RepoPath>,
+    context: DeclaredPath,
+    dockerfile: Option<DeclaredPath>,
+    additional: AdditionalContexts,
 }
 
 impl Build {
     /// A build of `context`, with `dockerfile` when it is not the default.
     #[must_use]
-    pub const fn new(context: RepoPath, dockerfile: Option<RepoPath>) -> Self {
+    pub fn new(context: DeclaredPath, dockerfile: Option<DeclaredPath>) -> Self {
         Self {
             context,
             dockerfile,
+            additional: AdditionalContexts::default(),
         }
+    }
+
+    /// The same build with `additional` named contexts.
+    #[must_use]
+    pub fn with_additional_contexts(self, additional: AdditionalContexts) -> Self {
+        Self { additional, ..self }
+    }
+
+    /// The extra named build contexts that are paths.
+    #[must_use]
+    pub const fn additional_contexts(&self) -> &AdditionalContexts {
+        &self.additional
     }
 
     /// The build context, relative to the stack directory.
     #[must_use]
-    pub const fn context(&self) -> &RepoPath {
+    pub const fn context(&self) -> &DeclaredPath {
         &self.context
+    }
+
+    /// The build context inside the stack directory, or `None` when it is absolute or climbs out.
+    #[must_use]
+    pub fn context_inside_stack(&self) -> Option<RepoPath> {
+        self.context.inside_stack()
+    }
+
+    /// Whether the Dockerfile, resolved against the context, leaves the stack directory.
+    #[must_use]
+    pub fn dockerfile_escapes(&self) -> bool {
+        let depth = self.context_depth();
+        self.dockerfile
+            .as_ref()
+            .is_some_and(|dockerfile| climbs_out(depth, dockerfile.as_str()))
+    }
+
+    fn context_depth(&self) -> usize {
+        let inside = self.context_inside_stack();
+        inside.map_or(0, |context| real_segments(context.as_str()).count())
     }
 
     /// The Dockerfile, relative to the context, when not the default.
     #[must_use]
-    pub const fn dockerfile(&self) -> Option<&RepoPath> {
+    pub const fn dockerfile(&self) -> Option<&DeclaredPath> {
         self.dockerfile.as_ref()
     }
 }
@@ -112,10 +167,99 @@ impl ServiceSource {
     }
 }
 
+/// Whether a referenced file has to exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// The file must exist.
+    Required,
+    /// The file may be absent (`required: false`).
+    Optional,
+}
+
+/// One `env_file` entry of a service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvFile {
+    path: RepoPath,
+    presence: Presence,
+}
+
+impl EnvFile {
+    /// The env file at `path`, relative to the stack directory.
+    #[must_use]
+    pub const fn new(path: RepoPath, presence: Presence) -> Self {
+        Self { path, presence }
+    }
+
+    /// The path, relative to the stack directory.
+    #[must_use]
+    pub const fn path(&self) -> &RepoPath {
+        &self.path
+    }
+
+    /// Whether the file has to exist.
+    #[must_use]
+    pub const fn presence(&self) -> Presence {
+        self.presence
+    }
+}
+
 collection!(
-    /// The `env_file` entries of a service, relative to the stack directory.
+    /// The `env_file` entries of a service.
     EnvFiles,
+    EnvFile
+);
+collection!(
+    /// The files the top-level `secrets` of a compose file read, relative to the stack directory.
+    SecretFiles,
     RepoPath
+);
+/// Why a compose file points at another file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    /// An `include` entry: Compose merges the whole file in.
+    Include,
+    /// A service `extends.file`: Compose merges the service in.
+    Extends,
+    /// A top-level `configs` file.
+    Config,
+}
+
+/// A file a compose file points at, other than env and secret files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileReference {
+    path: RepoPath,
+    kind: ReferenceKind,
+}
+
+impl FileReference {
+    /// A reference to `path` of `kind`, relative to the stack directory.
+    #[must_use]
+    pub const fn new(path: RepoPath, kind: ReferenceKind) -> Self {
+        Self { path, kind }
+    }
+
+    /// The path, relative to the stack directory.
+    #[must_use]
+    pub const fn path(&self) -> &RepoPath {
+        &self.path
+    }
+
+    /// Why the file is referenced.
+    #[must_use]
+    pub const fn kind(&self) -> ReferenceKind {
+        self.kind
+    }
+}
+
+collection!(
+    /// The `include`, `extends` and `configs` files of a compose file.
+    ReferencedFiles,
+    FileReference
+);
+collection!(
+    /// The extra named build contexts of a service (`additional_contexts`).
+    AdditionalContexts,
+    DeclaredPath
 );
 collection!(
     /// The mounts of a service.
@@ -191,18 +335,43 @@ impl Service {
     }
 }
 
-/// The services and top-level volumes of a compose file.
+/// The services, volumes and file references of a compose file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ComposeSummary {
     services: Services,
     volumes: Volumes,
+    secret_files: SecretFiles,
+    referenced_files: ReferencedFiles,
 }
 
 impl ComposeSummary {
-    /// A summary of `services` and `volumes`.
+    /// A summary of `services` and `volumes` with no file references.
     #[must_use]
-    pub const fn new(services: Services, volumes: Volumes) -> Self {
-        Self { services, volumes }
+    pub fn new(services: Services, volumes: Volumes) -> Self {
+        Self {
+            services,
+            volumes,
+            secret_files: SecretFiles::default(),
+            referenced_files: ReferencedFiles::default(),
+        }
+    }
+
+    /// The same summary with `secret_files`.
+    #[must_use]
+    pub fn with_secret_files(self, secret_files: SecretFiles) -> Self {
+        Self {
+            secret_files,
+            ..self
+        }
+    }
+
+    /// The same summary with `referenced_files`.
+    #[must_use]
+    pub fn with_referenced_files(self, referenced_files: ReferencedFiles) -> Self {
+        Self {
+            referenced_files,
+            ..self
+        }
     }
 
     /// The services, in name order.
@@ -215,5 +384,17 @@ impl ComposeSummary {
     #[must_use]
     pub const fn volumes(&self) -> &Volumes {
         &self.volumes
+    }
+
+    /// The files the top-level `secrets` read.
+    #[must_use]
+    pub const fn secret_files(&self) -> &SecretFiles {
+        &self.secret_files
+    }
+
+    /// The files pulled in by `include`, `extends` and `configs`.
+    #[must_use]
+    pub const fn referenced_files(&self) -> &ReferencedFiles {
+        &self.referenced_files
     }
 }

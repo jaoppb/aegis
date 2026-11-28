@@ -8,10 +8,12 @@ pub mod peer;
 pub mod policy;
 pub mod state;
 pub mod value;
+pub mod violation;
 
 pub use compose::{
-    Access, Build, ComposeSummary, EnvFiles, Mount, Mounts, Service, ServiceSource, Services,
-    Volumes,
+    Access, AdditionalContexts, Build, ComposeSummary, EnvFile, EnvFiles, FileReference, Mount,
+    Mounts, Presence, ReferenceKind, ReferencedFiles, SecretFiles, Service, ServiceSource,
+    Services, Volumes,
 };
 pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
@@ -19,6 +21,7 @@ pub use state::{
     DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,
 };
 pub use value::{
-    ComposeSource, ContainerPath, HostName, HostPath, ImageRef, Port, RepoPath, ServiceName,
-    StackName, TailnetTag, ValueError, VolumeName,
+    ComposeSource, ContainerPath, DeclaredPath, HostName, HostPath, ImageRef, Line, Port, RepoPath,
+    ServiceName, StackName, TailnetTag, ValueError, VolumeName,
 };
+pub use violation::{FileRole, Location, Problem, Rejection, Rejections, Violation, Violations};
