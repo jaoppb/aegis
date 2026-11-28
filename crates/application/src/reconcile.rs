@@ -5,8 +5,9 @@ use std::fmt;
 use std::future::Future;
 
 use aegis_domain::{
-    CommitSha, Deployment, Detail, Host, HostName, Origin, ProjectName, Rejection, RepoPath,
-    Report, ReservedStacks, Stack, StackReport, StackReports, StackState, ValueError,
+    CommitSha, Deployment, Detail, Host, HostName, HostPaths, Origin, ProjectName, ProjectNames,
+    Rejection, RepoPath, Report, ReservedStacks, Stack, StackName, StackReport, StackReports,
+    StackState, Tombstone, TombstoneError, ValueError, exposed_node, mounted_paths,
 };
 
 use crate::deploy::{
@@ -15,6 +16,7 @@ use crate::deploy::{
 use crate::loader::load_desired_state;
 use crate::outcome::Outcome;
 use crate::parse::StackParser;
+use crate::purge::{Removal, Retain};
 use crate::sidecar::Exposure;
 use crate::source::RepoSource;
 use crate::validate::{EncryptionCheck, validate_desired_state};
@@ -107,20 +109,37 @@ pub trait Reconcile {
 
 /// Reconciles the stacks of one host.
 #[derive(Debug)]
-pub struct Reconciler<Git, Docker> {
+pub struct Reconciler<Git, Docker, Removing = Retain> {
     host: HostName,
     ports: ReconcilePorts<Git, Docker>,
     reserved: ReservedStacks,
+    removal: Removing,
 }
 
-impl<Git, Docker> Reconciler<Git, Docker> {
-    /// A reconciler for `host` working through `ports`.
+impl<Git, Docker> Reconciler<Git, Docker, Retain> {
+    /// A reconciler for `host` working through `ports`. It keeps removed stacks running as they
+    /// are and refuses tombstones until [`Reconciler::with_removal`] gives it removal.
     #[must_use]
     pub const fn new(host: HostName, ports: ReconcilePorts<Git, Docker>) -> Self {
         Self {
             host,
             ports,
             reserved: ReservedStacks::new(Vec::new()),
+            removal: Retain,
+        }
+    }
+}
+
+impl<Git, Docker, Removing> Reconciler<Git, Docker, Removing> {
+    /// The same reconciler that takes removed stacks down and carries out tombstones with
+    /// `removal`.
+    #[must_use]
+    pub fn with_removal<Next: Removal>(self, removal: Next) -> Reconciler<Git, Docker, Next> {
+        Reconciler {
+            host: self.host,
+            ports: self.ports,
+            reserved: self.reserved,
+            removal,
         }
     }
 
@@ -139,10 +158,11 @@ impl<Git, Docker> Reconciler<Git, Docker> {
     }
 }
 
-impl<Git, Docker> Reconcile for Reconciler<Git, Docker>
+impl<Git, Docker, Removing> Reconcile for Reconciler<Git, Docker, Removing>
 where
     Git: Checkout + Sync,
     Docker: ComposeRunner + Sync,
+    Removing: Removal + Sync,
 {
     async fn reconcile(&self, commit: CommitSha) -> Result<Report, ReconcileError> {
         let git = self.ports.git.sync(&commit);
@@ -151,9 +171,215 @@ where
         let units = units(&outcome, &self.scope());
         let mut stacks = deploy_all(&self.ports.compose, &units, &commit).await;
         stacks.extend(invalid(&outcome, &self.scope()));
+        stacks.extend(self.removals(&outcome).await);
         let origin = Origin::new(self.host.clone(), commit);
         Ok(Report::new(origin, stacks.into_iter().collect()))
     }
+}
+
+impl<Git: Sync, Docker: Sync, Removing: Removal + Sync> Reconciler<Git, Docker, Removing> {
+    /// The tombstones carried out, then the projects the repository no longer declares taken
+    /// down. Nothing is taken down when the repository could not be read completely.
+    async fn removals(&self, outcome: &Outcome) -> Vec<StackReport> {
+        let scope = self.scope();
+        let pass = Pass {
+            removal: &self.removal,
+            outcome,
+            scope: &scope,
+        };
+        let mut reports = purge_all(&pass).await;
+        reports.extend(sweep(&pass).await);
+        reports
+    }
+}
+
+/// One reconcile's removal: what removes, what the repository says and which host it is.
+struct Pass<'pass, Removing> {
+    removal: &'pass Removing,
+    outcome: &'pass Outcome,
+    scope: &'pass Scope<'pass>,
+}
+
+async fn purge_all<Removing: Removal + Sync>(pass: &Pass<'_, Removing>) -> Vec<StackReport> {
+    let mut reports = Vec::new();
+    for attempt in tombstones(pass.outcome, pass.scope) {
+        reports.push(purge_one(pass, attempt).await);
+    }
+    reports
+}
+
+async fn purge_one<Removing: Removal + Sync>(
+    pass: &Pass<'_, Removing>,
+    attempt: Result<Tombstone, Refused>,
+) -> StackReport {
+    match attempt {
+        Ok(tombstone) => carry_out(pass, tombstone).await,
+        Err(refused) => refused.report(),
+    }
+}
+
+async fn carry_out<Removing: Removal + Sync>(
+    pass: &Pass<'_, Removing>,
+    tombstone: Tombstone,
+) -> StackReport {
+    let directory = tombstone.directory().clone();
+    if paths_unverifiable(pass.outcome, &tombstone, pass.scope) {
+        let reason = "stacks of this host are rejected, so their paths are unknown";
+        return StackReport::new(directory, Deployment::Failed(Detail::new(reason)));
+    }
+    let taken = taken_by_others(pass.outcome, &tombstone);
+    let tombstone = if node_must_stay(pass.outcome, &tombstone) {
+        tombstone.keeping_node()
+    } else {
+        tombstone
+    };
+    let deployment = pass.removal.purge(&tombstone, &taken).await;
+    StackReport::new(directory, deployment)
+}
+
+async fn sweep<Removing: Removal + Sync>(pass: &Pass<'_, Removing>) -> StackReports {
+    if !sweep_is_safe(pass.outcome, pass.scope) {
+        return StackReports::default();
+    }
+    let declared = declared_projects(pass.outcome, pass.scope);
+    pass.removal.orphans(&declared).await
+}
+
+/// Whether a rejected stack of the host, or of Aegis's reserved directory, might share a path
+/// with the tombstone: its mounts are unknown, so deleting host paths is not safe until it is
+/// fixed.
+fn paths_unverifiable(outcome: &Outcome, tombstone: &Tombstone, scope: &Scope<'_>) -> bool {
+    let own = RepoPath::hosts_root().listed(scope.host.as_str());
+    let reserved = RepoPath::reserved_root();
+    let unknown = |rejection: &Rejection| {
+        let directory = rejection.directory();
+        directory.is_within(&own)
+            || directory.is_within(&reserved)
+            || *directory == RepoPath::hosts_root()
+    };
+    !tombstone.paths().is_empty() && outcome.rejected().iter().any(unknown)
+}
+
+/// Whether a stack that is not purged exposes the hostname the tombstone's node has, on this host
+/// or another, or a stack is rejected and may still run with it: the node is then someone's, and
+/// deleting it would break the owner.
+fn node_must_stay(outcome: &Outcome, tombstone: &Tombstone) -> bool {
+    let state = outcome.state();
+    let hosted = state.hosts().iter().flat_map(|host| host.stacks().iter());
+    let live = hosted
+        .chain(state.reserved().iter())
+        .filter(|stack| stack.policy().state() == StackState::Active);
+    let nodes = live.filter_map(exposed_node);
+    let claimed = nodes.into_iter().any(|node| Some(node) == tombstone.node());
+    claimed || !outcome.rejected().is_empty()
+}
+
+/// A purged stack that cannot be purged, and the directory it lives in.
+struct Refused {
+    directory: RepoPath,
+    reason: aegis_domain::TombstoneError,
+}
+
+impl Refused {
+    fn report(self) -> StackReport {
+        let detail = Detail::new(&self.reason.to_string());
+        StackReport::new(self.directory, Deployment::Failed(detail))
+    }
+}
+
+/// The purged stacks of the host, each with its directory.
+fn tombstones(outcome: &Outcome, scope: &Scope<'_>) -> Vec<Result<Tombstone, Refused>> {
+    let hosts = outcome.state().hosts().iter();
+    let own = hosts.filter(|candidate| candidate.name() == scope.host);
+    let listed = own.flat_map(unit_stacks);
+    let purged = listed.filter(|unit| unit.stack.policy().state() == StackState::Purged);
+    let reserved = reserved_projects(outcome);
+    let unknown = outcome
+        .rejected()
+        .iter()
+        .any(|each| *each.directory() == RepoPath::reserved_root());
+    let known = (!unknown).then_some(reserved.as_slice());
+    purged.map(|unit| attempt(&unit, known)).collect()
+}
+
+/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own (a user stack
+/// named like a reserved stack shares its project, and purging it would delete the reserved
+/// stack's data) or when they are unknown (`reserved` is `None`).
+fn attempt(unit: &Unit<'_>, reserved: Option<&[ProjectName]>) -> Result<Tombstone, Refused> {
+    let refused = |reason| Refused {
+        directory: unit.directory.clone(),
+        reason,
+    };
+    let Some(known) = reserved else {
+        return Err(refused(TombstoneError::ReservedUnknown));
+    };
+    let project = ProjectName::of(unit.stack.name()).ok();
+    if project.is_some_and(|name| known.contains(&name)) {
+        return Err(refused(TombstoneError::SharesReservedProject));
+    }
+    Tombstone::of(unit.directory.clone(), unit.stack).map_err(refused)
+}
+
+/// The projects of Aegis's own stacks, loaded or rejected, whether or not this host runs them.
+fn reserved_projects(outcome: &Outcome) -> Vec<ProjectName> {
+    let loaded = outcome.state().reserved().iter();
+    let names = loaded.filter_map(|stack| ProjectName::of(stack.name()).ok());
+    let root = RepoPath::reserved_root();
+    let broken = outcome.rejected().iter();
+    let within = broken.filter(|each| each.directory().is_within(&root));
+    let stacks = within.filter_map(|each| StackName::new(last_segment(each.directory())).ok());
+    names
+        .chain(stacks.filter_map(|name| ProjectName::of(&name).ok()))
+        .collect()
+}
+
+/// Every absolute path another stack of the repository mounts: any stack in another directory,
+/// whatever its name.
+fn taken_by_others(outcome: &Outcome, tombstone: &Tombstone) -> HostPaths {
+    let state = outcome.state();
+    let hosts = state.hosts().iter().flat_map(unit_stacks);
+    let parent = RepoPath::reserved_root();
+    let reserved = state.reserved().iter().map(|stack| Unit {
+        directory: parent.listed(stack.name().as_str()),
+        stack,
+    });
+    let others = hosts
+        .chain(reserved)
+        .filter(|unit| unit.directory != *tombstone.directory());
+    let paths = others.flat_map(|unit| mounted_paths(unit.stack).into_iter());
+    HostPaths::new(paths.collect())
+}
+
+/// The projects the repository still declares: every loaded stack, every rejected stack
+/// directory, and every reserved stack.
+fn declared_projects(outcome: &Outcome, scope: &Scope<'_>) -> ProjectNames {
+    let state = outcome.state();
+    let own = state
+        .hosts()
+        .iter()
+        .filter(|host| host.name() == scope.host);
+    let hosted = own.flat_map(|host| host.stacks().iter());
+    let loaded = hosted.chain(state.reserved().iter());
+    let names = loaded.filter_map(|stack| ProjectName::of(stack.name()).ok());
+    let rejected = outcome
+        .rejected()
+        .iter()
+        .filter_map(|each| StackName::new(last_segment(each.directory())).ok())
+        .filter_map(|name| ProjectName::of(&name).ok());
+    ProjectNames::new(names.chain(rejected).collect())
+}
+
+fn last_segment(directory: &RepoPath) -> &str {
+    directory.as_str().rsplit('/').next().unwrap_or_default()
+}
+
+/// Whether the repository was read completely enough to tell what it no longer declares: no
+/// rejection may be about a whole directory of stacks.
+fn sweep_is_safe(outcome: &Outcome, scope: &Scope<'_>) -> bool {
+    let own = RepoPath::hosts_root().listed(scope.host.as_str());
+    let roots = [RepoPath::hosts_root(), RepoPath::reserved_root(), own];
+    let broad = |rejection: &Rejection| roots.contains(rejection.directory());
+    !outcome.rejected().iter().any(broad)
 }
 
 /// A stack to deploy and the directory it lives in.

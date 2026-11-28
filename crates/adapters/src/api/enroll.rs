@@ -154,6 +154,16 @@ impl SidecarEnroller for ControllerDesk {
     }
 }
 
+impl aegis_application::NodeDeleter for ControllerDesk {
+    async fn delete_node(&self, node: &NodeLabel) -> Result<(), aegis_application::Reason> {
+        let deleted = self.client.delete_node(node).await;
+        deleted.map_err(|error| match error {
+            ClientError::Rejected(status) => aegis_application::Reason::new(&status),
+            ClientError::Transport(_) => aegis_application::Reason::new(&"the call failed"),
+        })
+    }
+}
+
 /// The variable that holds the id of the Tailscale OAuth client.
 pub const CLIENT_ID_VAR: &str = "AEGIS_TS_CLIENT_ID";
 /// The variable that holds the secret of the Tailscale OAuth client.
@@ -175,7 +185,7 @@ fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
     })
 }
 
-/// The `POST /v1/enroll` route of a controller, configured from its environment.
+/// The `POST /v1/enroll` and `DELETE /v1/nodes/{hostname}` routes of a controller, configured from its environment.
 ///
 /// The Tailscale OAuth client is in `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET` (decrypted
 /// by the deployment that runs the controller), and the tags a stack's node may carry are in
@@ -195,5 +205,7 @@ pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
         variable: CLIENT_ID_VAR,
         cause: error.to_string(),
     })?;
-    Ok(enroll_routes(Enroller::new(api.clone(), api, allowed)))
+    let removing = api.clone().for_stack_nodes(allowed.clone());
+    let enroll = enroll_routes(Enroller::new(api.clone(), api, allowed));
+    Ok(enroll.merge(super::node_routes(removing)))
 }

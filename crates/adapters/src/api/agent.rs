@@ -5,8 +5,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aegis_api::version_1::{RECONCILE_PATH, ReconcileRequest, Role, StatusReport};
-use aegis_application::{Reconcile, ReconcilePorts, Reconciler, Repository, SecretStore, WhoIs};
-use aegis_domain::{CommitSha, HostName, ReservedStacks, StackName};
+use aegis_application::{
+    OrphanSweep, Purge, Reconcile, ReconcilePorts, Reconciler, Remover, Repository, SecretStore,
+    WhoIs,
+};
+use aegis_domain::{CommitSha, HostName, HostPath, HostPaths, ReservedStacks, StackName};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -20,9 +23,9 @@ use super::wire::status_report;
 use super::{ApiClient, ControllerDesk};
 use crate::http::BaseUrl;
 use crate::{
-    DecryptingCompose, DockerCompose, DockerStateProbe, FsRepo, GitCheckout, SecretPorts,
-    SerdeStackParser, SidecarCompose, SidecarPorts, SopsCheck, SopsDecrypt, TailscaleWhois,
-    TmpfsStore,
+    DecryptingCompose, DockerCompose, DockerProjects, DockerPurger, DockerStateProbe, FsRepo,
+    GitCheckout, SecretPorts, SerdeStackParser, SidecarCompose, SidecarPorts, SopsCheck,
+    SopsDecrypt, TailscaleWhois, TmpfsStore,
 };
 
 /// The compose runner of the agent: `docker compose` behind the per-host SOPS decryption, with the
@@ -34,10 +37,18 @@ type Compose = SidecarCompose<
     TmpfsStore,
 >;
 
+/// What the agent removes with: it takes removed stacks down and carries out tombstones.
+type Removal = Remover<
+    OrphanSweep<DockerProjects, DockerCompose>,
+    Purge<DockerCompose, ControllerDesk, DockerPurger>,
+>;
+
 const HOST_VAR: &str = "AEGIS_HOST";
 const CHECKOUT_VAR: &str = "AEGIS_CHECKOUT";
 const CONTROLLER_VAR: &str = "AEGIS_CONTROLLER";
 const RESERVED_VAR: &str = "AEGIS_RESERVED";
+/// The container id Docker gives the agent as its hostname, so the agent never takes itself down.
+const CONTAINER_VAR: &str = "HOSTNAME";
 
 /// What a reconcile handler needs: the reconciler, where to report, and a lock that lets one
 /// reconcile at a time touch the checkout.
@@ -186,12 +197,28 @@ impl Settings {
         Ok(SidecarCompose::new(decrypting, ports))
     }
 
-    fn reconciler(&self) -> Result<Reconciler<GitCheckout, Compose>, ServeError> {
+    fn removal(&self) -> Result<Removal, ServeError> {
+        let host = self.hosting.host.clone();
+        let directory = self.checkout.join("hosts").join(host.as_str());
+        let own = std::env::var(CONTAINER_VAR).unwrap_or_default();
+        let projects = DockerProjects::new(directory).excluding(&own);
+        let desk = ControllerDesk::new(ApiClient::new(self.controller.clone())?);
+        let docker = DockerCompose::new(&self.checkout);
+        let sweep = OrphanSweep::new(host, projects, docker.clone());
+        let checkout = HostPath::new(self.checkout.to_string_lossy())
+            .map_err(|error| invalid(CHECKOUT_VAR, &error))?;
+        let protected = HostPaths::new(vec![checkout]);
+        let purge = Purge::new(docker, desk, DockerPurger::default()).protecting(protected);
+        Ok(Remover::new(sweep, purge))
+    }
+
+    fn reconciler(&self) -> Result<Reconciler<GitCheckout, Compose, Removal>, ServeError> {
         let repository = Repository::new(FsRepo::new(&self.checkout), SerdeStackParser, SopsCheck);
         let git = GitCheckout::new(&self.checkout);
         let ports = ReconcilePorts::new(git, self.compose()?, repository);
         let reconciler = Reconciler::new(self.hosting.host.clone(), ports);
-        Ok(reconciler.with_reserved(self.hosting.reserved.clone()))
+        let reserved = reconciler.with_reserved(self.hosting.reserved.clone());
+        Ok(reserved.with_removal(self.removal()?))
     }
 }
 

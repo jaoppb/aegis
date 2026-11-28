@@ -119,6 +119,14 @@ impl Device {
     }
 }
 
+impl Device {
+    /// Whether every tag of the device is one of `allowed`.
+    fn carries_only(&self, allowed: &TailnetTags) -> bool {
+        let permitted = |tag: &String| allowed.iter().any(|each| each.as_str() == tag);
+        self.tags.iter().flatten().all(permitted)
+    }
+}
+
 /// The suffix every tailnet's `MagicDNS` names end in.
 const MAGIC_DNS_ROOT: &str = ".ts.net";
 
@@ -148,6 +156,15 @@ impl DeviceList {
             .devices
             .iter()
             .filter(|device| device.is_named(hostname));
+        matching.map(|device| device.identifier.as_str()).collect()
+    }
+
+    /// The same, for devices whose tags all lie in `allowed`.
+    pub(super) fn ids_of_allowed(&self, hostname: &str, allowed: &TailnetTags) -> Vec<&str> {
+        let matching = self
+            .devices
+            .iter()
+            .filter(|device| device.is_named(hostname) && device.carries_only(allowed));
         matching.map(|device| device.identifier.as_str()).collect()
     }
 }
@@ -190,6 +207,19 @@ mod tests {
             ]}"#,
         );
         assert!(devices.ids_of("app").is_empty());
+    }
+
+    #[test]
+    fn a_node_outside_the_allowed_tags_never_matches() {
+        let devices = list(
+            r#"{"devices":[
+                {"id":"1","hostname":"app","tags":["tag:server"]},
+                {"id":"2","hostname":"app","tags":["tag:app","tag:server"]},
+                {"id":"3","hostname":"app","tags":["tag:app"]}
+            ]}"#,
+        );
+        let allowed = TailnetTags::new(vec![TailnetTag::new("tag:app").unwrap()]);
+        assert_eq!(devices.ids_of_allowed("app", &allowed), ["3"]);
     }
 
     #[test]

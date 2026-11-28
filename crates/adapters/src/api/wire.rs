@@ -18,6 +18,14 @@ fn stack_status(report: &StackReport) -> StackStatus {
             StackState::Failed,
             vec![detail.as_str().to_owned()],
         ),
+        Deployment::Orphaned(remains) => {
+            let kept = remains.iter().map(|each| each.as_str().to_owned());
+            StackStatus::new(directory, StackState::Orphaned, kept.collect())
+        }
+        Deployment::Purged => {
+            let note = "purged, safe to delete dir".to_owned();
+            StackStatus::new(directory, StackState::Purged, vec![note])
+        }
         Deployment::Invalid(violations) => {
             let details = violations.iter().map(ToString::to_string).collect();
             StackStatus::new(directory, StackState::Invalid, details)
@@ -30,4 +38,32 @@ pub(super) fn rejection_status(rejection: &Rejection) -> StackStatus {
     let details = rejection.violations().iter().map(ToString::to_string);
     let directory = rejection.directory().as_str();
     StackStatus::new(directory, StackState::Invalid, details.collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use aegis_domain::{Detail, Remains};
+
+    use super::*;
+
+    #[test]
+    fn an_orphaned_stack_lists_what_was_kept() {
+        let kept = Remains::new(vec![Detail::new("volume aegis-old_data")]);
+        let status = stack_status(&StackReport::new(
+            aegis_domain::RepoPath::new("hosts/h/old").unwrap(),
+            Deployment::Orphaned(kept),
+        ));
+        assert_eq!(status.state(), StackState::Orphaned);
+        assert_eq!(status.details(), ["volume aegis-old_data"]);
+    }
+
+    #[test]
+    fn a_purged_stack_says_its_directory_can_be_deleted() {
+        let status = stack_status(&StackReport::new(
+            aegis_domain::RepoPath::new("hosts/h/old").unwrap(),
+            Deployment::Purged,
+        ));
+        assert_eq!(status.state(), StackState::Purged);
+        assert_eq!(status.details(), ["purged, safe to delete dir"]);
+    }
 }

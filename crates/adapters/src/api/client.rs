@@ -1,13 +1,15 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{
-    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health,
-    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport,
+    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health, NODE_GONE,
+    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport, node_path,
 };
 use std::time::Duration;
 
 use reqwest::{Response, StatusCode};
 use serde::Serialize;
+
+use aegis_domain::NodeLabel;
 
 use crate::http::BaseUrl;
 
@@ -96,6 +98,21 @@ impl ApiClient {
         Ok(response.json().await?)
     }
 
+    /// Ask the controller to delete the tailnet node `hostname`. A node that does not exist
+    /// counts as deleted, but only when the controller says so: any other `404` is a refusal.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`].
+    pub async fn delete_node(&self, hostname: &NodeLabel) -> Result<(), ClientError> {
+        let url = self.base.join(&node_path(hostname.as_str()));
+        let response = self.http.delete(url).send().await?;
+        match response.status() {
+            StatusCode::NOT_FOUND => gone(response).await,
+            _ => accepted(response).map(drop),
+        }
+    }
+
     async fn post<Body: Serialize + Sync>(
         &self,
         path: &str,
@@ -104,6 +121,15 @@ impl ApiClient {
         let call = self.http.post(self.base.join(path)).json(body);
         accepted(call.send().await?)
     }
+}
+
+/// A `404` answer about a node: success when the controller says the node is not there.
+async fn gone(response: Response) -> Result<(), ClientError> {
+    let status = response.status();
+    let body = response.text().await?;
+    (body == NODE_GONE)
+        .then_some(())
+        .ok_or(ClientError::Rejected(status))
 }
 
 fn accepted(response: Response) -> Result<Response, ClientError> {

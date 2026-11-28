@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use crate::removal::Remains;
 use crate::value::{HostName, RepoPath, StackName, ValueError, collection};
 use crate::violation::Violations;
 
@@ -46,6 +47,19 @@ impl ProjectName {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The name of the stack the project belongs to: the project name without its prefix.
+    #[must_use]
+    pub fn stack_name(&self) -> &str {
+        self.0.strip_prefix(PROJECT_PREFIX).unwrap_or(&self.0)
+    }
+
+    /// The project called `name`, when it is an Aegis project (`aegis-<stack>`).
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let stack = name.strip_prefix(PROJECT_PREFIX)?;
+        Self::of(&StackName::new(stack).ok()?).ok()
     }
 }
 
@@ -140,6 +154,11 @@ pub enum Deployment {
     Failed(Detail),
     /// The stack broke a rule and was not deployed.
     Invalid(Violations),
+    /// The stack left the repository: it was taken down and its data is kept.
+    Orphaned(Remains),
+    /// The stack's tombstone was carried out: its data and tailnet node are gone and its
+    /// directory can be deleted from the repository.
+    Purged,
 }
 
 /// The result for one stack directory, such as `hosts/jao-server/pihole`.
@@ -248,6 +267,15 @@ mod tests {
             ProjectName::of(&stack("a_b-1")).unwrap().as_str(),
             "aegis-a_b-1"
         );
+    }
+
+    #[test]
+    fn a_project_parses_only_from_the_aegis_prefix_and_a_valid_stack_name() {
+        let parsed = ProjectName::parse("aegis-web").unwrap();
+        assert_eq!(parsed.stack_name(), "web");
+        assert_eq!(ProjectName::parse("web"), None);
+        assert_eq!(ProjectName::parse("aegis-"), None);
+        assert_eq!(ProjectName::parse("aegis-Bad"), None);
     }
 
     #[test]

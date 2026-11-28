@@ -5,5 +5,5 @@ mod client;
 mod credentials;
 mod wire;
 
-pub use client::TailscaleApi;
+pub use client::{StackNodes, TailscaleApi};
 pub use credentials::{ClientId, ClientSecret, OAuthCredentials};

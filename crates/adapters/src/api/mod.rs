@@ -6,6 +6,7 @@ mod client;
 mod controller;
 mod controller_env;
 mod enroll;
+mod nodes;
 mod server;
 mod wire;
 
@@ -16,4 +17,5 @@ pub use controller_env::{REPOSITORY_REQUIRED, serve_controller_from_env};
 pub use enroll::{
     CLIENT_ID_VAR, CLIENT_SECRET_VAR, CONTROLLER_REQUIRED, ControllerDesk, enroll_routes,
 };
+pub use nodes::node_routes;
 pub use server::{ListenAddress, ServeError, serve, serve_controller};

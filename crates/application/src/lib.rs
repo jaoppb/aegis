@@ -10,7 +10,9 @@ pub mod loader;
 pub mod outcome;
 pub mod parse;
 pub mod poll;
+pub mod purge;
 pub mod reconcile;
+pub mod removal;
 pub mod render;
 pub mod secrets;
 pub mod sidecar;
@@ -35,7 +37,9 @@ pub use loader::load_desired_state;
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
 pub use poll::Poller;
+pub use purge::{OrphanSweep, Purge, Removal, Remover, Retain};
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};
+pub use removal::{NodeDeleter, Projects, Purger, Refusal, SafePath, Teardown};
 pub use secrets::{DecryptError, SecretDecryptor, SecretStore, Slot, StoreError};
 pub use sidecar::{
     Caddyfile, Exposure, KEY_VARIABLE, KeyUse, OverrideYaml, RenderedSidecar, STATE_DIRECTORY,

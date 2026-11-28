@@ -2,11 +2,13 @@
 
 mod enroll;
 mod health;
+mod nodes;
 mod reconcile;
 mod status;
 
 pub use enroll::{ENROLL_PATH, EnrollRequest, EnrollResponse, SidecarVolume};
 pub use health::{HEALTH_PATH, Health, Role, VERSION};
+pub use nodes::{NODE_GONE, NODE_PATH, node_path};
 pub use reconcile::{
     RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StackState, StackStatus, StatusReport,
 };
