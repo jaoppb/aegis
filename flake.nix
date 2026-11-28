@@ -117,6 +117,7 @@
             packages = runtimeClis pkgs ++ (with pkgs; [
               rustToolchain
               cargo-nextest
+              cargo-deny
               just
               lefthook
               rumdl
