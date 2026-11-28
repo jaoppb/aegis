@@ -2,6 +2,7 @@
 //! validation rules built on them. It does no IO.
 
 pub mod access;
+pub mod bootstrap;
 pub mod deploy;
 pub mod enroll;
 pub mod fleet;
@@ -10,6 +11,7 @@ pub mod outcome;
 pub mod parse;
 pub mod poll;
 pub mod reconcile;
+pub mod render;
 pub mod secrets;
 pub mod sidecar;
 pub mod source;
@@ -17,6 +19,12 @@ pub mod tailnet;
 pub mod validate;
 
 pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
+pub use bootstrap::{
+    AegisNodes, AgeRecipient, AgentEndpoint, AgentEndpoints, AgentUrl, Bootstrap, BootstrapError,
+    BootstrapPlan, BootstrapReport, ControllerChoice, ControllerSetup, ControllerUrl, Existing,
+    FileText, HostFiles, HostKey, HostSide, ImageTag, Joined, NodeKeys, Outcomes, RenderedFile,
+    RepoUrl, SecretEncryptor, Sources, StackOutcome, StackRunner, Written,
+};
 pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,
     Extras, GitError, Target, Upstream,

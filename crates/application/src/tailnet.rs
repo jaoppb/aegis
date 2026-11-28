@@ -237,14 +237,26 @@ impl<Minter: KeyMinter + Sync> Enrollment<Minter> {
         state: StateVolume,
     ) -> Result<Enrolled, EnrollError> {
         check_tags(tags).map_err(EnrollError::Tags)?;
+        self.enroll_tagged(tags, state)
+            .await
+            .map_err(EnrollError::Mint)
+    }
+
+    /// The same enrolment without the tag check, for the nodes of Aegis itself, whose role tags
+    /// a stack may not claim. There is still one minting path: only a sidecar with no state mints.
+    pub(crate) async fn enroll_tagged(
+        &self,
+        tags: &TailnetTags,
+        state: StateVolume,
+    ) -> Result<Enrolled, TailnetError> {
         match state {
             StateVolume::Populated => Ok(Enrolled::AlreadyEnrolled),
             StateVolume::Empty => self.mint_key(tags).await,
         }
     }
 
-    async fn mint_key(&self, tags: &TailnetTags) -> Result<Enrolled, EnrollError> {
-        let key = self.minter.mint(tags).await.map_err(EnrollError::Mint)?;
+    async fn mint_key(&self, tags: &TailnetTags) -> Result<Enrolled, TailnetError> {
+        let key = self.minter.mint(tags).await?;
         Ok(Enrolled::Minted(key))
     }
 }

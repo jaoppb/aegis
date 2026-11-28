@@ -12,3 +12,10 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+aegis-adapters.workspace = true
+aegis-application.workspace = true
+aegis-domain.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

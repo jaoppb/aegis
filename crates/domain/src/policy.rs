@@ -1,6 +1,6 @@
 //! The per-stack policy declared in an optional `aegis.toml`.
 
-use crate::value::{Port, ServiceName, TailnetTag, collection};
+use crate::value::{Port, ServiceName, TailnetTag, ValueError, collection};
 
 /// The service and port Aegis exposes on the tailnet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,5 +102,26 @@ impl StackPolicy {
     #[must_use]
     pub const fn state(&self) -> StackState {
         self.state
+    }
+}
+
+impl TailnetTags {
+    /// The tags of a comma-separated list such as `tag:a, tag:b`; blank items are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValueError`] when an item is not a valid tag.
+    pub fn parse_list(list: &str) -> Result<Self, ValueError> {
+        let names = list.split(',').map(str::trim);
+        let present = names.filter(|name| !name.is_empty());
+        let tags: Result<Vec<TailnetTag>, ValueError> = present.map(TailnetTag::new).collect();
+        tags.map(Self::new)
+    }
+
+    /// The tags as a comma-separated list, the inverse of [`TailnetTags::parse_list`].
+    #[must_use]
+    pub fn join(&self) -> String {
+        let names: Vec<&str> = self.iter().map(TailnetTag::as_str).collect();
+        names.join(",")
     }
 }

@@ -22,6 +22,10 @@ const WORKDIR_VAR: &str = "AEGIS_WORKDIR";
 const POLL_VAR: &str = "AEGIS_POLL_SECS";
 const AGENTS_VAR: &str = "AEGIS_AGENTS";
 
+/// The variables of the controller's own settings that it refuses to start without, besides
+/// `AEGIS_LISTEN` and the enrolment variables of [`super::CONTROLLER_REQUIRED`].
+pub const REPOSITORY_REQUIRED: [&str; 2] = [REPO_URL_VAR, WORKDIR_VAR];
+
 /// The branch followed when `AEGIS_REPO_BRANCH` is not set.
 const DEFAULT_BRANCH: &str = "main";
 

@@ -10,17 +10,6 @@ use tokio::process::Command;
 
 use crate::cli;
 
-/// The environment git inherits from the agent, and nothing else: no `GIT_DIR`, `GIT_WORK_TREE`
-/// or `GIT_SSH_COMMAND` can redirect it.
-const INHERITED: [&str; 6] = [
-    "PATH",
-    "HOME",
-    "SSH_AUTH_SOCK",
-    "XDG_CONFIG_HOME",
-    "SSL_CERT_FILE",
-    "GIT_SSL_CAINFO",
-];
-
 /// The transports git may use, so a URL cannot start another `git-remote-*` helper.
 const ALLOWED_PROTOCOLS: &str = "https:ssh:file";
 
@@ -148,7 +137,7 @@ impl GitCheckout {
     fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new(&self.program);
         command.arg("-C").arg(&self.directory).args(arguments);
-        cli::inherit_only(&mut command, &INHERITED);
+        cli::inherit_only(&mut command, &cli::GIT_INHERITED);
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS);
         command
@@ -157,24 +146,17 @@ impl GitCheckout {
     async fn step(&self, arguments: &[&str]) -> Result<(), GitError> {
         let output = cli::run(self.command(arguments), String::new(), GIT_TIMEOUT).await;
         output
-            .and_then(|finished| succeeded(&finished))
+            .and_then(|finished| cli::succeeded(&finished, "git"))
             .map_err(GitError::new)
     }
 }
 
 /// The output of a command that succeeded.
 fn stdout_of(output: &Output) -> Result<String, Reason> {
-    succeeded(output)?;
+    cli::succeeded(output, "git")?;
     String::from_utf8(output.stdout.clone())
         .map(|text| text.trim().to_owned())
         .map_err(|_| Reason::new(&"git printed invalid UTF-8"))
-}
-
-fn succeeded(output: &Output) -> Result<(), Reason> {
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(Reason::new(&format!("git exited with {}", output.status)))
 }
 
 impl GitCheckout {
