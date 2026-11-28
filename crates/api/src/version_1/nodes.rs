@@ -8,6 +8,10 @@
 /// Tailscale cannot be reached or refuses.
 pub const NODE_PATH: &str = "/v1/nodes/{hostname}";
 
+/// The body of the `404` that means the node does not exist. Any other `404` (a controller that
+/// does not serve the route, or a proxy in between) is not an answer about the node.
+pub const NODE_GONE: &str = "no such node";
+
 /// The path of the node with `hostname`, a DNS label of lower-case letters, digits and `-`.
 #[must_use]
 pub fn node_path(hostname: &str) -> String {

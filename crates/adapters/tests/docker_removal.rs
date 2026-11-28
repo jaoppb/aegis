@@ -154,7 +154,7 @@ fn a_purge_with_no_labelled_volume_removes_nothing() {
 }
 
 #[test]
-fn a_path_is_deleted_through_its_parent_so_a_symlink_is_never_followed() {
+fn a_path_is_deleted_in_a_container_that_walks_it_segment_by_segment() {
     runtime().block_on(async {
         let sandbox = Sandbox::new("path", "", "").await;
         let path = HostPath::new("/srv/data/web").unwrap();
@@ -165,8 +165,75 @@ fn a_path_is_deleted_through_its_parent_so_a_symlink_is_never_followed() {
             .unwrap();
         let calls = sandbox.calls().await;
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].contains("-v /srv/data:/parent"), "{}", calls[0]);
+        assert!(calls[0].contains("-v /:/host"), "{}", calls[0]);
         assert!(calls[0].contains("--network none"));
-        assert!(calls[0].ends_with("sh web"), "{}", calls[0]);
+        assert!(calls[0].ends_with("sh /srv/data/web /host"), "{}", calls[0]);
+    });
+}
+
+/// Runs the delete script for `path` against a host root at `root`, and reports its exit code.
+#[cfg(test)]
+async fn run_script(path: &str, root: &std::path::Path) -> Option<i32> {
+    let status = tokio::process::Command::new("sh")
+        .args(["-c", aegis_adapters::REMOVE_SCRIPT, "sh", path])
+        .arg(root)
+        .status()
+        .await
+        .unwrap();
+    status.code()
+}
+
+#[cfg(test)]
+async fn scratch(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("aegis-script-{}-{name}", std::process::id()));
+    tokio::fs::remove_dir_all(&root).await.ok();
+    tokio::fs::create_dir_all(root.join("srv/data/web/inner"))
+        .await
+        .unwrap();
+    root
+}
+
+#[test]
+fn the_delete_script_removes_a_plain_directory() {
+    runtime().block_on(async {
+        let root = scratch("plain").await;
+        assert_eq!(run_script("/srv/data/web", &root).await, Some(0));
+        assert!(!root.join("srv/data/web").exists());
+        assert!(root.join("srv/data").exists());
+    });
+}
+
+#[test]
+fn the_delete_script_treats_a_missing_path_as_deleted() {
+    runtime().block_on(async {
+        let root = scratch("missing").await;
+        assert_eq!(run_script("/srv/data/gone", &root).await, Some(0));
+    });
+}
+
+#[test]
+fn the_delete_script_never_follows_a_symlink_in_any_segment() {
+    runtime().block_on(async {
+        let root = scratch("link").await;
+        tokio::fs::create_dir_all(root.join("elsewhere/web"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("srv/link")).unwrap();
+        assert_eq!(run_script("/srv/link/web", &root).await, Some(2));
+        assert!(root.join("elsewhere/web").exists());
+        assert_eq!(run_script("/srv/link", &root).await, Some(2));
+        assert!(root.join("elsewhere/web").exists());
+    });
+}
+
+#[test]
+fn the_delete_script_leaves_a_file_alone() {
+    runtime().block_on(async {
+        let root = scratch("file").await;
+        tokio::fs::write(root.join("srv/data/file"), "x")
+            .await
+            .unwrap();
+        assert_eq!(run_script("/srv/data/file", &root).await, Some(3));
+        assert!(root.join("srv/data/file").exists());
     });
 }

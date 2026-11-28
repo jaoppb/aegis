@@ -46,6 +46,7 @@ pub struct TailscaleApi {
     http: reqwest::Client,
     base: BaseUrl,
     credentials: OAuthCredentials,
+    removable: Option<TailnetTags>,
 }
 
 impl TailscaleApi {
@@ -73,7 +74,18 @@ impl TailscaleApi {
             http,
             base,
             credentials,
+            removable: None,
         })
+    }
+
+    /// The same client that deletes a device by hostname only when all its tags are in `tags`,
+    /// so a node that was not enrolled for a stack is never removed.
+    #[must_use]
+    pub fn removing_only(self, tags: TailnetTags) -> Self {
+        Self {
+            removable: Some(tags),
+            ..self
+        }
     }
 
     async fn token(&self, scope: Scope) -> Result<String, TailnetError> {
@@ -98,7 +110,12 @@ impl TailscaleApi {
     async fn find(&self, hostname: &HostName, token: &str) -> Result<DeviceId, TailnetError> {
         let url = self.base.join(DEVICES_PATH);
         let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
-        let ids = list.ids_of(hostname.as_str());
+        let name = hostname.as_str();
+        let any = || list.ids_of(name);
+        let ids = self
+            .removable
+            .as_ref()
+            .map_or_else(any, |allowed| list.ids_of_allowed(name, allowed));
         match ids.as_slice() {
             [only] => DeviceId::new(*only).map_err(|failure| unavailable(&failure)),
             [] => Err(TailnetError::NoSuchDevice),

@@ -123,10 +123,6 @@ impl ControllerDesk {
     pub const fn new(client: super::ApiClient) -> Self {
         Self { client }
     }
-
-    pub(super) const fn client(&self) -> &super::ApiClient {
-        &self.client
-    }
 }
 
 fn controller_failure(error: &ClientError) -> EnrollError {
@@ -155,6 +151,16 @@ impl SidecarEnroller for ControllerDesk {
         let wire = EnrollRequest::new(request.node().as_str(), tags, wire_volume(request.state()));
         let answer = self.client.enroll(&wire).await;
         grant_of(&answer.map_err(|error| controller_failure(&error))?)
+    }
+}
+
+impl aegis_application::NodeDeleter for ControllerDesk {
+    async fn delete_node(&self, node: &NodeLabel) -> Result<(), aegis_application::Reason> {
+        let deleted = self.client.delete_node(node).await;
+        deleted.map_err(|error| match error {
+            ClientError::Rejected(status) => aegis_application::Reason::new(&status),
+            ClientError::Transport(_) => aegis_application::Reason::new(&"the call failed"),
+        })
     }
 }
 
@@ -199,6 +205,7 @@ pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
         variable: CLIENT_ID_VAR,
         cause: error.to_string(),
     })?;
-    let enroll = enroll_routes(Enroller::new(api.clone(), api.clone(), allowed));
-    Ok(enroll.merge(super::node_routes(api)))
+    let removing = api.clone().removing_only(allowed.clone());
+    let enroll = enroll_routes(Enroller::new(api.clone(), api, allowed));
+    Ok(enroll.merge(super::node_routes(removing)))
 }

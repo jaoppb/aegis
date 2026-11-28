@@ -81,6 +81,8 @@ pub enum Refusal {
     Unusable(HostPath),
     /// The path is, holds or lies inside a path another stack or Aegis itself uses.
     Shared(HostPath),
+    /// The path is a system location that no stack's data lives in.
+    System(HostPath),
 }
 
 impl fmt::Display for Refusal {
@@ -89,6 +91,7 @@ impl fmt::Display for Refusal {
             Self::TooShallow(path) => write!(formatter, "{path} is too close to the root"),
             Self::Unusable(path) => write!(formatter, "{path} is not a plain absolute path"),
             Self::Shared(path) => write!(formatter, "{path} is shared with another stack"),
+            Self::System(path) => write!(formatter, "{path} is a system location"),
         }
     }
 }
@@ -99,17 +102,44 @@ impl std::error::Error for Refusal {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafePath(HostPath);
 
+/// The system locations a purge never deletes in or above: sockets, devices and the host's own
+/// state are mounted read-write by many stacks.
+const SYSTEM: [&str; 13] = [
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var/lib/docker",
+    "/var/run",
+];
+
+/// The segments of `path` without empty and `.` segments, so `/srv/data/` and `/srv//data`
+/// compare like `/srv/data`.
 fn segments(path: &HostPath) -> Vec<&str> {
-    path.as_str().split('/').skip(1).collect()
+    let kept = path.as_str().split('/');
+    kept.filter(|segment| !matches!(*segment, "" | "."))
+        .collect()
 }
 
-fn is_plain(segments: &[&str]) -> bool {
-    let plain = |segment: &&str| !matches!(*segment, "" | ".");
-    segments.iter().all(plain)
+fn is_system(path: &HostPath) -> bool {
+    let candidates = SYSTEM.iter().filter_map(|text| HostPath::new(*text).ok());
+    candidates.into_iter().any(|system| overlaps(path, &system))
+}
+
+fn is_plain(path: &HostPath) -> bool {
+    let mut parts = path.as_str().split('/').skip(1);
+    parts.all(|segment| !matches!(segment, "" | "."))
 }
 
 fn has_forbidden_char(path: &HostPath) -> bool {
-    path.as_str().contains([':', '\n', '\0'])
+    path.as_str().contains([':', ',', '\n', '\0'])
 }
 
 fn overlaps(first: &HostPath, second: &HostPath) -> bool {
@@ -120,12 +150,14 @@ fn overlaps(first: &HostPath, second: &HostPath) -> bool {
 }
 
 fn verdict(path: &HostPath, taken: &HostPaths) -> Result<(), Refusal> {
-    let parts = segments(path);
-    if !is_plain(&parts) || has_forbidden_char(path) {
+    if !is_plain(path) || has_forbidden_char(path) {
         return Err(Refusal::Unusable(path.clone()));
     }
-    if parts.len() < MIN_DEPTH {
+    if segments(path).len() < MIN_DEPTH {
         return Err(Refusal::TooShallow(path.clone()));
+    }
+    if is_system(path) {
+        return Err(Refusal::System(path.clone()));
     }
     if taken.iter().any(|other| overlaps(path, other)) {
         return Err(Refusal::Shared(path.clone()));

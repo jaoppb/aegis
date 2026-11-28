@@ -24,7 +24,8 @@ pub use deployment::{
 pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
 pub use removal::{
-    HostPaths, Leftover, Leftovers, ProjectNames, Remains, Tombstone, TombstoneError, mounted_paths,
+    HostPaths, Leftover, Leftovers, ProjectNames, Remains, Tombstone, TombstoneError, exposed_node,
+    mounted_paths,
 };
 pub use state::{
     DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,

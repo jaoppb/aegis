@@ -12,8 +12,8 @@ use aegis_application::{
     SafePath, Teardown,
 };
 use aegis_domain::{
-    CommitSha, Deployment, Detail, HostName, Leftover, Leftovers, NodeLabel, ProjectName, Remains,
-    Report, Tombstone,
+    CommitSha, Deployment, Detail, HostName, HostPath, HostPaths, Leftover, Leftovers, NodeLabel,
+    ProjectName, Remains, Report, Tombstone,
 };
 
 /// A checkout in a scratch directory, written file by file.
@@ -58,6 +58,7 @@ struct Fake {
     events: Arc<Mutex<Vec<String>>>,
     leftovers: Vec<(&'static str, &'static [&'static str])>,
     failing: Option<&'static str>,
+    protected: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -175,8 +176,13 @@ async fn reconcile(files: &Scratch, fake: &Fake, compose: &FakeCompose) -> Repor
     let ports = ReconcilePorts::new(FakeGit, compose.clone(), repository);
     let host = HostName::new("host").unwrap();
     let sweep = OrphanSweep::new(host.clone(), fake.clone(), fake.clone());
-    let removal: Removing =
-        Remover::new(sweep, Purge::new(fake.clone(), fake.clone(), fake.clone()));
+    let paths = fake
+        .protected
+        .iter()
+        .map(|text| HostPath::new(*text).unwrap());
+    let purge = Purge::new(fake.clone(), fake.clone(), fake.clone())
+        .protecting(HostPaths::new(paths.collect()));
+    let removal: Removing = Remover::new(sweep, purge);
     let reconciler = Reconciler::new(host, ports).with_removal(removal);
     let commit = CommitSha::new("abc1234").unwrap();
     reconciler.reconcile(commit).await.unwrap()
@@ -460,4 +466,174 @@ fn a_tombstone_is_repeated_on_every_reconcile_until_the_directory_is_deleted() {
         reconcile(&files, &fake, &FakeCompose::default()).await;
         assert_eq!(fake.events().len(), 6);
     });
+}
+
+#[cfg(test)]
+const TWO_PATHS: &str = "services:\n  app:\n    image: nginx:1\n    volumes:\n      - /srv/data/old:/a\n      - /srv/data/old2:/b\n";
+
+#[test]
+fn a_purged_stack_that_still_has_containers_is_purged_once_and_not_also_an_orphan() {
+    runtime().block_on(async {
+        let files = tombstoned("both", OLD_COMPOSE, PURGED).await;
+        let fake = Fake {
+            leftovers: vec![("aegis-old", &["aegis-old_data"])],
+            ..Fake::default()
+        };
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        let downs = fake
+            .events()
+            .iter()
+            .filter(|event| event.starts_with("down"))
+            .count();
+        assert_eq!(downs, 1);
+        assert_eq!(deployment(&report, "hosts/host/old"), &Deployment::Purged);
+    });
+}
+
+#[cfg(test)]
+const EXPOSING: &str = "tailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"app\"\nport = 80\n";
+
+#[cfg(test)]
+const APP: &str = "services:\n  app:\n    image: nginx:1\n";
+
+#[test]
+fn a_node_that_another_live_stack_exposes_is_not_deleted() {
+    runtime().block_on(async {
+        let files = checkout(
+            "claimed",
+            &[
+                WEB,
+                ("hosts/host2/app/compose.yaml", APP),
+                ("hosts/host2/app/aegis.toml", EXPOSING),
+                ("hosts/host/old/aegis.toml", PURGED_EXPOSED),
+                ("hosts/host/old/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert_eq!(fake.events(), ["down aegis-old", "volumes aegis-old"]);
+        assert_eq!(deployment(&report, "hosts/host/old"), &Deployment::Purged);
+    });
+}
+
+#[test]
+fn host_paths_are_not_deleted_while_a_reserved_stack_is_rejected() {
+    runtime().block_on(async {
+        let broken = (
+            "aegis/agent/compose.yaml",
+            "services:\n  agent:\n    volumes:\n      - ./missing:/x\n",
+        );
+        let files = checkout(
+            "reservedrejected",
+            &[
+                WEB,
+                broken,
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", OLD_COMPOSE),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().is_empty());
+    });
+}
+
+#[test]
+fn an_orphan_that_cannot_be_taken_down_is_reported_failed() {
+    runtime().block_on(async {
+        let files = checkout("downfails", &[WEB]).await;
+        let fake = Fake {
+            leftovers: vec![("aegis-old", &["aegis-old_data"])],
+            failing: Some("down"),
+            ..Fake::default()
+        };
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(matches!(
+            deployment(&report, "hosts/host/old"),
+            Deployment::Failed(_)
+        ));
+    });
+}
+
+#[cfg(test)]
+async fn checkout_case(mounted: &str) {
+    let compose =
+        format!("services:\n  app:\n    image: x:1\n    volumes:\n      - {mounted}:/m\n");
+    let files = tombstoned("checkout", &compose, PURGED).await;
+    let fake = Fake {
+        protected: vec!["/srv/checkout"],
+        ..Fake::default()
+    };
+    let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+    assert!(fake.events().is_empty(), "{mounted}");
+    let failed = matches!(deployment(&report, "hosts/host/old"), Deployment::Failed(_));
+    assert!(failed, "{mounted}");
+}
+
+#[test]
+fn a_path_inside_the_checkout_is_never_deleted() {
+    runtime().block_on(checkout_case("/srv/checkout/x"));
+}
+
+#[test]
+fn the_checkout_itself_is_never_deleted() {
+    runtime().block_on(checkout_case("/srv/checkout"));
+}
+
+#[test]
+fn a_path_deep_inside_the_checkout_is_never_deleted() {
+    runtime().block_on(checkout_case("/srv/checkout/a/b"));
+}
+
+#[cfg(test)]
+async fn failing_case(step: &'static str, expected: &[&str]) {
+    let files = tombstoned("steps", TWO_PATHS, PURGED_EXPOSED).await;
+    let fake = Fake {
+        failing: Some(step),
+        ..Fake::default()
+    };
+    let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+    assert_eq!(fake.events(), expected, "{step}");
+    let failed = matches!(deployment(&report, "hosts/host/old"), Deployment::Failed(_));
+    assert!(failed, "{step}");
+}
+
+#[test]
+fn a_failing_down_stops_the_purge_before_anything_else() {
+    runtime().block_on(failing_case("down", &["down aegis-old"]));
+}
+
+#[test]
+fn a_failing_volume_removal_deletes_no_path() {
+    let expected = ["down aegis-old", "node app", "volumes aegis-old"];
+    runtime().block_on(failing_case("volumes", &expected));
+}
+
+#[test]
+fn a_failing_path_removal_stops_before_the_next_path() {
+    let expected = [
+        "down aegis-old",
+        "node app",
+        "volumes aegis-old",
+        "path /srv/data/old",
+    ];
+    runtime().block_on(failing_case("path", &expected));
+}
+
+#[cfg(test)]
+async fn unreadable_case(broken: &str) {
+    let files = checkout("unreadable2", &[(broken, "not a directory")]).await;
+    let fake = Fake {
+        leftovers: vec![("aegis-web", &[])],
+        ..Fake::default()
+    };
+    reconcile(&files, &fake, &FakeCompose::default()).await;
+    assert!(fake.events().is_empty(), "{broken}");
+}
+
+#[test]
+fn nothing_is_taken_down_when_the_reserved_directory_cannot_be_read() {
+    runtime().block_on(unreadable_case("aegis"));
 }

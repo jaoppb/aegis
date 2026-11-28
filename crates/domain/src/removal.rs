@@ -91,6 +91,7 @@ pub struct Tombstone {
     directory: RepoPath,
     project: ProjectName,
     stack: Stack,
+    node: Option<NodeLabel>,
 }
 
 impl Tombstone {
@@ -103,11 +104,20 @@ impl Tombstone {
     pub fn of(directory: RepoPath, stack: &Stack) -> Result<Self, TombstoneError> {
         allow_purge(stack)?;
         let project = ProjectName::of(stack.name()).map_err(TombstoneError::NoProject)?;
+        let node = exposed_node(stack);
         Ok(Self {
             directory,
             project,
             stack: stack.clone(),
+            node,
         })
+    }
+
+    /// The same tombstone that leaves the tailnet node alone, because another stack now exposes
+    /// a node with the same hostname.
+    #[must_use]
+    pub fn keeping_node(self) -> Self {
+        Self { node: None, ..self }
     }
 
     /// The stack directory.
@@ -125,8 +135,7 @@ impl Tombstone {
     /// The tailnet node to remove: the exposed service's hostname, when the stack exposes one.
     #[must_use]
     pub fn node(&self) -> Option<NodeLabel> {
-        let expose = self.stack.policy().expose()?;
-        NodeLabel::new(expose.service().as_str()).ok()
+        self.node.clone()
     }
 
     /// The absolute host paths the stack mounts read-write, once each.
@@ -134,6 +143,13 @@ impl Tombstone {
     pub fn paths(&self) -> HostPaths {
         HostPaths::new(writable_paths(&self.stack).into_iter().collect())
     }
+}
+
+/// The hostname of the node a stack's sidecar enrols as: the exposed service's name.
+#[must_use]
+pub fn exposed_node(stack: &Stack) -> Option<NodeLabel> {
+    let expose = stack.policy().expose()?;
+    NodeLabel::new(expose.service().as_str()).ok()
 }
 
 fn allow_purge(stack: &Stack) -> Result<(), TombstoneError> {
@@ -146,10 +162,15 @@ fn allow_purge(stack: &Stack) -> Result<(), TombstoneError> {
     Ok(())
 }
 
-fn writable_paths(stack: &Stack) -> std::collections::BTreeSet<HostPath> {
+fn host_mounts(stack: &Stack) -> impl Iterator<Item = &Mount> {
     let services = stack.compose().services().iter();
-    let mounts = services.flat_map(|service| service.mounts().iter());
-    mounts.filter_map(writable_source).collect()
+    services
+        .flat_map(|service| service.mounts().iter())
+        .filter(|mount| matches!(mount, Mount::HostPath { .. }))
+}
+
+fn writable_paths(stack: &Stack) -> std::collections::BTreeSet<HostPath> {
+    host_mounts(stack).filter_map(writable_source).collect()
 }
 
 fn writable_source(mount: &Mount) -> Option<HostPath> {
@@ -166,9 +187,7 @@ fn writable_source(mount: &Mount) -> Option<HostPath> {
 /// Every absolute host path `stack` mounts, read-only or not.
 #[must_use]
 pub fn mounted_paths(stack: &Stack) -> HostPaths {
-    let services = stack.compose().services().iter();
-    let mounts = services.flat_map(|service| service.mounts().iter());
-    let sources = mounts.filter_map(|mount| match mount {
+    let sources = host_mounts(stack).filter_map(|mount| match mount {
         Mount::HostPath { source, .. } => Some(source.clone()),
         _ => None,
     });

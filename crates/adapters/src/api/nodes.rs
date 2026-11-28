@@ -4,17 +4,14 @@
 
 use std::sync::Arc;
 
-use aegis_api::version_1::{NODE_PATH, node_path};
-use aegis_application::{DeviceRef, NodeDeleter, NodeRemover, Reason, TailnetError};
+use aegis_api::version_1::{NODE_GONE, NODE_PATH};
+use aegis_application::{DeviceRef, NodeRemover, TailnetError};
 use aegis_domain::{HostName, NodeLabel};
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::delete;
-use reqwest::StatusCode as ClientStatus;
-
-use super::{ApiClient, ClientError, ControllerDesk};
 
 /// The `DELETE /v1/nodes/{hostname}` route: delete the node with `remover`. It is meant to be
 /// served behind the tag check of the controller.
@@ -36,6 +33,13 @@ struct Refusal {
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
         (self.status, self.reason).into_response()
+    }
+}
+
+fn reason_of(error: &TailnetError) -> String {
+    match error {
+        TailnetError::NoSuchDevice => NODE_GONE.to_owned(),
+        other => other.to_string(),
     }
 }
 
@@ -72,34 +76,6 @@ where
         .map(|()| StatusCode::NO_CONTENT)
         .map_err(|error| Refusal {
             status: status_of(&error),
-            reason: error.to_string(),
+            reason: reason_of(&error),
         })
-}
-
-impl ApiClient {
-    /// Ask the controller to delete the tailnet node `hostname`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError::Rejected`] when the controller refuses, including `404` for a node
-    /// that does not exist, and [`ClientError::Transport`] when the call fails.
-    pub async fn delete_node(&self, hostname: &NodeLabel) -> Result<(), ClientError> {
-        let url = self.base().join(&node_path(hostname.as_str()));
-        let response = self.http().delete(url).send().await?;
-        let status = response.status();
-        status
-            .is_success()
-            .then_some(())
-            .ok_or(ClientError::Rejected(status))
-    }
-}
-
-impl NodeDeleter for ControllerDesk {
-    async fn delete_node(&self, node: &NodeLabel) -> Result<(), Reason> {
-        match self.client().delete_node(node).await {
-            Ok(()) | Err(ClientError::Rejected(ClientStatus::NOT_FOUND)) => Ok(()),
-            Err(ClientError::Rejected(status)) => Err(Reason::new(&status)),
-            Err(ClientError::Transport(_)) => Err(Reason::new(&"the call failed")),
-        }
-    }
 }

@@ -270,6 +270,15 @@ mod tests {
     }
 
     #[test]
+    fn a_project_parses_only_from_the_aegis_prefix_and_a_valid_stack_name() {
+        let parsed = ProjectName::parse("aegis-web").unwrap();
+        assert_eq!(parsed.stack_name(), "web");
+        assert_eq!(ProjectName::parse("web"), None);
+        assert_eq!(ProjectName::parse("aegis-"), None);
+        assert_eq!(ProjectName::parse("aegis-Bad"), None);
+    }
+
+    #[test]
     fn a_stack_name_compose_rejects_has_no_project() {
         assert_eq!(
             ProjectName::of(&stack("Web")),

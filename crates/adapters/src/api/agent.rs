@@ -205,8 +205,9 @@ impl Settings {
         let desk = ControllerDesk::new(ApiClient::new(self.controller.clone())?);
         let docker = DockerCompose::new(&self.checkout);
         let sweep = OrphanSweep::new(host, projects, docker.clone());
-        let checkout = HostPath::new(self.checkout.to_string_lossy());
-        let protected = HostPaths::new(checkout.into_iter().collect());
+        let checkout = HostPath::new(self.checkout.to_string_lossy())
+            .map_err(|error| invalid(CHECKOUT_VAR, &error))?;
+        let protected = HostPaths::new(vec![checkout]);
         let purge = Purge::new(docker, desk, DockerPurger::default()).protecting(protected);
         Ok(Remover::new(sweep, purge))
     }

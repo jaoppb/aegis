@@ -8,7 +8,7 @@ use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{ApiClient, ControllerDesk, node_routes, serve_controller};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
 use aegis_application::{NodeDeleter, PeerAddress, WhoIs, WhoIsError};
-use aegis_domain::{NodeLabel, PeerIdentity, TailnetTag};
+use aegis_domain::{NodeLabel, PeerIdentity, TailnetTag, TailnetTags};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
@@ -85,6 +85,15 @@ struct Served {
 
 #[cfg(test)]
 async fn controller(peer: Option<&'static str>, devices_found: Vec<Value>) -> Served {
+    controller_removing(peer, devices_found, None).await
+}
+
+#[cfg(test)]
+async fn controller_removing(
+    peer: Option<&'static str>,
+    devices_found: Vec<Value>,
+    only: Option<&str>,
+) -> Served {
     let log = Log::default();
     let upstream = Upstream {
         log: log.clone(),
@@ -97,6 +106,10 @@ async fn controller(peer: Option<&'static str>, devices_found: Vec<Value>) -> Se
         .with_state(upstream);
     let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
     let api = TailscaleApi::with_base(serve(app).await, credentials).unwrap();
+    let api = match only {
+        Some(tag) => api.removing_only(TailnetTags::new(vec![TailnetTag::new(tag).unwrap()])),
+        None => api,
+    };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let root = format!("http://{}", listener.local_addr().unwrap());
     let base = BaseUrl::new(root.clone());
@@ -173,5 +186,65 @@ fn a_hostname_that_is_not_a_dns_label_is_a_bad_request() {
             .unwrap();
         assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
         assert!(served.log.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_device_outside_the_allowed_tags_is_left_alone() {
+    runtime().block_on(async {
+        let other =
+            json!({ "id": "9", "hostname": "nas", "name": "nas.t.ts.net", "tags": ["tag:server"] });
+        let served =
+            controller_removing(Some("tag:aegis-agent"), vec![other], Some("tag:app")).await;
+        let desk = ControllerDesk::new(ApiClient::new(served.base).unwrap());
+        desk.delete_node(&node("nas")).await.unwrap();
+        assert!(served.log.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn an_ambiguous_hostname_is_a_conflict_on_the_wire() {
+    runtime().block_on(async {
+        let both = vec![device("1", "vault"), device("2", "vault")];
+        let served = controller(Some("tag:aegis-agent"), both).await;
+        let answer = reqwest::Client::new()
+            .delete(format!("{}/v1/nodes/vault", served.root))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::CONFLICT);
+    });
+}
+
+#[test]
+fn a_controller_without_the_route_does_not_count_as_node_gone() {
+    runtime().block_on(async {
+        let base = serve(Router::new()).await;
+        let desk = ControllerDesk::new(ApiClient::new(base).unwrap());
+        assert!(desk.delete_node(&node("vault")).await.is_err());
+    });
+}
+
+#[test]
+fn an_unreachable_tailscale_is_a_bad_gateway() {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
+        drop(listener);
+        let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
+        let api = TailscaleApi::with_base(dead, credentials).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(serve_controller(
+            listener,
+            Peer(Some("tag:aegis-agent")),
+            node_routes(api),
+        ));
+        let answer = reqwest::Client::new()
+            .delete(format!("{root}/v1/nodes/vault"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
     });
 }

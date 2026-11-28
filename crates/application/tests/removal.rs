@@ -74,6 +74,39 @@ fn a_path_above_or_below_a_taken_path_is_shared() {
 }
 
 #[test]
+fn a_taken_path_written_with_a_trailing_or_doubled_slash_still_overlaps() {
+    for taken_path in ["/srv/data/web/", "/srv//data/web", "/srv/./data/web"] {
+        let refused = check("/srv/data/web/uploads", &[taken_path]);
+        assert!(matches!(refused, Err(Refusal::Shared(_))), "{taken_path}");
+    }
+}
+
+#[test]
+fn system_locations_are_refused_even_when_deep() {
+    for system in [
+        "/var/run/docker.sock",
+        "/var/lib/docker/volumes",
+        "/etc/ssl/certs",
+        "/dev/dri/renderD128",
+        "/run/user/1000/x",
+        "/usr/local/share",
+    ] {
+        assert!(
+            matches!(check(system, &[]), Err(Refusal::System(_))),
+            "{system}"
+        );
+    }
+}
+
+#[test]
+fn a_path_with_a_comma_is_unusable() {
+    assert!(matches!(
+        check("/srv/da,ta/web", &[]),
+        Err(Refusal::Unusable(_))
+    ));
+}
+
+#[test]
 fn a_sibling_whose_name_starts_the_same_is_not_shared() {
     assert!(check("/srv/data/web", &["/srv/data/web2"]).is_ok());
 }

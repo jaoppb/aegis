@@ -235,9 +235,16 @@ impl Default for DockerPurger {
     }
 }
 
-/// The shell that deletes the entry `$1` of the mounted parent directory, refusing a symlink so
-/// the delete can never follow a link out of the path it was checked against.
-const REMOVE_SCRIPT: &str = "test ! -L \"/parent/$1\" && rm -rf -- \"/parent/$1\"";
+/// The shell that deletes a directory of the host.
+///
+/// The directory is `$1`, and the host's root is mounted at `$2`. It walks the
+/// path one segment at a time and refuses a symlink in any of them, so the delete can never
+/// follow a link out of the path that was checked. A path that is already gone is a success, and
+/// anything that is not a directory (a socket, a device, a file) is refused.
+pub const REMOVE_SCRIPT: &str = "set -f; IFS=/; p=\"$2\"; for s in $1; do [ -z \"$s\" ] && continue; p=\"$p/$s\"; [ -L \"$p\" ] && exit 2; done; [ -e \"$p\" ] || exit 0; [ -d \"$p\" ] || exit 3; rm -rf -- \"$p\"";
+
+/// Where the host's root is mounted in the throw-away container.
+const HOST_ROOT: &str = "/host";
 
 impl DockerPurger {
     /// A purger that runs the `program` executable.
@@ -274,22 +281,6 @@ async fn remove_named(program: &str, names: &[String]) -> Result<(), Reason> {
     succeed(command).await.map(drop)
 }
 
-/// The directory that holds the last segment of `path`, and that segment.
-struct Entry<'path> {
-    parent: &'path str,
-    name: &'path str,
-}
-
-fn entry_of(path: &str) -> Result<Entry<'_>, Reason> {
-    let split = path.rsplit_once('/');
-    let usable = split.filter(|found| !found.0.is_empty() && !found.1.is_empty());
-    let found = usable.ok_or_else(|| Reason::new(&"the path has no parent directory"))?;
-    Ok(Entry {
-        parent: found.0,
-        name: found.1,
-    })
-}
-
 impl Purger for DockerPurger {
     async fn remove_volumes(&self, tombstone: &Tombstone) -> Result<(), Reason> {
         let names = self.labelled_volumes(tombstone.project()).await?;
@@ -298,11 +289,10 @@ impl Purger for DockerPurger {
     }
 
     async fn remove_path(&self, _tombstone: &Tombstone, path: &SafePath) -> Result<(), Reason> {
-        let entry = entry_of(path.path().as_str())?;
         let mut command = docker(&self.program);
         command.args(["run", "--rm", "--network", "none", "--entrypoint", "sh"]);
-        command.args(["-v", &format!("{}:/parent", entry.parent), TAILSCALE_IMAGE]);
-        command.args(["-c", REMOVE_SCRIPT, "sh", entry.name]);
+        command.args(["-v", &format!("/:{HOST_ROOT}"), TAILSCALE_IMAGE]);
+        command.args(["-c", REMOVE_SCRIPT, "sh", path.path().as_str(), HOST_ROOT]);
         succeed(command).await.map(drop)
     }
 }
