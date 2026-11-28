@@ -1,5 +1,6 @@
 //! What the HTTP clients of the adapters share: the base URL and the client settings.
 
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// How long a call may take before it fails.
@@ -30,18 +31,28 @@ impl BaseUrl {
         format!("{}{path}", self.0)
     }
 
-    /// Whether a secret sent to this URL stays protected: it is https, or it is a loopback address
-    /// that never leaves the machine.
+    /// Whether a secret sent to this URL stays protected: it is `https`, or `http` to a loopback
+    /// host that never leaves the machine, and it carries no user info that could hide another host.
     pub(crate) fn is_protected(&self) -> bool {
-        let loopback = ["http://127.0.0.1", "http://localhost", "http://[::1]"];
-        self.0.starts_with("https://") || loopback.iter().any(|host| is_host(&self.0, host))
+        reqwest::Url::parse(&self.0).is_ok_and(|url| is_protected_url(&url))
     }
 }
 
-/// Whether `url` is exactly `host`, which may be followed by a port or a path.
-fn is_host(url: &str, host: &str) -> bool {
-    let tail = url.strip_prefix(host);
-    tail.is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+fn is_protected_url(url: &reqwest::Url) -> bool {
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match url.scheme() {
+        "https" => true,
+        "http" => is_loopback(url),
+        _ => false,
+    }
+}
+
+fn is_loopback(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or_default();
+    let address = host.trim_matches(['[', ']']).parse::<IpAddr>();
+    host == "localhost" || address.is_ok_and(|found| found.is_loopback())
 }
 
 #[cfg(test)]
@@ -66,5 +77,13 @@ mod tests {
         assert!(!protected("http://127.0.0.1.evil.com"));
         assert!(!protected("http://localhost.evil.com:80"));
         assert!(!protected("ftp://127.0.0.1"));
+        assert!(!protected("not a url"));
+    }
+
+    #[test]
+    fn user_info_cannot_hide_another_host() {
+        assert!(!protected("http://127.0.0.1:x@evil.com/"));
+        assert!(!protected("http://localhost:80@evil.com"));
+        assert!(!protected("https://user:pass@api.tailscale.com"));
     }
 }

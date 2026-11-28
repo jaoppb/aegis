@@ -1,6 +1,6 @@
 //! The JSON and form bodies of the Tailscale API.
 
-use aegis_domain::TailnetTags;
+use aegis_domain::{AegisRole, TailnetTag, TailnetTags};
 use serde::{Deserialize, Serialize};
 
 /// How long a minted key stays valid. It is single-use, so this only bounds an unused key.
@@ -101,14 +101,19 @@ struct Device {
     tags: Option<Vec<String>>,
 }
 
+fn is_role_tag(tag: &str) -> bool {
+    TailnetTag::new(tag).is_ok_and(|valid| AegisRole::is_role_tag(&valid))
+}
+
 impl Device {
-    /// Whether this is an Aegis-style node called `hostname`: only a tagged device qualifies, so
-    /// a person's own machine that happens to share the name is never matched, whatever it is
-    /// called. Case is ignored, as in DNS.
+    /// Whether this is a stack's node called `hostname`: only a tagged device qualifies, so a
+    /// person's own machine that shares the name is never matched, and neither is a node of Aegis
+    /// itself (the controller or an agent). Case is ignored, as in DNS.
     fn is_named(&self, hostname: &str) -> bool {
         let tagged = self.tags.as_ref().is_some_and(|tags| !tags.is_empty());
+        let aegis = self.tags.iter().flatten().any(|tag| is_role_tag(tag));
         let found = self.hostname.as_deref();
-        tagged && found.is_some_and(|name| name.eq_ignore_ascii_case(hostname))
+        tagged && !aegis && found.is_some_and(|name| name.eq_ignore_ascii_case(hostname))
     }
 }
 
@@ -126,7 +131,6 @@ impl DeviceList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_domain::TailnetTag;
 
     fn list(json: &str) -> DeviceList {
         serde_json::from_str(json).unwrap()
@@ -159,6 +163,17 @@ mod tests {
                 {"id":"1","hostname":"app"},
                 {"id":"2","hostname":"app","tags":[]},
                 {"id":"3","tags":["tag:a"]}
+            ]}"#,
+        );
+        assert!(devices.ids_of("app").is_empty());
+    }
+
+    #[test]
+    fn aegis_nodes_never_match() {
+        let devices = list(
+            r#"{"devices":[
+                {"id":"1","hostname":"app","tags":["tag:aegis-agent"]},
+                {"id":"2","hostname":"app","tags":["tag:app","tag:aegis-controller"]}
             ]}"#,
         );
         assert!(devices.ids_of("app").is_empty());

@@ -34,7 +34,8 @@ impl WhoIs for Scripted {
 #[cfg(test)]
 mod cases {
     use super::Scripted;
-    use aegis_adapters::api::{ApiClient, BaseUrl, ClientError, serve};
+    use aegis_adapters::BaseUrl;
+    use aegis_adapters::api::{ApiClient, ClientError, serve};
     use aegis_api::version_1::{Health, Role};
     use aegis_application::{Reason, WhoIsError};
     use std::sync::Arc;

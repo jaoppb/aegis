@@ -47,6 +47,8 @@ mod cases {
         Status(StatusCode),
         /// Every answer has the right fields with the wrong types, holding the secret.
         Malformed,
+        /// Every answer is larger than the client accepts.
+        Oversized,
         /// The token exchange redirects to this URL.
         Redirect(String),
     }
@@ -90,12 +92,13 @@ mod cases {
             (_, false) => StatusCode::UNAUTHORIZED.into_response(),
             (Behavior::Status(code), _) => (*code, Json(json!({}))).into_response(),
             (Behavior::Malformed, _) => Json(wrong).into_response(),
+            (Behavior::Oversized, _) => Json(json!({ "key": "k".repeat(2 << 20) })).into_response(),
             _ => Json(answer).into_response(),
         }
     }
 
     fn redirect(url: &str) -> Response {
-        (StatusCode::FOUND, [("location", url)]).into_response()
+        (StatusCode::TEMPORARY_REDIRECT, [("location", url)]).into_response()
     }
 
     async fn token(State(fake): State<Fake>, body: String) -> Response {
@@ -306,7 +309,9 @@ mod cases {
         let missing = Behavior::Status(StatusCode::NOT_FOUND);
         let harness = runtime.block_on(harness_with(missing, CLIENT_SECRET));
         let minted = runtime.block_on(harness.api.mint(&app_tags()));
+        let listed = runtime.block_on(harness.api.remove(&by_hostname("solo")));
         assert!(matches!(minted, Err(TailnetError::Rejected(_))));
+        assert!(matches!(listed, Err(TailnetError::Rejected(_))));
     }
 
     #[test]
@@ -330,14 +335,27 @@ mod cases {
         assert!(deleted_nothing(&harness.fake));
     }
 
+    async fn closed_port() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
     #[test]
     fn an_unreachable_server_is_unavailable() {
         let runtime = runtime();
-        let served = runtime.block_on(serve(Behavior::Normal));
-        let closed = TailscaleApi::with_base(BaseUrl::new("http://127.0.0.1:1"), credentials("s"));
+        let root = runtime.block_on(closed_port());
+        let closed = TailscaleApi::with_base(BaseUrl::new(root), credentials(CLIENT_SECRET));
         let result = runtime.block_on(closed.unwrap().mint(&app_tags()));
         assert!(matches!(result, Err(TailnetError::Unavailable(_))));
-        assert!(lines(&served.fake).is_empty());
+    }
+
+    #[test]
+    fn an_answer_over_the_size_cap_is_refused() {
+        let runtime = runtime();
+        let harness = runtime.block_on(harness_with(Behavior::Oversized, CLIENT_SECRET));
+        let error = runtime.block_on(harness.api.mint(&app_tags())).unwrap_err();
+        assert!(matches!(error, TailnetError::Unavailable(_)));
+        assert!(!error.to_string().contains("kkkk"));
     }
 
     #[test]

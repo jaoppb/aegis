@@ -84,7 +84,7 @@ impl TailscaleApi {
             ("scope", scope.name()),
         ];
         let request = self.http.post(self.base.join(TOKEN_PATH)).form(&form);
-        let reply: TokenReply = read(accept(transmit(request).await?)).await?;
+        let reply: TokenReply = fetch(request).await?;
         Ok(reply.into_token())
     }
 
@@ -97,8 +97,7 @@ impl TailscaleApi {
 
     async fn find(&self, hostname: &HostName, token: &str) -> Result<DeviceId, TailnetError> {
         let url = self.base.join(DEVICES_PATH);
-        let response = transmit(self.http.get(url).bearer_auth(token)).await?;
-        let list: DeviceList = read(accept(response)).await?;
+        let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
         let ids = list.ids_of(hostname.as_str());
         match ids.as_slice() {
             [only] => DeviceId::new(*only).map_err(|failure| unavailable(&failure)),
@@ -114,7 +113,7 @@ impl KeyMinter for TailscaleApi {
         let url = self.base.join(KEYS_PATH);
         let body = KeyRequest::single_use(tags);
         let request = self.http.post(url).bearer_auth(token).json(&body);
-        let reply: KeyReply = read(accept(transmit(request).await?)).await?;
+        let reply: KeyReply = fetch(request).await?;
         Ok(AuthKey::new(reply.into_key()))
     }
 }
@@ -147,6 +146,11 @@ fn accept(response: Response) -> Result<Response, TailnetError> {
         .ok_or_else(|| TailnetError::Rejected(Reason::new(&status)))
 }
 
+/// Send `request` and read a success answer as `Reply`.
+async fn fetch<Reply: DeserializeOwned>(request: RequestBuilder) -> Result<Reply, TailnetError> {
+    read(accept(transmit(request).await?)?).await
+}
+
 /// Delete a device. A `404` means it is already gone.
 async fn delete(request: RequestBuilder) -> Result<(), TailnetError> {
     let response = transmit(request).await?;
@@ -165,10 +169,7 @@ fn append(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), TailnetError> {
 
 /// Read the answer as `Reply`, refusing one that is too large. The failure text is fixed, so an
 /// answer that echoes a secret back cannot put it in an error.
-async fn read<Reply: DeserializeOwned>(
-    response: Result<Response, TailnetError>,
-) -> Result<Reply, TailnetError> {
-    let mut answer = response?;
+async fn read<Reply: DeserializeOwned>(mut answer: Response) -> Result<Reply, TailnetError> {
     let mut body = Vec::new();
     while let Some(chunk) = answer.chunk().await.map_err(|_| unreadable())? {
         append(&mut body, &chunk)?;

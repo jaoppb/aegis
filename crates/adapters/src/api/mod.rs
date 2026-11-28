@@ -4,6 +4,5 @@
 mod client;
 mod server;
 
-pub use crate::http::BaseUrl;
 pub use client::{ApiClient, ClientError};
 pub use server::{ListenAddress, ServeError, serve, serve_from_env};

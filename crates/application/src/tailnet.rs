@@ -185,13 +185,8 @@ fn check_tags(tags: &TailnetTags) -> Result<(), TagError> {
     if tags.is_empty() {
         return Err(TagError::Empty);
     }
-    let reserved = [AegisRole::Controller, AegisRole::Agent]
-        .into_iter()
-        .filter_map(|role| role.tag().ok());
-    let claimed = reserved
-        .into_iter()
-        .find(|role_tag| tags.iter().any(|tag| tag == role_tag));
-    claimed.map_or(Ok(()), |tag| Err(TagError::Reserved(tag)))
+    let claimed = tags.iter().find(|tag| AegisRole::is_role_tag(tag));
+    claimed.map_or(Ok(()), |tag| Err(TagError::Reserved(tag.clone())))
 }
 
 /// Enrolment did not complete.
@@ -235,8 +230,8 @@ impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> Enrollment<State, Min
     ///
     /// # Errors
     ///
-    /// Returns [`EnrollError::Tags`] when `tags` is empty or names an Aegis role tag (a stack must
-    /// not enrol a node as the controller or an agent), [`EnrollError::State`] when the state cannot be read (nothing is minted), and
+    /// Returns [`EnrollError::Tags`] when `tags` is empty or names an Aegis role tag (a stack
+    /// must not enrol a node as the controller or an agent), [`EnrollError::State`] when the state cannot be read (nothing is minted), and
     /// [`EnrollError::Mint`] when the key cannot be minted.
     pub async fn enroll(
         &self,
