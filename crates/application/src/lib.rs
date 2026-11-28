@@ -2,17 +2,25 @@
 //! validation rules built on them. It does no IO.
 
 pub mod access;
+pub mod bootstrap;
 pub mod deploy;
 pub mod loader;
 pub mod outcome;
 pub mod parse;
 pub mod reconcile;
+pub mod render;
 pub mod secrets;
 pub mod source;
 pub mod tailnet;
 pub mod validate;
 
 pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
+pub use bootstrap::{
+    AgeRecipient, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice,
+    ControllerUrl, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag, Joined, Joiner,
+    NodeKeys, Outcomes, RenderedFile, RepoUrl, SecretEncryptor, Sources, StackOutcome, StackRunner,
+    Written, sidecar_volume,
+};
 pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,
     Extras, GitError, Target,

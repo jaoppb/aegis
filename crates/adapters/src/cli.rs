@@ -22,6 +22,17 @@ pub const COMPOSE_INHERITED: [&str; 9] = [
     "SSL_CERT_FILE",
 ];
 
+/// The environment git inherits from the agent, and nothing else: no `GIT_DIR`, `GIT_WORK_TREE`
+/// or `GIT_SSH_COMMAND` can redirect it.
+pub const GIT_INHERITED: [&str; 6] = [
+    "PATH",
+    "HOME",
+    "SSH_AUTH_SOCK",
+    "XDG_CONFIG_HOME",
+    "SSL_CERT_FILE",
+    "GIT_SSL_CAINFO",
+];
+
 /// Clear the environment of `command` and give it back only the variables in `names` that the
 /// current process has set, so nothing else of the agent's environment can steer the child.
 pub fn inherit_only(command: &mut Command, names: &[&str]) {

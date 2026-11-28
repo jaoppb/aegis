@@ -1,0 +1,346 @@
+//! The compose files Bootstrap renders for the agent and the controller. Everything a template
+//! takes is validated first, so no value can break out of its YAML scalar or its volume mapping.
+
+use aegis_domain::{AegisRole, HostName, HostPath, RepoPath, StackName, ValueError};
+
+use crate::bootstrap::{
+    BootstrapPlan, ControllerChoice, Existing, FileText, HostKey, ImageTag, sidecar_volume,
+};
+
+/// The Tailscale image of the sidecars.
+pub const TAILSCALE_IMAGE: &str = "ghcr.io/tailscale/tailscale:v1.82.0";
+
+/// The Aegis images, without their tag.
+const AGENT_IMAGE: &str = "ghcr.io/jaoppb/aegis-agent";
+const CONTROLLER_IMAGE: &str = "ghcr.io/jaoppb/aegis-controller";
+
+/// The port both daemons listen on, each inside its own sidecar's network namespace.
+pub const LISTEN: &str = "0.0.0.0:7480";
+
+/// Where the host's age key and the volatile workspace are mounted inside the agent container.
+const KEY_IN_CONTAINER: &str = "/etc/aegis/age.txt";
+const RUNTIME_DIRECTORY: &str = "/run/aegis-agent";
+
+/// The file of the controller that holds its OAuth credentials, encrypted.
+const CONTROLLER_ENV: &str = "controller.env";
+
+const SIDECAR: &str = r#"  tailscale:
+    image: "@@TAILSCALE@@"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_HOSTNAME: "@@NODE@@"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+    volumes:
+      - "@@VOLUME@@:/var/lib/tailscale"
+      - "/dev/net/tun:/dev/net/tun"
+      - "socket:/var/run/tailscale"
+"#;
+
+const AGENT: &str = r#"  agent:
+    image: "@@IMAGE@@"
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    environment:
+      AEGIS_HOST: "@@HOST@@"
+      AEGIS_LISTEN: "@@LISTEN@@"
+      AEGIS_CHECKOUT: "@@CHECKOUT@@"
+      AEGIS_CONTROLLER: "@@CONTROLLER@@"
+      AEGIS_RESERVED: "@@RESERVED@@"
+      SOPS_AGE_KEY_FILE: "@@KEY_IN_CONTAINER@@"
+      XDG_RUNTIME_DIR: "@@RUNTIME@@"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "@@CHECKOUT@@:@@CHECKOUT@@"
+      - "@@KEY@@:@@KEY_IN_CONTAINER@@:ro"
+      - "@@RUNTIME@@:@@RUNTIME@@"
+      - "socket:/var/run/tailscale"
+"#;
+
+const CONTROLLER: &str = r#"  controller:
+    image: "@@IMAGE@@"
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    env_file:
+      - "@@ENV_FILE@@"
+    environment:
+      AEGIS_LISTEN: "@@LISTEN@@"
+    volumes:
+      - "socket:/var/run/tailscale"
+"#;
+
+const VOLUMES: &str = r#"volumes:
+  "@@VOLUME@@":
+    name: "@@VOLUME@@"
+  socket: {}
+"#;
+
+/// Which stack a file belongs to, the node it joins the tailnet as, and in which role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    name: StackName,
+    node: HostName,
+    role: AegisRole,
+}
+
+/// How a planned file gets its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    /// The text as it is.
+    Plain(FileText),
+    /// The dotenv text of this secret, encrypted to the host's age key first.
+    Encrypted(aegis_domain::Secret),
+}
+
+/// A file of a stack and what to do when it exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedFile {
+    path: RepoPath,
+    content: Content,
+    existing: Existing,
+}
+
+impl PlannedFile {
+    /// Where the file goes, relative to the bootstrap directory.
+    #[must_use]
+    pub const fn path(&self) -> &RepoPath {
+        &self.path
+    }
+
+    /// How the file gets its text.
+    #[must_use]
+    pub const fn content(&self) -> &Content {
+        &self.content
+    }
+
+    /// What to do when the file already exists.
+    #[must_use]
+    pub const fn existing(&self) -> Existing {
+        self.existing
+    }
+}
+
+/// The files of one stack.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlannedFiles(Vec<PlannedFile>);
+
+impl PlannedFiles {
+    /// The files in order.
+    pub fn iter(&self) -> std::slice::Iter<'_, PlannedFile> {
+        self.0.iter()
+    }
+}
+
+impl<'items> IntoIterator for &'items PlannedFiles {
+    type Item = &'items PlannedFile;
+    type IntoIter = std::slice::Iter<'items, PlannedFile>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+/// A stack to install: who it is and what it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedStack {
+    identity: Identity,
+    files: PlannedFiles,
+}
+
+impl RenderedStack {
+    /// The name of the stack.
+    #[must_use]
+    pub const fn name(&self) -> &StackName {
+        &self.identity.name
+    }
+
+    /// The tailnet node the stack joins as.
+    #[must_use]
+    pub const fn node(&self) -> &HostName {
+        &self.identity.node
+    }
+
+    /// The role of the node.
+    #[must_use]
+    pub const fn role(&self) -> AegisRole {
+        self.identity.role
+    }
+
+    /// The files of the stack.
+    pub fn files(&self) -> std::slice::Iter<'_, PlannedFile> {
+        self.files.iter()
+    }
+}
+
+/// The stacks to install, in order: the controller first, so the agent can report to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Stacks(Vec<RenderedStack>);
+
+impl IntoIterator for Stacks {
+    type Item = RenderedStack;
+    type IntoIter = std::vec::IntoIter<RenderedStack>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+/// `value` as the inside of a YAML double-quoted scalar.
+fn escaped(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A template whose `@@NAME@@` markers are replaced, each value escaped for a YAML scalar.
+struct Template(String);
+
+impl Template {
+    const fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    fn with(self, name: &str, value: &str) -> Self {
+        Self(self.0.replace(&format!("@@{name}@@"), &escaped(value)))
+    }
+}
+
+/// A host path that Compose's short volume syntax cannot misread.
+fn mountable(path: &HostPath) -> Result<&str, ValueError> {
+    let forbidden = path
+        .as_str()
+        .chars()
+        .find(|found| matches!(found, ':' | '\n'));
+    forbidden.map_or(Ok(path.as_str()), |found| {
+        Err(ValueError::ForbiddenChar(found))
+    })
+}
+
+fn sidecar(node: &HostName) -> Result<String, ValueError> {
+    let volume = sidecar_volume(node)?;
+    let template = Template::new(SIDECAR.to_owned());
+    let filled = template
+        .with("TAILSCALE", TAILSCALE_IMAGE)
+        .with("NODE", node.as_str())
+        .with("VOLUME", volume.as_str());
+    Ok(filled.0)
+}
+
+fn volumes(node: &HostName) -> Result<String, ValueError> {
+    let volume = sidecar_volume(node)?;
+    Ok(Template::new(VOLUMES.to_owned())
+        .with("VOLUME", volume.as_str())
+        .0)
+}
+
+fn image(name: &str, tag: &ImageTag) -> String {
+    format!("{name}:{tag}")
+}
+
+fn agent_text(plan: &BootstrapPlan, key: &HostKey) -> Result<String, ValueError> {
+    let sources = plan.sources();
+    let reserved = match plan.controller() {
+        ControllerChoice::Skip => "agent",
+        ControllerChoice::Install(_) => "agent,controller",
+    };
+    let filled = Template::new(AGENT.to_owned())
+        .with("IMAGE", &image(AGENT_IMAGE, plan.image()))
+        .with("HOST", plan.host().as_str())
+        .with("LISTEN", LISTEN)
+        .with("CHECKOUT", mountable(sources.checkout())?)
+        .with("CONTROLLER", sources.controller().as_str())
+        .with("RESERVED", reserved)
+        .with("KEY", mountable(key.path())?)
+        .with("KEY_IN_CONTAINER", KEY_IN_CONTAINER)
+        .with("RUNTIME", RUNTIME_DIRECTORY);
+    Ok(filled.0)
+}
+
+fn agent_document(
+    plan: &BootstrapPlan,
+    key: &HostKey,
+    node: &HostName,
+) -> Result<String, ValueError> {
+    let head = format!("services:\n{}{}", sidecar(node)?, agent_text(plan, key)?);
+    Ok(format!("{head}{}", volumes(node)?))
+}
+
+fn controller_document(plan: &BootstrapPlan, node: &HostName) -> Result<String, ValueError> {
+    let filled = Template::new(CONTROLLER.to_owned())
+        .with("IMAGE", &image(CONTROLLER_IMAGE, plan.image()))
+        .with("ENV_FILE", CONTROLLER_ENV)
+        .with("LISTEN", LISTEN);
+    let head = format!("services:\n{}{}", sidecar(node)?, filled.0);
+    Ok(format!("{head}{}", volumes(node)?))
+}
+
+fn compose_file(directory: &str, text: String) -> Result<PlannedFile, ValueError> {
+    Ok(PlannedFile {
+        path: RepoPath::new(format!("{directory}/compose.yaml"))?,
+        content: Content::Plain(FileText::new(text)),
+        existing: Existing::Replace,
+    })
+}
+
+fn node_of(plan: &BootstrapPlan, stack: &StackName) -> Result<HostName, ValueError> {
+    HostName::new(format!("{}-aegis-{stack}", plan.host()))
+}
+
+fn agent_stack(plan: &BootstrapPlan, key: &HostKey) -> Result<RenderedStack, ValueError> {
+    let name = StackName::new("agent")?;
+    let node = node_of(plan, &name)?;
+    let file = compose_file("aegis/agent", agent_document(plan, key, &node)?)?;
+    let identity = Identity {
+        name,
+        node,
+        role: AegisRole::Agent,
+    };
+    Ok(RenderedStack {
+        identity,
+        files: PlannedFiles(vec![file]),
+    })
+}
+
+fn controller_stack(
+    plan: &BootstrapPlan,
+    credentials: &aegis_domain::Secret,
+) -> Result<RenderedStack, ValueError> {
+    let name = StackName::new("controller")?;
+    let node = node_of(plan, &name)?;
+    let compose = compose_file("aegis/controller", controller_document(plan, &node)?)?;
+    let env = PlannedFile {
+        path: RepoPath::new(format!("aegis/controller/{CONTROLLER_ENV}"))?,
+        content: Content::Encrypted(credentials.clone()),
+        existing: Existing::Keep,
+    };
+    let identity = Identity {
+        name,
+        node,
+        role: AegisRole::Controller,
+    };
+    Ok(RenderedStack {
+        identity,
+        files: PlannedFiles(vec![compose, env]),
+    })
+}
+
+/// The stacks `plan` installs.
+///
+/// # Errors
+///
+/// Returns a [`ValueError`] when a value derived from the plan cannot be used in a compose file.
+pub fn stacks(plan: &BootstrapPlan, key: &HostKey) -> Result<Stacks, ValueError> {
+    let mut rendered = Vec::new();
+    if let ControllerChoice::Install(credentials) = plan.controller() {
+        rendered.push(controller_stack(plan, credentials)?);
+    }
+    rendered.push(agent_stack(plan, key)?);
+    Ok(Stacks(rendered))
+}
