@@ -43,8 +43,8 @@ fn same_tags(asked: &TailnetTags, declared: &TailnetTags) -> bool {
 }
 
 fn exposes(policy: &StackPolicy, node: &NodeLabel) -> bool {
-    let expose = policy.expose();
-    expose.is_some_and(|found| found.service().as_str() == node.as_str())
+    let service = policy.tailnet_service();
+    service.is_some_and(|found| found.as_str() == node.as_str())
 }
 
 /// The stack of `host` named `stack`, when the desired state has one.

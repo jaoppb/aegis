@@ -2,27 +2,40 @@
 
 use aegis_application::ParseError;
 use aegis_domain::{
-    Expose, Line, Port, ServiceName, StackPolicy, StackState, TailnetTag, TailnetTags,
+    Expose, Line, Node, Port, ServiceName, StackPolicy, StackState, TailnetTag, TailnetTags,
     UpdatePolicy, ValueError,
 };
 use serde::Deserialize;
 use toml::{Table, Value};
 
-const TOP_KEYS: [&str; 4] = ["expose", "update", "tailnet_tags", "state"];
+const TOP_KEYS: [&str; 5] = ["expose", "node", "update", "tailnet_tags", "state"];
 const EXPOSE_KEYS: [&str; 2] = ["service", "port"];
+const NODE_KEYS: [&str; 1] = ["service"];
 
 #[derive(Deserialize)]
 struct RawPolicy {
-    expose: Option<RawExpose>,
+    #[serde(flatten)]
+    reach: RawReach,
     update: Option<RawUpdate>,
     tailnet_tags: Option<Vec<String>>,
     state: Option<RawState>,
 }
 
 #[derive(Deserialize)]
+struct RawReach {
+    expose: Option<RawExpose>,
+    node: Option<RawNode>,
+}
+
+#[derive(Deserialize)]
 struct RawExpose {
     service: String,
     port: u16,
+}
+
+#[derive(Deserialize)]
+struct RawNode {
+    service: String,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -38,7 +51,7 @@ enum RawState {
     Purged,
 }
 
-/// Read `text` as a policy. Unknown keys, at the top level or under `expose`, are an error.
+/// Read `text` as a policy. Unknown keys, at the top level or under `expose` or `node`, are an error.
 ///
 /// # Errors
 ///
@@ -50,6 +63,11 @@ pub fn parse(text: &str) -> Result<StackPolicy, ParseError> {
         .map_err(|error: toml::de::Error| located(text, &error))?;
     if let Some(key) = unknown_key(&table) {
         return Err(ParseError::UnknownKey(key));
+    }
+    if table.contains_key("expose") && table.contains_key("node") {
+        return Err(invalid(
+            &"`expose` and `node` exclude each other: a stack has one tailnet node",
+        ));
     }
     let raw = table
         .try_into()
@@ -78,9 +96,13 @@ fn unknown_in(table: &Table, allowed: &[&str], prefix: &str) -> Option<String> {
 }
 
 fn unknown_key(table: &Table) -> Option<String> {
-    let expose = table.get("expose").and_then(Value::as_table);
+    let nested = |name: &str, allowed: &[&str]| {
+        let inner = table.get(name).and_then(Value::as_table);
+        inner.and_then(|found| unknown_in(found, allowed, &format!("{name}.")))
+    };
     unknown_in(table, &TOP_KEYS, "")
-        .or_else(|| expose.and_then(|inner| unknown_in(inner, &EXPOSE_KEYS, "expose.")))
+        .or_else(|| nested("expose", &EXPOSE_KEYS))
+        .or_else(|| nested("node", &NODE_KEYS))
 }
 
 fn policy(raw: RawPolicy) -> Result<StackPolicy, ValueError> {
@@ -90,7 +112,12 @@ fn policy(raw: RawPolicy) -> Result<StackPolicy, ValueError> {
         .map(TailnetTag::new)
         .collect::<Result<TailnetTags, _>>()?;
     let state = raw.state.map_or(StackState::Active, state);
-    Ok(StackPolicy::new(raw.expose.map(expose).transpose()?, tags, state).with_update(update))
+    let policy = StackPolicy::new(raw.reach.expose.map(expose).transpose()?, tags, state);
+    let policy = match raw.reach.node {
+        Some(node) => policy.with_node(Node::new(ServiceName::new(node.service)?)),
+        None => policy,
+    };
+    Ok(policy.with_update(update))
 }
 
 fn expose(raw: RawExpose) -> Result<Expose, ValueError> {

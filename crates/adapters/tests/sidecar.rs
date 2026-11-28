@@ -225,6 +225,29 @@ fn a_new_node_gets_the_override_and_its_key_only_in_the_environment() {
 }
 
 #[test]
+fn a_raw_node_is_enrolled_by_its_service_name_and_joined_without_caddy() {
+    runtime().block_on(async {
+        let rig = harness("raw", Ok(StateVolume::Empty), Ok(minted()));
+        let tags: TailnetTags = std::iter::once(TailnetTag::new("tag:app").unwrap()).collect();
+        let node = aegis_domain::Node::new(ServiceName::new("sharefile").unwrap());
+        let raw = Exposure::raw(node, tags);
+        rig.compose.converge(&request(Some(raw))).await.unwrap();
+        let seen = rig.seen.lock().unwrap().clone();
+        assert_eq!(seen[0].key_variable.as_deref(), Some(KEY));
+        assert!(!seen[0].override_text.contains(KEY));
+        let document: Value = serde_norway::from_str(&seen[0].override_text).unwrap();
+        assert_eq!(
+            document["services"]["sharefile"]["network_mode"],
+            Value::from("service:tailscale")
+        );
+        assert!(document["services"]["caddy"].is_null());
+        let asked = rig.asked.lock().unwrap().clone();
+        assert_eq!(asked[0].node().as_str(), "sharefile");
+        assert!(workspace_is_gone(&seen[0].files).await);
+    });
+}
+
+#[test]
 fn a_known_node_is_deployed_without_a_key() {
     runtime().block_on(async {
         let rig = harness(

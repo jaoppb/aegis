@@ -2,7 +2,7 @@
 
 use aegis_adapters::{compose, policy};
 use aegis_application::ParseError;
-use aegis_domain::{Access, Mount, StackState, ValueError};
+use aegis_domain::{Access, Mount, Networking, StackState, ValueError};
 
 fn first_mount(mount: &str) -> Result<Mount, ParseError> {
     let text = format!("services:\n  app:\n    volumes:\n      - {mount}\n");
@@ -136,6 +136,57 @@ fn an_unknown_key_under_expose_is_a_typed_error() {
     assert_eq!(
         policy::parse(text),
         Err(ParseError::UnknownKey("expose.host".to_owned()))
+    );
+}
+
+#[test]
+fn a_node_names_the_service_that_joins_the_tailnet_node() {
+    let found = policy::parse("[node]\nservice = \"sharefile\"\n").unwrap();
+    assert_eq!(found.node().unwrap().service().as_str(), "sharefile");
+    assert_eq!(found.expose(), None);
+    assert_eq!(found.tailnet_service().unwrap().as_str(), "sharefile");
+}
+
+#[test]
+fn an_unknown_key_under_node_is_a_typed_error() {
+    let text = "[node]\nservice = \"nfs\"\nport = 2049\n";
+    assert_eq!(
+        policy::parse(text),
+        Err(ParseError::UnknownKey("node.port".to_owned()))
+    );
+}
+
+#[test]
+fn a_stack_cannot_have_both_a_node_and_an_exposure() {
+    let text = "[expose]\nservice = \"web\"\nport = 80\n[node]\nservice = \"nfs\"\n";
+    assert!(matches!(policy::parse(text), Err(ParseError::Invalid(_))));
+}
+
+#[test]
+fn a_node_needs_a_valid_service_name() {
+    assert!(policy::parse("[node]\nservice = \"\"\n").is_err());
+    assert!(policy::parse("[node]\n").is_err());
+}
+
+#[test]
+fn a_service_that_sets_its_own_network_is_noticed() {
+    for key in [
+        "network_mode: host",
+        "networks: [back]",
+        "ports: ['1:1']",
+        "hostname: nfs",
+    ] {
+        let text = format!("services:\n  nfs:\n    image: x\n    {key}\n");
+        let parsed = compose::parse(&text).unwrap();
+        assert_eq!(
+            parsed.services().as_slice()[0].networking(),
+            Networking::Own
+        );
+    }
+    let plain = compose::parse("services:\n  nfs:\n    image: x\n").unwrap();
+    assert_eq!(
+        plain.services().as_slice()[0].networking(),
+        Networking::Default
     );
 }
 

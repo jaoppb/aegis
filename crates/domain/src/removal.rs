@@ -156,11 +156,12 @@ impl Tombstone {
     }
 }
 
-/// The hostname of the node a stack's sidecar enrols as: the exposed service's name.
+/// The hostname of the node a stack's sidecar enrols as: the name of the exposed service, or of
+/// the service that joins the node.
 #[must_use]
 pub fn exposed_node(stack: &Stack) -> Option<NodeLabel> {
-    let expose = stack.policy().expose()?;
-    NodeLabel::new(expose.service().as_str()).ok()
+    let service = stack.policy().tailnet_service()?;
+    NodeLabel::new(service.as_str()).ok()
 }
 
 fn allow_purge(stack: &Stack) -> Result<(), TombstoneError> {

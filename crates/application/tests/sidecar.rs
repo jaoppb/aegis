@@ -2,7 +2,7 @@
 
 use aegis_application::{Exposure, KeyUse, SidecarSpec, state_volume_of};
 use aegis_domain::{
-    Expose, Port, ProjectName, ServiceName, StackName, TailnetName, TailnetTag, TailnetTags,
+    Expose, Node, Port, ProjectName, ServiceName, StackName, TailnetName, TailnetTag, TailnetTags,
 };
 
 #[cfg(test)]
@@ -20,7 +20,7 @@ fn spec() -> SidecarSpec {
 
 #[test]
 fn the_caddyfile_proxies_the_node_address_to_the_service() {
-    let caddyfile = spec().caddyfile();
+    let caddyfile = spec().caddyfile().unwrap();
     assert_eq!(
         caddyfile.as_str(),
         "vaultwarden.taildfab0.ts.net {\n  reverse_proxy vaultwarden:80\n}\n"
@@ -79,4 +79,61 @@ fn the_state_volume_belongs_to_the_compose_project() {
         state_volume_of(&project),
         "aegis-vaultwarden_tailscale-state"
     );
+}
+
+#[cfg(test)]
+fn raw_spec() -> SidecarSpec {
+    let tags: TailnetTags = std::iter::once(TailnetTag::new("tag:app").unwrap()).collect();
+    let node = Node::new(ServiceName::new("sharefile").unwrap());
+    let tailnet = TailnetName::new("taildfab0.ts.net").unwrap();
+    SidecarSpec::new(&Exposure::raw(node, tags), tailnet).unwrap()
+}
+
+#[test]
+fn a_raw_node_runs_no_caddy_and_has_no_caddyfile() {
+    let rendered = raw_spec().render(KeyUse::Fresh);
+    let yaml = rendered.compose().as_str();
+    assert_eq!(rendered.caddyfile(), None);
+    assert_eq!(raw_spec().caddyfile(), None);
+    assert!(!yaml.contains("caddy"), "{yaml}");
+    assert!(!yaml.contains("tailscale-socket"), "{yaml}");
+    assert!(!yaml.contains("configs"), "{yaml}");
+}
+
+#[test]
+fn a_raw_node_keeps_the_hostname_of_its_service_and_its_state_in_a_volume() {
+    let yaml = raw_spec().render(KeyUse::Reused);
+    let yaml = yaml.compose().as_str();
+    assert!(yaml.contains("TS_HOSTNAME: sharefile\n"), "{yaml}");
+    assert!(yaml.contains("hostname: sharefile\n"), "{yaml}");
+    assert!(yaml.contains("- tailscale-state:/var/lib/tailscale\n"));
+    assert!(yaml.contains("/dev/net/tun:/dev/net/tun"));
+    assert!(!yaml.contains("TS_AUTHKEY"));
+}
+
+#[test]
+fn a_raw_node_puts_its_service_in_the_network_namespace_of_the_sidecar() {
+    let yaml = raw_spec().render(KeyUse::Fresh);
+    let yaml = yaml.compose().as_str();
+    let joined =
+        "  sharefile:\n    network_mode: service:tailscale\n    depends_on:\n      - tailscale\n";
+    assert!(yaml.contains(joined), "{yaml}");
+    assert!(yaml.contains("TS_AUTHKEY: \"${AEGIS_TS_AUTHKEY}\""));
+}
+
+#[test]
+fn the_raw_override_is_plain_yaml_with_only_the_state_volume() {
+    let yaml = raw_spec().render(KeyUse::Fresh);
+    let yaml = yaml.compose().as_str();
+    assert!(yaml.ends_with("volumes:\n  tailscale-state:\n"), "{yaml}");
+    assert!(!yaml.contains('!') && !yaml.contains('&') && !yaml.contains('*'));
+}
+
+#[test]
+fn the_exposure_of_a_policy_with_a_node_is_raw() {
+    let node = Node::new(ServiceName::new("sharefile").unwrap());
+    let policy = aegis_domain::StackPolicy::default().with_node(node.clone());
+    let exposure = Exposure::of(&policy).unwrap();
+    assert_eq!(exposure.serving(), &aegis_application::Serving::Raw(node));
+    assert_eq!(exposure.node().unwrap().as_str(), "sharefile");
 }

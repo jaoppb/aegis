@@ -49,8 +49,8 @@ pub use removal::{NodeDeleter, Projects, Purger, Refusal, SafePath, Teardown};
 pub use secrets::{DecryptError, SecretDecryptor, SecretStore, Slot, StoreError};
 pub use sidecar::{
     Caddyfile, Exposure, KEY_VARIABLE, KeyUse, OverrideYaml, RenderedSidecar, STATE_DIRECTORY,
-    STATE_FILE, STATE_VOLUME, SidecarSpec, TAILSCALE_IMAGE, is_sidecar_service, is_sidecar_volume,
-    state_volume_of,
+    STATE_FILE, STATE_VOLUME, Serving, SidecarSpec, TAILSCALE_IMAGE, is_sidecar_service,
+    is_sidecar_volume, state_volume_of,
 };
 pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
 pub use tailnet::{

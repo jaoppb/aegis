@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use aegis_adapters::{FsRepo, SerdeStackParser, SopsCheck};
 use aegis_application::{
     Checkout, ComposeError, ComposeRunner, DeployRequest, GitError, Reason, Reconcile,
-    ReconcileError, ReconcilePorts, Reconciler, Repository,
+    ReconcileError, ReconcilePorts, Reconciler, Repository, Serving,
 };
 use aegis_domain::{
     CommitSha, Deployment, HostName, Report, ReservedStacks, ServiceName, StackName, StackReport,
@@ -341,8 +341,11 @@ fn a_stack_that_exposes_a_service_is_deployed_with_its_exposure() {
         .find(|request| request.target().project().as_str() == "aegis-exposed")
         .unwrap();
     let exposure = exposed.target().exposure().unwrap();
-    assert_eq!(exposure.expose().service().as_str(), "vault");
-    assert_eq!(exposure.expose().port().get(), 80);
+    let Serving::Https(expose) = exposure.serving() else {
+        panic!("expected an HTTPS exposure");
+    };
+    assert_eq!(expose.service().as_str(), "vault");
+    assert_eq!(expose.port().get(), 80);
     assert_eq!(exposure.tags().as_slice()[0].as_str(), "tag:app");
 }
 
