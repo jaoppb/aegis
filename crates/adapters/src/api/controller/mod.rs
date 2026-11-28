@@ -241,8 +241,9 @@ async fn poll_call(shared: Arc<Shared>, host: HostName, request: ReconcileReques
     }
 }
 
-/// Start the call to `host` unless one is already running or the host has no agent. A call for an
-/// older commit that is still running holds the host back until it ends.
+/// Start the call to `host` in a task of its own. The task does nothing when the host has no agent
+/// or a call to it is already running (see [`ask`]), so a call for an older commit that is still
+/// running holds the host back until it ends.
 fn launch(shared: &Arc<Shared>, host: &HostName, commit: &CommitSha) {
     let request = ReconcileRequest::new(commit.as_str());
     drop(tokio::spawn(poll_call(
