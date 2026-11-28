@@ -160,6 +160,11 @@ pub enum Problem {
         /// The service, `tailscale` or `caddy`.
         service: ServiceName,
     },
+    /// A stack that exposes a service declares a volume Aegis injects itself.
+    ReservedSidecarVolume {
+        /// The volume, which Compose would merge into the injected one.
+        volume: VolumeName,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -221,6 +226,9 @@ fn describe_exposure(problem: &Problem) -> String {
         }
         Problem::ReservedSidecarService { service } => format!(
             "service `{service}` is injected by Aegis when the stack exposes a service: rename it or remove the exposure"
+        ),
+        Problem::ReservedSidecarVolume { volume } => format!(
+            "volume `{volume}` is injected by Aegis when the stack exposes a service: rename it or remove the exposure"
         ),
         other => format!("{other:?}"),
     }
@@ -344,8 +352,17 @@ mod tests {
             },
             Problem::NotEncrypted { path: path() },
             Problem::UnvalidatedInclude { path: path() },
+        ]
+    }
+
+    fn exposure_problems() -> Vec<Problem> {
+        let service = || ServiceName::new("s").unwrap();
+        vec![
             Problem::UnknownExposedService { service: service() },
             Problem::ReservedSidecarService { service: service() },
+            Problem::ReservedSidecarVolume {
+                volume: VolumeName::new("v").unwrap(),
+            },
         ]
     }
 
@@ -370,7 +387,13 @@ mod tests {
 
     #[test]
     fn every_problem_has_a_message() {
-        let all = [load_problems(), rule_problems(), build_problems()].concat();
+        let all = [
+            load_problems(),
+            rule_problems(),
+            build_problems(),
+            exposure_problems(),
+        ]
+        .concat();
         assert!(all.iter().all(described), "{all:?}");
     }
 }

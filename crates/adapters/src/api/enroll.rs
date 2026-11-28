@@ -51,12 +51,11 @@ fn refuse(status: StatusCode, reason: &impl std::fmt::Display) -> Refusal {
 
 const fn status_of(error: &EnrollError) -> StatusCode {
     match error {
-        EnrollError::Tags(TagError::Empty) | EnrollError::Node(_) => StatusCode::BAD_REQUEST,
+        EnrollError::Tags(TagError::Empty) => StatusCode::BAD_REQUEST,
         EnrollError::Tags(_) => StatusCode::FORBIDDEN,
-        EnrollError::State(_)
-        | EnrollError::Mint(_)
-        | EnrollError::Tailnet(_)
-        | EnrollError::Controller(_) => StatusCode::BAD_GATEWAY,
+        EnrollError::Mint(_) | EnrollError::Tailnet(_) | EnrollError::Controller(_) => {
+            StatusCode::BAD_GATEWAY
+        }
     }
 }
 
@@ -135,7 +134,11 @@ fn controller_failure(error: &ClientError) -> EnrollError {
 }
 
 fn grant_of(response: &EnrollResponse) -> Result<Grant, EnrollError> {
-    let tailnet = aegis_domain::TailnetName::new(response.tailnet()).map_err(EnrollError::Node)?;
+    let tailnet = aegis_domain::TailnetName::new(response.tailnet()).map_err(|_| {
+        EnrollError::Controller(aegis_application::Reason::new(
+            &"the controller sent an invalid tailnet name",
+        ))
+    })?;
     let enrolled = response.key().map_or(Enrolled::AlreadyEnrolled, |key| {
         Enrolled::Minted(aegis_application::AuthKey::new(key))
     });
@@ -188,13 +191,9 @@ pub fn enroll_routes_from_env() -> Result<Router, ServeError> {
         ClientSecret::new(required(CLIENT_SECRET_VAR)?),
     );
     let allowed = allowed_tags(&required(TAGS_VAR)?)?;
-    let names = TailscaleApi::new(credentials.clone()).map_err(|error| ServeError::Invalid {
+    let api = TailscaleApi::new(credentials).map_err(|error| ServeError::Invalid {
         variable: CLIENT_ID_VAR,
         cause: error.to_string(),
     })?;
-    let minter = TailscaleApi::new(credentials).map_err(|error| ServeError::Invalid {
-        variable: CLIENT_ID_VAR,
-        cause: error.to_string(),
-    })?;
-    Ok(enroll_routes(Enroller::new(names, minter, allowed)))
+    Ok(enroll_routes(Enroller::new(api.clone(), api, allowed)))
 }

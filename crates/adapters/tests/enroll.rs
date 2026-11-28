@@ -1,11 +1,11 @@
 //! An agent asks a controller to enrol a sidecar node: both sides on real sockets, the controller
-//! talking to a fake Tailscale API.
+//! behind its tag check and talking to a fake Tailscale API.
 
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use aegis_adapters::BaseUrl;
-use aegis_adapters::api::{ApiClient, ControllerDesk, enroll_routes, serve_agent};
+use aegis_adapters::api::{ApiClient, ControllerDesk, enroll_routes, serve_controller};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
 use aegis_application::{
     EnrollError, Enrolled, Enroller, EnrollmentRequest, PeerAddress, SidecarEnroller, StateVolume,
@@ -13,26 +13,41 @@ use aegis_application::{
 };
 use aegis_domain::{NodeLabel, PeerIdentity, TailnetTag, TailnetTags};
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+const AGENT: &str = "tag:aegis-agent";
+
+/// Resolves every peer to one fixed tag, or to none.
 #[cfg(test)]
-struct Agent;
+struct Peer(Option<&'static str>);
 
 #[cfg(test)]
-impl WhoIs for Agent {
+impl WhoIs for Peer {
     fn identify(
         &self,
         _peer: &PeerAddress,
     ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
-        let tag = TailnetTag::new("tag:aegis-controller").unwrap();
-        ready(Ok(PeerIdentity::new(std::iter::once(tag).collect())))
+        let tags = self.0.map(|name| TailnetTag::new(name).unwrap());
+        ready(Ok(PeerIdentity::new(tags.into_iter().collect())))
     }
 }
 
+#[cfg(test)]
 type Log = Arc<Mutex<Vec<String>>>;
+
+/// What the fake Tailscale API refuses.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+enum Failing {
+    Nothing,
+    Devices,
+    Keys,
+}
 
 #[cfg(test)]
 async fn serve(app: Router) -> BaseUrl {
@@ -42,30 +57,49 @@ async fn serve(app: Router) -> BaseUrl {
     base
 }
 
-/// A fake Tailscale API that counts the keys it mints.
 #[cfg(test)]
-async fn fake_tailscale(log: Log) -> BaseUrl {
-    let token = |State(log): State<Log>| async move {
-        log.lock().unwrap().push("token".to_owned());
-        Json(json!({ "access_token": "t" }))
-    };
-    let keys = |State(log): State<Log>, Json(body): Json<Value>| async move {
-        log.lock().unwrap().push(format!(
-            "key {}",
-            body["capabilities"]["devices"]["create"]["tags"]
-        ));
-        Json(json!({ "key": "tskey-auth-minted" }))
-    };
-    let devices = || async {
-        Json(
-            json!({ "devices": [{ "id": "1", "hostname": "ctl", "name": "ctl.taildfab0.ts.net" }] }),
-        )
-    };
+#[derive(Clone)]
+struct Upstream {
+    log: Log,
+    failing: Failing,
+}
+
+#[cfg(test)]
+async fn token(State(upstream): State<Upstream>) -> Json<Value> {
+    upstream.log.lock().unwrap().push("token".to_owned());
+    Json(json!({ "access_token": "t" }))
+}
+
+#[cfg(test)]
+async fn keys(
+    State(upstream): State<Upstream>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    let tags = &body["capabilities"]["devices"]["create"]["tags"];
+    upstream.log.lock().unwrap().push(format!("key {tags}"));
+    if upstream.failing == Failing::Keys {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    Json(json!({ "key": "tskey-auth-minted" })).into_response()
+}
+
+#[cfg(test)]
+async fn devices(State(upstream): State<Upstream>) -> axum::response::Response {
+    if upstream.failing == Failing::Devices {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let device = json!({ "id": "1", "hostname": "ctl", "name": "ctl.taildfab0.ts.net" });
+    Json(json!({ "devices": [device] })).into_response()
+}
+
+/// A fake Tailscale API that logs what it is asked.
+#[cfg(test)]
+async fn fake_tailscale(upstream: Upstream) -> BaseUrl {
     let app = Router::new()
         .route("/api/v2/oauth/token", post(token))
         .route("/api/v2/tailnet/-/keys", post(keys))
         .route("/api/v2/tailnet/-/devices", get(devices))
-        .with_state(log);
+        .with_state(upstream);
     serve(app).await
 }
 
@@ -77,17 +111,33 @@ fn tags(names: &[&str]) -> TailnetTags {
         .collect()
 }
 
+/// A controller whose peers are all tagged `peer`, and the log of the Tailscale API behind it.
 #[cfg(test)]
-async fn desk(log: Log) -> ControllerDesk {
-    let upstream = fake_tailscale(log).await;
+struct Served {
+    base: BaseUrl,
+    root: String,
+    log: Log,
+}
+
+#[cfg(test)]
+async fn controller(peer: Option<&'static str>, failing: Failing) -> Served {
+    let log = Log::default();
+    let upstream = Upstream {
+        log: log.clone(),
+        failing,
+    };
     let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
-    let api = TailscaleApi::with_base(upstream, credentials).unwrap();
+    let api = TailscaleApi::with_base(fake_tailscale(upstream).await, credentials).unwrap();
     let enroller = Enroller::new(api.clone(), api, tags(&["tag:app"]));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
-    let routes = enroll_routes(enroller);
-    tokio::spawn(serve_agent(listener, Agent, routes));
-    ControllerDesk::new(ApiClient::new(base).unwrap())
+    let root = format!("http://{}", listener.local_addr().unwrap());
+    let base = BaseUrl::new(root.clone());
+    tokio::spawn(serve_controller(
+        listener,
+        Peer(peer),
+        enroll_routes(enroller),
+    ));
+    Served { base, root, log }
 }
 
 #[cfg(test)]
@@ -95,15 +145,50 @@ fn request(state: StateVolume, wanted: &[&str]) -> EnrollmentRequest {
     EnrollmentRequest::new(NodeLabel::new("vaultwarden").unwrap(), tags(wanted), state)
 }
 
+#[cfg(test)]
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+#[cfg(test)]
+fn minted_keys(log: &Log) -> usize {
+    let lines = log.lock().unwrap();
+    lines.iter().filter(|line| line.starts_with("key")).count()
+}
+
+/// The status the controller answers a raw body with.
+#[cfg(test)]
+async fn post_status(
+    peer: Option<&'static str>,
+    failing: Failing,
+    body: &str,
+) -> (StatusCode, Log) {
+    let served = controller(peer, failing).await;
+    let client = reqwest::Client::new();
+    let call = client.post(format!("{}/v1/enroll", served.root));
+    let answer = call
+        .header("content-type", "application/json")
+        .body(body.to_owned())
+        .send()
+        .await
+        .unwrap();
+    (answer.status(), served.log)
+}
+
+#[cfg(test)]
+const VALID: &str = r#"{"hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}"#;
+
 #[test]
 fn a_new_node_is_enrolled_with_a_key_and_the_tailnet_name() {
     runtime().block_on(async {
-        let log = Log::default();
-        let desk = desk(log.clone()).await;
-        let grant = desk
-            .enroll(&request(StateVolume::Empty, &["tag:app"]))
-            .await
-            .unwrap();
+        let served = controller(Some(AGENT), Failing::Nothing).await;
+        let log = served.log.clone();
+        let desk = ControllerDesk::new(ApiClient::new(served.base).unwrap());
+        let asked = request(StateVolume::Empty, &["tag:app"]);
+        let grant = desk.enroll(&asked).await.unwrap();
         assert_eq!(grant.tailnet().as_str(), "taildfab0.ts.net");
         assert!(
             matches!(grant.enrolled(), Enrolled::Minted(key) if key.expose() == "tskey-auth-minted")
@@ -120,61 +205,81 @@ fn a_new_node_is_enrolled_with_a_key_and_the_tailnet_name() {
 #[test]
 fn a_redeploy_keeps_the_node_and_mints_no_second_key() {
     runtime().block_on(async {
-        let log = Log::default();
-        let desk = desk(log.clone()).await;
-        desk.enroll(&request(StateVolume::Empty, &["tag:app"]))
-            .await
-            .unwrap();
-        let again = desk
-            .enroll(&request(StateVolume::Populated, &["tag:app"]))
-            .await
-            .unwrap();
-        assert_eq!(again.enrolled(), &Enrolled::AlreadyEnrolled);
-        assert_eq!(again.tailnet().as_str(), "taildfab0.ts.net");
-        let keys = log
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|line| line.starts_with("key"))
-            .count();
-        assert_eq!(keys, 1);
+        let served = controller(Some(AGENT), Failing::Nothing).await;
+        let log = served.log.clone();
+        let desk = ControllerDesk::new(ApiClient::new(served.base).unwrap());
+        let first = request(StateVolume::Empty, &["tag:app"]);
+        desk.enroll(&first).await.unwrap();
+        let again = request(StateVolume::Populated, &["tag:app"]);
+        let grant = desk.enroll(&again).await.unwrap();
+        assert_eq!(grant.enrolled(), &Enrolled::AlreadyEnrolled);
+        assert_eq!(grant.tailnet().as_str(), "taildfab0.ts.net");
+        assert_eq!(minted_keys(&log), 1);
     });
 }
 
 #[test]
 fn a_tag_the_controller_does_not_allow_is_refused_and_mints_nothing() {
     runtime().block_on(async {
-        let log = Log::default();
-        let desk = desk(log.clone()).await;
-        let result = desk
-            .enroll(&request(StateVolume::Empty, &["tag:admin"]))
-            .await;
-        assert!(
-            matches!(result, Err(EnrollError::Controller(_))),
-            "{result:?}"
-        );
-        assert!(
-            log.lock()
-                .unwrap()
-                .iter()
-                .all(|line| !line.starts_with("key"))
-        );
+        let (status, log) = post_status(
+            Some(AGENT),
+            Failing::Nothing,
+            r#"{"hostname":"v","tags":["tag:admin"],"state":"empty"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(minted_keys(&log), 0);
     });
 }
 
 #[test]
-fn a_node_without_a_tag_is_refused() {
+fn a_node_without_a_tag_or_with_a_bad_name_is_a_bad_request() {
     runtime().block_on(async {
-        let desk = desk(Log::default()).await;
-        let result = desk.enroll(&request(StateVolume::Empty, &[])).await;
-        assert!(matches!(result, Err(EnrollError::Controller(_))));
+        let none = r#"{"hostname":"v","tags":[],"state":"empty"}"#;
+        let (empty, _) = post_status(Some(AGENT), Failing::Nothing, none).await;
+        let bad_host = r#"{"hostname":"Not_A_Host","tags":["tag:app"],"state":"empty"}"#;
+        let (host, _) = post_status(Some(AGENT), Failing::Nothing, bad_host).await;
+        let bad_tag = r#"{"hostname":"v","tags":["app"],"state":"empty"}"#;
+        let (tag, _) = post_status(Some(AGENT), Failing::Nothing, bad_tag).await;
+        assert_eq!([empty, host, tag], [StatusCode::BAD_REQUEST; 3]);
     });
 }
 
-#[cfg(test)]
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
+#[test]
+fn a_tailscale_failure_is_a_bad_gateway() {
+    runtime().block_on(async {
+        let (devices, _) = post_status(Some(AGENT), Failing::Devices, VALID).await;
+        let (keys, log) = post_status(Some(AGENT), Failing::Keys, VALID).await;
+        assert_eq!([devices, keys], [StatusCode::BAD_GATEWAY; 2]);
+        assert_eq!(minted_keys(&log), 1);
+    });
+}
+
+#[test]
+fn only_an_agent_may_enrol_a_node() {
+    runtime().block_on(async {
+        let (untagged, log) = post_status(None, Failing::Nothing, VALID).await;
+        let (controller_peer, _) =
+            post_status(Some("tag:aegis-controller"), Failing::Nothing, VALID).await;
+        let (stranger, _) = post_status(Some("tag:other"), Failing::Nothing, VALID).await;
+        let (agent, _) = post_status(Some(AGENT), Failing::Nothing, VALID).await;
+        assert_eq!(
+            [untagged, controller_peer, stranger],
+            [StatusCode::FORBIDDEN; 3]
+        );
+        assert_eq!(agent, StatusCode::OK);
+        assert_eq!(minted_keys(&log), 0);
+    });
+}
+
+#[test]
+fn a_controller_that_cannot_be_reached_is_a_controller_error() {
+    runtime().block_on(async {
+        let base = BaseUrl::new("http://127.0.0.1:1");
+        let desk = ControllerDesk::new(ApiClient::new(base).unwrap());
+        let result = desk
+            .enroll(&request(StateVolume::Empty, &["tag:app"]))
+            .await;
+        assert!(matches!(result, Err(EnrollError::Controller(_))));
+    });
 }

@@ -14,13 +14,18 @@ use aegis_domain::{NodeLabel, TailnetName, TailnetTag, TailnetTags};
 #[cfg(test)]
 struct Names {
     calls: AtomicUsize,
+    /// How many of the first calls fail.
+    failures: usize,
 }
 
 #[cfg(test)]
 impl TailnetNames for &Names {
     fn tailnet(&self) -> impl Future<Output = Result<TailnetName, TailnetError>> + Send {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        ready(Ok(TailnetName::new("taildfab0.ts.net").unwrap()))
+        let before = self.calls.fetch_add(1, Ordering::SeqCst);
+        let name = TailnetName::new("taildfab0.ts.net").unwrap();
+        let failed = TailnetError::Unavailable(aegis_application::Reason::new(&"down"));
+        let answer = (before >= self.failures).then_some(name).ok_or(failed);
+        ready(answer)
     }
 }
 
@@ -113,5 +118,53 @@ fn an_aegis_role_tag_is_refused_even_when_allowed() {
         result,
         Err(EnrollError::Tags(TagError::Reserved(_)))
     ));
+    assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(test)]
+struct Refusing;
+
+#[cfg(test)]
+impl KeyMinter for &Refusing {
+    fn mint(
+        &self,
+        _tags: &TailnetTags,
+    ) -> impl Future<Output = Result<AuthKey, TailnetError>> + Send {
+        ready(Err(TailnetError::Rejected(aegis_application::Reason::new(
+            &"403",
+        ))))
+    }
+}
+
+#[test]
+fn a_failed_discovery_mints_nothing_and_is_not_remembered() {
+    let names = Names {
+        failures: 1,
+        ..Names::default()
+    };
+    let minter = Minter::default();
+    let enroller = Enroller::new(&names, &minter, tags(&["tag:app"]));
+    let asked = request(StateVolume::Empty, &["tag:app"]);
+    let failed = block_on(enroller.enroll(&asked));
+    assert!(matches!(failed, Err(EnrollError::Tailnet(_))));
+    assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
+    assert!(block_on(enroller.enroll(&asked)).is_ok());
+    assert_eq!(names.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_failed_mint_is_reported() {
+    let names = Names::default();
+    let enroller = Enroller::new(&names, &Refusing, tags(&["tag:app"]));
+    let result = block_on(enroller.enroll(&request(StateVolume::Empty, &["tag:app"])));
+    assert!(matches!(result, Err(EnrollError::Mint(_))));
+}
+
+#[test]
+fn a_node_without_tags_is_refused() {
+    let (names, minter) = (Names::default(), Minter::default());
+    let enroller = Enroller::new(&names, &minter, tags(&["tag:app"]));
+    let result = block_on(enroller.enroll(&request(StateVolume::Empty, &[])));
+    assert_eq!(result, Err(EnrollError::Tags(TagError::Empty)));
     assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
 }

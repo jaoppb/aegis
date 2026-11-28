@@ -1,19 +1,21 @@
 //! The sidecar decorator around a compose runner: the real tmpfs store, a fake state probe, a fake
 //! controller and a fake runner that reads what Compose would see while it runs.
 
+use std::collections::BTreeMap;
 use std::future::{Future, ready};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use aegis_adapters::allowlist;
-use aegis_adapters::{SidecarCompose, SidecarPorts, TmpfsStore};
+use aegis_adapters::{DecryptingCompose, SecretPorts, SidecarCompose, SidecarPorts, TmpfsStore};
 use aegis_application::{
-    AuthKey, BuiltServices, ComposeError, ComposeRunner, DeployRequest, EnrollError, Enrolled,
-    EnrollmentRequest, Exposure, Grant, Reason, SidecarEnroller, StateProbe, StateVolume, Target,
+    AuthKey, BuiltServices, ComposeError, ComposeRunner, DecryptError, DeployRequest, EnrollError,
+    Enrolled, EnrollmentRequest, Environment, Exposure, ExtraFiles, Extras, Grant, Reason,
+    SecretDecryptor, SidecarEnroller, StateProbe, StateVolume, Target,
 };
 use aegis_domain::{
-    CommitSha, Expose, Port, ProjectName, RepoPath, ServiceName, StackName, TailnetName,
-    TailnetTag, TailnetTags,
+    CommitSha, Expose, HostPath, Port, ProjectName, RepoPath, Secret, ServiceName, StackName,
+    TailnetName, TailnetTag, TailnetTags,
 };
 use serde_norway::Value;
 
@@ -60,6 +62,8 @@ impl SidecarEnroller for Desk {
 struct Seen {
     override_text: String,
     key_variable: Option<String>,
+    other_variable: Option<String>,
+    dotenv: Option<String>,
     files: Vec<PathBuf>,
 }
 
@@ -82,9 +86,13 @@ impl ComposeRunner for Runner {
         let text = read_all(&files).await;
         let variables = request.extras().environment().variables();
         let key_variable = variables.get("AEGIS_TS_AUTHKEY").cloned();
+        let other_variable = variables.get("KEPT").cloned();
+        let dotenv = request.extras().dotenv().map(ToString::to_string);
         let seen = Seen {
             override_text: text,
             key_variable,
+            other_variable,
+            dotenv,
             files,
         };
         self.seen.lock().unwrap().push(seen);
@@ -322,4 +330,65 @@ fn runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .unwrap()
+}
+
+#[cfg(test)]
+struct NothingToDecrypt;
+
+#[cfg(test)]
+impl SecretDecryptor for NothingToDecrypt {
+    fn decrypt(
+        &self,
+        _file: &HostPath,
+    ) -> impl Future<Output = Result<Secret, DecryptError>> + Send {
+        ready(Err(DecryptError::Missing))
+    }
+}
+
+#[test]
+fn extras_already_on_the_request_survive_next_to_the_override_and_the_key() {
+    runtime().block_on(async {
+        let rig = harness("extras", Ok(StateVolume::Empty), Ok(minted()));
+        let path = std::env::temp_dir().join(format!("aegis-kept-{}.yaml", std::process::id()));
+        tokio::fs::write(&path, "kept: true\n").await.unwrap();
+        let kept = HostPath::new(path.to_string_lossy()).unwrap();
+        let variables = BTreeMap::from([("KEPT".to_owned(), "yes".to_owned())]);
+        let extras = Extras::new(ExtraFiles::new(vec![kept]), Environment::new(variables))
+            .with_dotenv(HostPath::new("/srv/.env").unwrap());
+        let asked = request(Some(exposure())).with_extras(extras);
+        rig.compose.converge(&asked).await.unwrap();
+        let seen = rig.seen.lock().unwrap().clone();
+        assert!(seen[0].override_text.starts_with("kept: true"));
+        assert!(seen[0].override_text.contains("TS_HOSTNAME: vaultwarden"));
+        assert_eq!(seen[0].other_variable.as_deref(), Some("yes"));
+        assert_eq!(seen[0].key_variable.as_deref(), Some(KEY));
+        assert_eq!(seen[0].dotenv.as_deref(), Some("/srv/.env"));
+        assert_eq!(seen[0].files.len(), 2);
+        assert!(seen[0].files[1].ends_with("sidecar.yaml"));
+        tokio::fs::remove_file(path).await.unwrap();
+    });
+}
+
+#[test]
+fn the_sidecar_runs_over_the_decrypting_runner_and_both_clean_up() {
+    runtime().block_on(async {
+        let rig = harness("layered", Ok(StateVolume::Empty), Ok(minted()));
+        let inner = Runner {
+            failure: None,
+            seen: rig.seen.clone(),
+        };
+        let secrets = SecretPorts::new(NothingToDecrypt, rig.store.clone());
+        let decrypting = DecryptingCompose::new(inner, secrets, "/srv/checkout");
+        let desk = Desk {
+            answer: Ok(minted()),
+            asked: rig.asked.clone(),
+        };
+        let ports = SidecarPorts::new(Probe(Ok(StateVolume::Empty)), desk, rig.store.clone());
+        let layered = SidecarCompose::new(decrypting, ports);
+        layered.converge(&request(Some(exposure()))).await.unwrap();
+        let seen = rig.seen.lock().unwrap().clone();
+        assert_eq!(seen[0].key_variable.as_deref(), Some(KEY));
+        assert!(seen[0].override_text.contains("TS_HOSTNAME: vaultwarden"));
+        assert!(workspace_is_gone(&seen[0].files).await);
+    });
 }

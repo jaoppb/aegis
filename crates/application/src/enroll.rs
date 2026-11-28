@@ -4,11 +4,11 @@
 use std::future::Future;
 use std::sync::OnceLock;
 
-use aegis_domain::{HostName, NodeLabel, ProjectName, TailnetName, TailnetTag, TailnetTags};
+use aegis_domain::{NodeLabel, ProjectName, TailnetName, TailnetTag, TailnetTags};
 
 use crate::source::Reason;
 use crate::tailnet::{
-    EnrollError, Enrolled, Enrollment, KeyMinter, SidecarState, StateVolume, TagError, TailnetError,
+    EnrollError, Enrolled, Enrollment, KeyMinter, StateVolume, TagError, TailnetError,
 };
 
 /// What an agent asks the controller for a sidecar's node.
@@ -108,22 +108,12 @@ pub trait TailnetNames {
     fn tailnet(&self) -> impl Future<Output = Result<TailnetName, TailnetError>> + Send;
 }
 
-/// The state an agent reported, as [`Enrollment`] reads it.
-#[derive(Debug, Clone, Copy)]
-struct Reported(StateVolume);
-
-impl SidecarState for Reported {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
-        std::future::ready(Ok(self.0))
-    }
-}
-
 /// The controller's use case: discovers the tailnet and mints a key for a node that has none yet,
 /// for the tags the operator allows.
 #[derive(Debug)]
 pub struct Enroller<Names, Minter> {
     names: Names,
-    minter: Minter,
+    enrollment: Enrollment<Minter>,
     allowed: TailnetTags,
     tailnet: OnceLock<TailnetName>,
 }
@@ -135,7 +125,7 @@ impl<Names, Minter> Enroller<Names, Minter> {
     pub const fn new(names: Names, minter: Minter, allowed: TailnetTags) -> Self {
         Self {
             names,
-            minter,
+            enrollment: Enrollment::new(minter),
             allowed,
             tailnet: OnceLock::new(),
         }
@@ -170,10 +160,11 @@ impl<Names: TailnetNames + Sync, Minter: KeyMinter + Sync> SidecarEnroller
 {
     async fn enroll(&self, request: &EnrollmentRequest) -> Result<Grant, EnrollError> {
         self.check_allowed(request.tags())?;
-        let node = HostName::new(request.node().as_str()).map_err(EnrollError::Node)?;
         let tailnet = self.discover().await?;
-        let enrollment = Enrollment::new(Reported(request.state()), &self.minter);
-        let enrolled = enrollment.enroll(&node, request.tags()).await?;
+        let enrolled = self
+            .enrollment
+            .enroll(request.tags(), request.state())
+            .await?;
         Ok(Grant::new(tailnet, enrolled))
     }
 }

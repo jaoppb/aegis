@@ -346,10 +346,19 @@ fn an_escaping_context_and_dockerfile_report_one_violation() {
 
 #[cfg(test)]
 fn exposing(service_names: &[&str], exposed: &str) -> Vec<Problem> {
+    exposing_with(service_names, exposed, &[])
+}
+
+#[cfg(test)]
+fn exposing_with(service_names: &[&str], exposed: &str, volumes: &[&str]) -> Vec<Problem> {
     let names = service_names
         .iter()
         .map(|name| Service::new(ServiceName::new(*name).unwrap(), ServiceSource::default()));
-    let compose = ComposeSummary::new(Services::new(names.collect()), Volumes::default());
+    let declared = volumes.iter().map(|name| VolumeName::new(*name).unwrap());
+    let compose = ComposeSummary::new(
+        Services::new(names.collect()),
+        Volumes::new(declared.collect()),
+    );
     let expose = Expose::new(ServiceName::new(exposed).unwrap(), Port::new(80).unwrap());
     let policy = StackPolicy::new(Some(expose), TailnetTags::default(), StackState::Active);
     let definition = StackDefinition::new(policy, ComposeSource::new("a\nb\n"), compose);
@@ -397,4 +406,19 @@ fn a_stack_without_exposure_may_define_a_service_called_caddy() {
     .unwrap();
     let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
     assert!(validated.rejected().is_empty());
+}
+
+#[test]
+fn a_stack_that_exposes_a_service_may_not_declare_the_sidecar_volumes() {
+    let found = exposing_with(
+        &["web"],
+        "web",
+        &["tailscale-state", "tailscale-socket", "data"],
+    );
+    assert_eq!(found.len(), 2);
+    assert!(
+        found
+            .iter()
+            .all(|problem| matches!(problem, Problem::ReservedSidecarVolume { .. }))
+    );
 }

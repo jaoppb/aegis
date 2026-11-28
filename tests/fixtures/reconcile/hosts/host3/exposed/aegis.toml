@@ -1,0 +1,5 @@
+tailnet_tags = ["tag:app"]
+
+[expose]
+service = "vault"
+port = 80

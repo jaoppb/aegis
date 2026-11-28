@@ -17,6 +17,12 @@ pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.80.2";
 /// The image of the reverse proxy.
 const CADDY_IMAGE: &str = "caddy:2.9.1";
 
+/// The compose service that runs tailscale.
+pub const TAILSCALE_SERVICE: &str = "tailscale";
+
+/// The compose service that runs the reverse proxy.
+pub const CADDY_SERVICE: &str = "caddy";
+
 /// The compose name of the volume that keeps the node identity. Compose prefixes it with the
 /// project name.
 pub const STATE_VOLUME: &str = "tailscale-state";
@@ -26,6 +32,18 @@ pub const STATE_FILE: &str = "tailscaled.state";
 
 /// The directory of the state volume inside the sidecar.
 pub const STATE_DIRECTORY: &str = "/var/lib/tailscale";
+
+/// Whether `name` is a compose service Aegis injects for an exposed stack.
+#[must_use]
+pub fn is_sidecar_service(name: &str) -> bool {
+    name == TAILSCALE_SERVICE || name == CADDY_SERVICE
+}
+
+/// Whether `name` is a compose volume Aegis injects for an exposed stack.
+#[must_use]
+pub fn is_sidecar_volume(name: &str) -> bool {
+    name == STATE_VOLUME || name == SOCKET_VOLUME
+}
 
 /// The Compose volume of `project` that keeps the identity of its tailnet node.
 #[must_use]
@@ -188,7 +206,7 @@ impl SidecarSpec {
 
     fn compose_text(&self, key: KeyUse, caddyfile: &Caddyfile) -> String {
         let services = [self.tailscale_service(key), caddy_service()].concat();
-        format!("services:\n{services}{}{VOLUMES}", config(caddyfile))
+        format!("services:\n{services}{}{}", config(caddyfile), volumes())
     }
 
     fn tailscale_service(&self, key: KeyUse) -> String {
@@ -198,7 +216,7 @@ impl SidecarSpec {
             KeyUse::Reused => String::new(),
         };
         format!(
-            "  tailscale:
+            "  {TAILSCALE_SERVICE}:
     image: {TAILSCALE_IMAGE}
     hostname: {node}
     restart: unless-stopped
@@ -217,7 +235,8 @@ impl SidecarSpec {
 /// The directory of the tailscale socket, shared with Caddy.
 const SOCKET_DIRECTORY: &str = "/var/run/tailscale";
 
-const SOCKET_VOLUME: &str = "tailscale-socket";
+/// The compose name of the volume that holds the tailscale socket, shared with Caddy.
+pub const SOCKET_VOLUME: &str = "tailscale-socket";
 
 /// Caddy listens on the tailnet address, so the sidecar needs the TUN device and `NET_ADMIN`
 /// (the incumbent hand-written sidecar does too). The override is generated from typed values and
@@ -228,19 +247,18 @@ const TUN_ACCESS: &str = "    devices:
       - net_admin
 ";
 
-const VOLUMES: &str = "volumes:
-  tailscale-state:
-  tailscale-socket:
-";
+fn volumes() -> String {
+    format!("volumes:\n  {STATE_VOLUME}:\n  {SOCKET_VOLUME}:\n")
+}
 
 fn caddy_service() -> String {
     format!(
-        "  caddy:
+        "  {CADDY_SERVICE}:
     image: {CADDY_IMAGE}
     restart: unless-stopped
-    network_mode: service:tailscale
+    network_mode: service:{TAILSCALE_SERVICE}
     depends_on:
-      - tailscale
+      - {TAILSCALE_SERVICE}
     volumes:
       - {SOCKET_VOLUME}:{SOCKET_DIRECTORY}:ro
     configs:

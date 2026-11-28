@@ -172,6 +172,23 @@ where
     serve_routes(listener, Guard::new(role, whois), Router::new()).await
 }
 
+/// Serve a controller on `listener`: the health endpoint and the extra `routes`, behind the tag
+/// check that admits only agents.
+///
+/// # Errors
+///
+/// The same as [`serve`].
+pub async fn serve_controller<Lookup>(
+    listener: TcpListener,
+    whois: Lookup,
+    routes: Router,
+) -> Result<(), ServeError>
+where
+    Lookup: WhoIs + Send + Sync + 'static,
+{
+    serve_routes(listener, Guard::new(Role::Controller, whois), routes).await
+}
+
 /// Who a server is and how it resolves its peers.
 pub(super) struct Guard<Lookup> {
     role: Role,
@@ -221,22 +238,15 @@ pub(super) fn listen_from(variable: Result<String, VarError>) -> Result<ListenAd
     Ok(text.parse()?)
 }
 
-/// Run a server with `role` on its own runtime until it fails, listening on the address in
-/// `AEGIS_LISTEN`. It resolves peers with the `tailscale` CLI and admits only the other side's tag.
+/// Run a server with `role` and the `extra` routes on its own runtime until it fails.
+///
+/// It listens on the address in `AEGIS_LISTEN`, resolves peers with the `tailscale` CLI and
+/// admits only the other side's tag.
 ///
 /// # Errors
 ///
 /// Returns a [`ServeError`] when `AEGIS_LISTEN` is missing or invalid, the runtime cannot start,
 /// the address cannot be bound or the server fails.
-pub fn serve_from_env(role: Role) -> Result<(), ServeError> {
-    serve_from_env_with(role, Router::new())
-}
-
-/// Like [`serve_from_env`], with the `extra` routes added behind the same tag check.
-///
-/// # Errors
-///
-/// The same as [`serve_from_env`].
 pub fn serve_from_env_with(role: Role, extra: Router) -> Result<(), ServeError> {
     let listen = listen_from(std::env::var(LISTEN_VAR))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
