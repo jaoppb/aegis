@@ -13,6 +13,8 @@ pre-push:
   jobs:
     - name: check-offline
       run: just check-offline
+    - name: actions-check
+      run: just actions-check
     - name: deny-advisories
       run: just deny-advisories
     - name: issues-check

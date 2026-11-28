@@ -36,10 +36,9 @@ test:
 arch-check:
     cargo test -p aegis-architecture-tests
 
-# Lint the GitHub workflows and release scripts (with their tests) and fail on unpinned or mismatched action references.
+# Lint the GitHub workflows and release scripts (with their tests).
 workflows-check:
     actionlint
-    tools actions check
     shellcheck scripts/*.sh scripts/tests/*.sh
     for t in scripts/tests/*.test.sh; do "$t"; done
 
@@ -54,8 +53,12 @@ deny-advisories:
 # Run every check that needs no network: format, lint, workflow lint, dependency policy, architecture rules and tests.
 check-offline: fmt-check lint workflows-check deny arch-check test
 
-# Run every check: `check-offline` plus the advisory audit.
-check: check-offline deny-advisories
+# Fail on unpinned or mismatched action references (reads action versions through `gh`, so it needs network).
+actions-check:
+    tools actions check
+
+# Run every check: `check-offline` plus the audits that need network.
+check: check-offline actions-check deny-advisories
 
 # Audit the live GitHub repository settings, labels and milestones against tools.toml.
 repo-check:

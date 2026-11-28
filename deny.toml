@@ -1,4 +1,4 @@
-# cargo-deny policy: `just deny` (offline, part of `just check`) and `just deny-advisories` (network).
+# cargo-deny policy: `just deny` (no advisory fetch, part of `just check-offline`) and `just deny-advisories` (network).
 # AGENTS.md section 5 explains each rule.
 
 [graph]

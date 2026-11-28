@@ -3,7 +3,7 @@
 # clone where each case commits Cargo.toml revisions and runs the script.
 set -euo pipefail
 
-# Git hooks (Lefthook's pre-push runs `just check`) export GIT_DIR, GIT_INDEX_FILE and
+# Git hooks (Lefthook's pre-push hook) export GIT_DIR, GIT_INDEX_FILE and
 # friends, which would point every git command below at the repository being pushed.
 # shellcheck disable=SC2046 # word splitting is intended: one name per variable
 unset $(git rev-parse --local-env-vars)
