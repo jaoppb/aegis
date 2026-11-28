@@ -45,7 +45,7 @@ async fn origin_with(name: &str, files: &[(&str, &str)]) -> PathBuf {
     root
 }
 
-/// A hub for the host `h` (whose agent is nowhere) that has loaded `files`, keeping keys within
+/// A hub for the hosts `h` and `g` (whose agents are nowhere) that has loaded `files`, keeping keys within
 /// `limits`.
 ///
 /// # Panics
@@ -57,11 +57,11 @@ pub async fn loaded_hub(name: &str, files: &[(&str, &str)], limits: MintLimits) 
     let remote = Remote::new(root.join("origin").to_str().unwrap(), "trunk").unwrap();
     let repository = Repository::new(FsRepo::new(&work), SerdeStackParser, SopsCheck);
     let poller = Poller::new(GitFollower::new(&work, remote), repository);
-    let nowhere = AgentAddress::new(
-        HostName::new("h").unwrap(),
-        BaseUrl::new("http://127.0.0.1:1"),
-    );
-    let hub = Hub::limited(&[nowhere], limits).unwrap();
+    let nowhere = |name: &str| {
+        let host = HostName::new(name).unwrap();
+        AgentAddress::new(host, BaseUrl::new("http://127.0.0.1:1"))
+    };
+    let hub = Hub::limited(&[nowhere("h"), nowhere("g")], limits).unwrap();
     hub.tick(&poller).await;
     hub
 }

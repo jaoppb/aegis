@@ -38,10 +38,6 @@ where
         .with_state(Arc::new(Gated { enroller, binding }))
 }
 
-fn refuse(status: StatusCode, reason: &impl std::fmt::Display) -> Refusal {
-    Refusal::new(status, reason)
-}
-
 const fn status_of(error: &EnrollError) -> StatusCode {
     match error {
         EnrollError::Tags(TagError::Empty) => StatusCode::BAD_REQUEST,
@@ -100,13 +96,14 @@ where
     Enrol: SidecarEnroller + Send + Sync + 'static,
 {
     let host = gated.binding.host_of(&caller)?;
-    let request = request_of(&request).map_err(|error| refuse(StatusCode::BAD_REQUEST, &error))?;
+    let request =
+        request_of(&request).map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
     gated.binding.admit_enrollment(&host, &request)?;
     let grant = gated
         .enroller
         .enroll(&request)
         .await
-        .map_err(|error| refuse(status_of(&error), &error))?;
+        .map_err(|error| Refusal::new(status_of(&error), &error))?;
     Ok(Json(response_of(&grant)))
 }
 

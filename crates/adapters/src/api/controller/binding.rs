@@ -7,9 +7,9 @@ use std::time::Instant;
 use aegis_api::version_1::RefusalReason;
 use aegis_application::{
     Caller, EnrollmentRequest, Exceeded, Goal, Minting, Misplaced, StateVolume, check_enrollment,
-    is_purged_node,
+    knows_stack, purges_node,
 };
-use aegis_domain::{HostName, NodeLabel, Stack, StackName};
+use aegis_domain::{DesiredState, HostName, NodeLabel, StackName};
 use axum::http::StatusCode;
 
 use super::Shared;
@@ -21,12 +21,6 @@ use crate::api::refusal::Refusal;
 #[derive(Debug, Clone)]
 pub struct Binding {
     shared: Arc<Shared>,
-}
-
-impl std::fmt::Debug for Shared {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Shared")
-    }
 }
 
 impl Binding {
@@ -48,15 +42,14 @@ impl Binding {
         request: &EnrollmentRequest,
     ) -> Result<(), Refusal> {
         let stack = request.stack();
-        let who = Who::new(host, Some(stack));
-        let checked =
-            self.with_goal(|goal| check_enrollment(find_stack(goal, host, stack), request))?;
+        let known = self.with_goal(|goal| knows_stack(state_of(goal), host, stack))?;
+        let who = Who::new(host, known.then_some(stack));
+        let checked = self.with_goal(|goal| check_enrollment(state_of(goal), host, request))?;
         checked.map_err(|misplaced| self.misplaced(who, misplaced))?;
-        let mints = request.state() == StateVolume::Empty;
-        mints
-            .then(|| self.reserve(host, stack))
-            .transpose()
-            .map(drop)
+        match request.state() {
+            StateVolume::Empty => self.reserve(host, stack),
+            StateVolume::Populated => Ok(()),
+        }
     }
 
     /// Let the agent of `host` delete the node `node` when the desired state marks a stack of
@@ -66,7 +59,7 @@ impl Binding {
         host: &HostName,
         node: &NodeLabel,
     ) -> Result<(), Refusal> {
-        let purged = self.with_goal(|goal| purges(goal, host, node))?;
+        let purged = self.with_goal(|goal| purges_node(state_of(goal), host, node))?;
         purged.then_some(()).ok_or_else(|| self.not_purged(host))
     }
 
@@ -115,6 +108,10 @@ impl Binding {
     }
 }
 
+const fn state_of(goal: &Goal) -> &DesiredState {
+    goal.outcome().state()
+}
+
 fn not_an_agent(status: StatusCode) -> Refusal {
     let reason = "the caller is not the agent of a host of this controller";
     Refusal::new(status, &reason)
@@ -122,27 +119,4 @@ fn not_an_agent(status: StatusCode) -> Refusal {
 
 fn unloaded() -> Refusal {
     Refusal::new(StatusCode::SERVICE_UNAVAILABLE, &"no commit has loaded yet")
-}
-
-fn find_stack<'goal>(
-    goal: &'goal Goal,
-    host: &HostName,
-    stack: &StackName,
-) -> Option<&'goal Stack> {
-    let hosts = goal.outcome().state().hosts();
-    let own = hosts.iter().find(|candidate| candidate.name() == host)?;
-    own.stacks()
-        .iter()
-        .find(|candidate| candidate.name() == stack)
-}
-
-fn purges(goal: &Goal, host: &HostName, node: &NodeLabel) -> bool {
-    let hosts = goal.outcome().state().hosts();
-    let own = hosts.iter().find(|candidate| candidate.name() == host);
-    own.is_some_and(|found| {
-        found
-            .stacks()
-            .iter()
-            .any(|stack| is_purged_node(stack, node))
-    })
 }

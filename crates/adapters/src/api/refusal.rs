@@ -55,3 +55,15 @@ impl IntoResponse for Refusal {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wait_is_rounded_up_to_whole_seconds() {
+        assert_eq!(seconds_of(Duration::from_millis(1200)), 2);
+        assert_eq!(seconds_of(Duration::from_secs(3)), 3);
+        assert_eq!(seconds_of(Duration::ZERO), 0);
+    }
+}

@@ -41,7 +41,7 @@ pub use loader::load_desired_state;
 pub use mint_limit::{Allowance, Exceeded, MintLimiter, MintLimits, Minting, Scope};
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
-pub use placement::{Misplaced, check_enrollment, is_purged_node};
+pub use placement::{Misplaced, check_enrollment, knows_stack, purges_node};
 pub use poll::Poller;
 pub use purge::{OrphanSweep, Purge, Removal, Remover, Retain};
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};

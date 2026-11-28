@@ -22,9 +22,9 @@ For each exposed stack the agent looks into the state volume with `docker run` (
 
 `POST /v1/enroll` takes `{"stack":"vault","hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}` and answers `{"tailnet":"taildfab0.ts.net","key":"tskey-..."}` (`key` is `null` when none was minted). It is served to `tag:aegis-agent` peers only, and only to the agent of a host of `AEGIS_AGENTS` ([controller.md](controller.md)).
 
-The controller mints only for a stack the desired state places on the calling host: the stack must exist under `hosts/<host>/`, not be `purged` and declare `expose`, the hostname must be the exposed service's name, and the tags must be exactly the stack's `tailnet_tags` (an extra or a missing tag is refused). `AEGIS_ENROLL_TAGS` stays a ceiling on top. A stack the controller has not loaded yet counts as missing until a commit loads.
+The controller mints only for a stack the desired state places on the calling host: the stack must exist under `hosts/<host>/`, not be `purged` and declare `expose`, the hostname must be the exposed service's name, and the tags must be exactly the stack's `tailnet_tags` (an extra or a missing tag is refused). `AEGIS_ENROLL_TAGS` stays a ceiling on top. Until a commit has loaded, the controller answers `503`: it cannot tell yet, and that is not a refusal.
 
-Keys are limited: 3 per stack of a host, 20 per host and 50 in total over one hour, counted when a request that would mint (`"state":"empty"`) is accepted, whether or not Tailscale then answers. Change them with `AEGIS_MINT_PER_STACK`, `AEGIS_MINT_PER_HOST`, `AEGIS_MINT_TOTAL` and `AEGIS_MINT_WINDOW_SECS` ([controller.md](controller.md)). The counts live in memory and start again when the controller restarts. Every refusal shows in `GET /v1/status` as `refusals`.
+Keys are limited: 3 per stack of a host, 20 per host and 50 in total over one hour, counted once a request that would mint (`"state":"empty"`) passes the desired-state check, even if the tag ceiling or Tailscale then refuses it. Change them with `AEGIS_MINT_PER_STACK`, `AEGIS_MINT_PER_HOST`, `AEGIS_MINT_TOTAL` and `AEGIS_MINT_WINDOW_SECS` ([controller.md](controller.md)). The counts live in memory and start again when the controller restarts. A refusal for the desired state or for the key limit shows in `GET /v1/status` as `refusals`.
 
 | Status | Meaning |
 |--------|---------|
@@ -35,7 +35,7 @@ Keys are limited: 3 per stack of a host, 20 per host and 50 in total over one ho
 | `502` | Tailscale fails. |
 | `503` | The whois lookup failed, or no commit has loaded yet. |
 
-A body that is not this JSON, or has no `stack`, gets the framework's `415` or `422`. Error bodies are a plain-text reason that holds no secret. An agent older than the controller sends no `stack` and is refused: upgrade the agents with the controller.
+A body that is not this JSON, or has no `stack`, gets the framework's `415` or `422`; an empty `stack` is a `400`. Error bodies are a plain-text reason that holds no secret. An agent older than the controller sends no `stack` and is refused (`422`), and an agent newer than the controller is refused by the old controller for the extra field (`422`): upgrade the controller and the agents together.
 
 ## Things to know
 

@@ -112,3 +112,71 @@ impl Vigil {
         kept.map(|entry| entry.refused(now)).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(name: &str) -> HostName {
+        HostName::new(name).unwrap()
+    }
+
+    fn stack(name: &str) -> StackName {
+        StackName::new(name).unwrap()
+    }
+
+    fn vigil() -> Vigil {
+        Vigil::new(MintLimits::standard())
+    }
+
+    fn refuse_stack(vigil: &mut Vigil, name: &str) {
+        let asker = host("h");
+        let stack = stack(name);
+        vigil.refuse(Who::new(&asker, Some(&stack)), RefusalReason::NotPlaced);
+    }
+
+    #[test]
+    fn the_same_refusal_is_one_entry_that_counts_up() {
+        let mut vigil = vigil();
+        refuse_stack(&mut vigil, "a");
+        refuse_stack(&mut vigil, "a");
+        let listed = vigil.refused(None);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].times().count(), 2);
+    }
+
+    #[test]
+    fn the_refusal_seen_longest_ago_is_forgotten_beyond_fifty_kinds() {
+        let mut vigil = vigil();
+        let names: Vec<String> = (0..=MAX_ENTRIES).map(|each| format!("s{each}")).collect();
+        names
+            .iter()
+            .fold((), |(), name| refuse_stack(&mut vigil, name));
+        let listed = vigil.refused(None);
+        assert_eq!(listed.len(), MAX_ENTRIES);
+        assert_eq!(listed[0].stack(), Some("s1"));
+    }
+
+    #[test]
+    fn a_repeated_refusal_is_refreshed_and_outlives_older_ones() {
+        let mut vigil = vigil();
+        refuse_stack(&mut vigil, "first");
+        (0..MAX_ENTRIES - 1).fold((), |(), each| refuse_stack(&mut vigil, &format!("s{each}")));
+        refuse_stack(&mut vigil, "first");
+        refuse_stack(&mut vigil, "newest");
+        let listed = vigil.refused(None);
+        let first = listed.iter().find(|each| each.stack() == Some("first"));
+        assert_eq!(first.unwrap().times().count(), 2);
+        assert_eq!(listed.len(), MAX_ENTRIES);
+    }
+
+    #[test]
+    fn one_host_sees_only_its_own_refusals() {
+        let mut vigil = vigil();
+        refuse_stack(&mut vigil, "a");
+        let other = host("g");
+        vigil.refuse(Who::new(&other, None), RefusalReason::NotPurged);
+        assert_eq!(vigil.refused(Some(&other)).len(), 1);
+        assert_eq!(vigil.refused(None).len(), 2);
+    }
+}

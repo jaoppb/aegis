@@ -3,7 +3,9 @@
 
 use std::fmt;
 
-use aegis_domain::{NodeLabel, Stack, StackState, TailnetTags};
+use aegis_domain::{
+    DesiredState, HostName, NodeLabel, Stack, StackName, StackPolicy, StackState, TailnetTags,
+};
 
 use crate::enroll::EnrollmentRequest;
 
@@ -37,25 +39,45 @@ fn same_tags(asked: &TailnetTags, declared: &TailnetTags) -> bool {
     within(asked, declared) && within(declared, asked)
 }
 
-/// Check `request` against `stack`, the stack of the calling host named like the one it asked for.
+fn exposes(policy: &StackPolicy, node: &NodeLabel) -> bool {
+    let expose = policy.expose();
+    expose.is_some_and(|found| found.service().as_str() == node.as_str())
+}
+
+/// The stack of `host` named `stack`, when the desired state has one.
+fn stack_of<'state>(
+    state: &'state DesiredState,
+    host: &HostName,
+    stack: &StackName,
+) -> Option<&'state Stack> {
+    let own = state.hosts().iter().find(|found| found.name() == host)?;
+    own.stacks().iter().find(|found| found.name() == stack)
+}
+
+/// Whether the desired state has a stack of `host` named `stack`, whatever its state.
+#[must_use]
+pub fn knows_stack(state: &DesiredState, host: &HostName, stack: &StackName) -> bool {
+    stack_of(state, host, stack).is_some()
+}
+
+/// Check `request` of the agent of `host` against the desired state.
 ///
-/// The stack must exist, be active, expose a service named like the node and carry exactly the
-/// tags asked for.
+/// The stack must exist under `host`, be active, expose a service named like the node and carry
+/// exactly the tags asked for.
 ///
 /// # Errors
 ///
 /// Returns [`Misplaced::NotPlaced`] when the stack is missing, purged or exposes no such service,
 /// and [`Misplaced::WrongTags`] when its tags differ.
 pub fn check_enrollment(
-    stack: Option<&Stack>,
+    state: &DesiredState,
+    host: &HostName,
     request: &EnrollmentRequest,
 ) -> Result<(), Misplaced> {
-    let policy = stack.map(Stack::policy).ok_or(Misplaced::NotPlaced)?;
+    let found = stack_of(state, host, request.stack()).ok_or(Misplaced::NotPlaced)?;
+    let policy = found.policy();
     let active = policy.state() == StackState::Active;
-    let exposed = policy
-        .expose()
-        .is_some_and(|expose| expose.service().as_str() == request.node().as_str());
-    (active && exposed)
+    (active && exposes(policy, request.node()))
         .then_some(())
         .ok_or(Misplaced::NotPlaced)?;
     same_tags(request.tags(), policy.tailnet_tags())
@@ -63,13 +85,18 @@ pub fn check_enrollment(
         .ok_or(Misplaced::WrongTags)
 }
 
-/// Whether `stack` is marked purged and exposed a service named like `node`: the node of a purged
-/// stack, which its agent may ask to delete.
+/// Whether the agent of `host` may delete the node `node`.
+///
+/// A stack of `host` must be marked purged with an exposed service named like the node, and no
+/// active stack of any host may expose the name, because node names are shared by the whole
+/// tailnet.
 #[must_use]
-pub fn is_purged_node(stack: &Stack, node: &NodeLabel) -> bool {
-    let policy = stack.policy();
-    let named = policy
-        .expose()
-        .is_some_and(|expose| expose.service().as_str() == node.as_str());
-    named && policy.state() == StackState::Purged
+pub fn purges_node(state: &DesiredState, host: &HostName, node: &NodeLabel) -> bool {
+    let own = state.hosts().iter().find(|found| found.name() == host);
+    let in_state = |wanted: StackState| {
+        move |stack: &Stack| exposes(stack.policy(), node) && stack.policy().state() == wanted
+    };
+    let purged = own.is_some_and(|found| found.stacks().iter().any(in_state(StackState::Purged)));
+    let mut stacks = state.hosts().iter().flat_map(|found| found.stacks().iter());
+    purged && !stacks.any(in_state(StackState::Active))
 }

@@ -22,7 +22,7 @@ use aegis_api::version_1::{
 use aegis_application::{
     Caller, Fleet, Goal, Invalid, MintLimits, Notice, Observation, Order, Poller, Upstream,
 };
-use aegis_domain::{CommitSha, HostName, HostNames};
+use aegis_domain::{CommitSha, HostName, HostNames, RepoPath};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -99,6 +99,12 @@ struct Shared {
     vigil: Mutex<Vigil>,
 }
 
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Shared")
+    }
+}
+
 impl Shared {
     fn book(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(PoisonError::into_inner)
@@ -135,10 +141,11 @@ impl Shared {
 
     /// The whole fleet, as an operator sees it.
     fn snapshot(&self) -> ControllerStatus {
+        let refused = self.vigil().refused(None);
         let book = self.book();
         let target = book.fleet.goal().map(target_status);
         let status = ControllerStatus::new(target, self.host_statuses(&book));
-        let status = status.with_refusals(self.vigil().refused(None));
+        let status = status.with_refusals(refused);
         match book.fleet.notice() {
             Notice::Clear => status,
             Notice::Unloadable(found) => status.with_invalid(invalid_commit(found)),
@@ -252,10 +259,10 @@ fn target_status(goal: &Goal) -> TargetStatus {
 
 /// The target as the agent of `host` sees it: only the stacks rejected under `hosts/<host>/`.
 fn own_target(goal: &Goal, host: &HostName) -> TargetStatus {
-    let prefix = format!("hosts/{}/", host.as_str());
-    let rejected = goal.outcome().rejected().iter().map(rejection_status);
-    let own = rejected.filter(|stack| stack.directory().starts_with(&prefix));
-    TargetStatus::new(goal.commit().as_str(), own.collect())
+    let root = RepoPath::hosts_root().listed(host.as_str());
+    let rejected = goal.outcome().rejected().iter();
+    let own = rejected.filter(|found| found.directory().is_within(&root));
+    TargetStatus::new(goal.commit().as_str(), own.map(rejection_status).collect())
 }
 
 /// What came of asking the agent of a host to reconcile.
@@ -322,11 +329,13 @@ async fn snapshot(
     State(shared): State<Arc<Shared>>,
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<ControllerStatus>, StatusCode> {
-    if caller == Caller::Operator {
-        return Ok(Json(shared.snapshot()));
+    match caller {
+        Caller::Operator => Ok(Json(shared.snapshot())),
+        Caller::Agent(_) => {
+            let host = shared.host_of(&caller)?;
+            Ok(Json(shared.snapshot_for(&host)))
+        }
     }
-    let host = shared.host_of(&caller)?;
-    Ok(Json(shared.snapshot_for(&host)))
 }
 
 /// The controller: what it knows of the repository and the fleet, and the way it tells agents.
@@ -384,9 +393,8 @@ impl Hub {
     }
 
     /// `POST /v1/status` and `GET /v1/status`, to be served behind the tag check (which answers
-    /// `403` or `503`). `POST` answers `204`, `400` for a malformed host or commit, `403` for a
-    /// caller that is no mapped agent or a report for another host, and `404` for a host that has
-    /// no agent address; `GET` answers a [`ControllerStatus`], the whole fleet for an operator and
+    /// `403` or `503`). `POST` answers `204`, `400` for a malformed commit and `403` for a
+    /// caller that is no mapped agent or a report for another host; `GET` answers a [`ControllerStatus`], the whole fleet for an operator and
     /// the caller's own host for an agent.
     pub fn routes(&self) -> Router {
         self.read_routes().merge(self.report_routes())
@@ -400,8 +408,7 @@ impl Hub {
     }
 
     /// `POST /v1/status` alone: the reports of agents, answering `204`, `400` for a malformed
-    /// host or commit, `403` for a report for another host than the caller's and `404` for a host
-    /// that has no agent address. A body over [`MAX_REPLY_BYTES`] is refused.
+    /// commit and `403` for a caller that is no mapped agent or a report for another host. A body over [`MAX_REPLY_BYTES`] is refused.
     pub fn report_routes(&self) -> Router {
         Router::new()
             .route(STATUS_PATH, post(receive))

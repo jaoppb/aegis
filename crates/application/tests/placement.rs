@@ -3,13 +3,13 @@
 #[cfg(test)]
 mod cases {
     use aegis_application::{
-        EnrollmentRequest, Misplaced, SidecarIdentity, StateVolume, check_enrollment,
-        is_purged_node,
+        EnrollmentRequest, Misplaced, SidecarIdentity, StateVolume, check_enrollment, knows_stack,
+        purges_node,
     };
     use aegis_domain::{
-        ComposeSource, ComposeSummary, Expose, NodeLabel, Port, ServiceName, Services, Stack,
-        StackDefinition, StackIdentity, StackKind, StackName, StackPolicy, StackState, TailnetTag,
-        TailnetTags, Volumes,
+        ComposeSource, ComposeSummary, DesiredState, Expose, Host, HostName, Hosts, NodeLabel,
+        Port, ServiceName, Services, Stack, StackDefinition, StackIdentity, StackKind, StackName,
+        StackPolicy, StackState, Stacks, TailnetTag, TailnetTags, Volumes,
     };
 
     fn tags(names: &[&str]) -> TailnetTags {
@@ -17,14 +17,30 @@ mod cases {
         tags.collect()
     }
 
-    fn stack(service: Option<&str>, declared: &[&str], state: StackState) -> Stack {
+    /// A policy that exposes `service` with the tags `declared`.
+    fn policy(service: Option<&str>, declared: &[&str], state: StackState) -> StackPolicy {
         let expose = service
-            .map(|name| Expose::new(ServiceName::new(name).unwrap(), Port::new(8080).unwrap()));
-        let policy = StackPolicy::new(expose, tags(declared), state);
+            .map(|text| Expose::new(ServiceName::new(text).unwrap(), Port::new(8080).unwrap()));
+        StackPolicy::new(expose, tags(declared), state)
+    }
+
+    fn stack(name: &str, policy: StackPolicy) -> Stack {
         let compose = ComposeSummary::new(Services::default(), Volumes::default());
         let definition = StackDefinition::new(policy, ComposeSource::new(""), compose);
-        let identity = StackIdentity::new(StackName::new("vault").unwrap(), StackKind::Host);
+        let identity = StackIdentity::new(StackName::new(name).unwrap(), StackKind::Host);
         Stack::new(identity, definition)
+    }
+
+    fn host(name: &str, stacks: Vec<Stack>) -> Host {
+        Host::new(HostName::new(name).unwrap(), Stacks::new(stacks))
+    }
+
+    fn desired(hosts: Vec<Host>) -> DesiredState {
+        DesiredState::new(Hosts::new(hosts), Stacks::default())
+    }
+
+    fn name(text: &str) -> HostName {
+        HostName::new(text).unwrap()
     }
 
     fn request(node: &str, asked: &[&str]) -> EnrollmentRequest {
@@ -35,79 +51,110 @@ mod cases {
         EnrollmentRequest::new(identity, tags(asked), StateVolume::Empty)
     }
 
+    fn vault(service: Option<&str>, declared: &[&str], state: StackState) -> DesiredState {
+        desired(vec![host(
+            "h",
+            vec![stack("vault", policy(service, declared, state))],
+        )])
+    }
+
     #[test]
     fn an_active_exposed_stack_with_the_same_node_and_tags_is_placed() {
-        let placed = stack(Some("vaultwarden"), &["tag:app"], StackState::Active);
+        let state = vault(Some("vaultwarden"), &["tag:app"], StackState::Active);
         let asked = request("vaultwarden", &["tag:app"]);
-        assert_eq!(check_enrollment(Some(&placed), &asked), Ok(()));
+        assert_eq!(check_enrollment(&state, &name("h"), &asked), Ok(()));
     }
 
     #[test]
     fn the_order_of_the_tags_does_not_matter() {
-        let placed = stack(Some("vaultwarden"), &["tag:a", "tag:b"], StackState::Active);
+        let state = vault(Some("vaultwarden"), &["tag:a", "tag:b"], StackState::Active);
         let asked = request("vaultwarden", &["tag:b", "tag:a"]);
-        assert_eq!(check_enrollment(Some(&placed), &asked), Ok(()));
+        assert_eq!(check_enrollment(&state, &name("h"), &asked), Ok(()));
     }
 
     #[test]
-    fn a_stack_the_host_does_not_have_is_not_placed() {
+    fn a_stack_the_host_does_not_have_is_not_placed_even_when_another_host_has_it() {
+        let state = desired(vec![
+            host("h", Vec::new()),
+            host(
+                "g",
+                vec![stack(
+                    "vault",
+                    policy(Some("vaultwarden"), &["tag:app"], StackState::Active),
+                )],
+            ),
+        ]);
         let asked = request("vaultwarden", &["tag:app"]);
-        assert_eq!(check_enrollment(None, &asked), Err(Misplaced::NotPlaced));
+        let verdict = check_enrollment(&state, &name("h"), &asked);
+        assert_eq!(verdict, Err(Misplaced::NotPlaced));
+        assert!(!knows_stack(&state, &name("h"), asked.stack()));
+        assert!(knows_stack(&state, &name("g"), asked.stack()));
     }
 
     #[test]
     fn a_stack_that_exposes_nothing_is_not_placed() {
-        let placed = stack(None, &["tag:app"], StackState::Active);
+        let state = vault(None, &["tag:app"], StackState::Active);
         let asked = request("vaultwarden", &["tag:app"]);
-        assert_eq!(
-            check_enrollment(Some(&placed), &asked),
-            Err(Misplaced::NotPlaced)
-        );
+        let verdict = check_enrollment(&state, &name("h"), &asked);
+        assert_eq!(verdict, Err(Misplaced::NotPlaced));
     }
 
     #[test]
     fn a_hostname_other_than_the_exposed_service_is_not_placed() {
-        let placed = stack(Some("vaultwarden"), &["tag:app"], StackState::Active);
+        let state = vault(Some("vaultwarden"), &["tag:app"], StackState::Active);
         let asked = request("somebody-else", &["tag:app"]);
-        assert_eq!(
-            check_enrollment(Some(&placed), &asked),
-            Err(Misplaced::NotPlaced)
-        );
+        let verdict = check_enrollment(&state, &name("h"), &asked);
+        assert_eq!(verdict, Err(Misplaced::NotPlaced));
     }
 
     #[test]
     fn a_purged_stack_is_not_placed() {
-        let placed = stack(Some("vaultwarden"), &["tag:app"], StackState::Purged);
+        let state = vault(Some("vaultwarden"), &["tag:app"], StackState::Purged);
         let asked = request("vaultwarden", &["tag:app"]);
-        assert_eq!(
-            check_enrollment(Some(&placed), &asked),
-            Err(Misplaced::NotPlaced)
-        );
+        let verdict = check_enrollment(&state, &name("h"), &asked);
+        assert_eq!(verdict, Err(Misplaced::NotPlaced));
     }
 
     #[test]
     fn an_extra_or_a_missing_tag_is_wrong() {
-        let placed = stack(Some("vaultwarden"), &["tag:app"], StackState::Active);
+        let state = vault(Some("vaultwarden"), &["tag:app"], StackState::Active);
         let extra = request("vaultwarden", &["tag:app", "tag:admin"]);
         let missing = request("vaultwarden", &[]);
-        assert_eq!(
-            check_enrollment(Some(&placed), &extra),
-            Err(Misplaced::WrongTags)
-        );
-        assert_eq!(
-            check_enrollment(Some(&placed), &missing),
-            Err(Misplaced::WrongTags)
-        );
+        let wrong = Err(Misplaced::WrongTags);
+        assert_eq!(check_enrollment(&state, &name("h"), &extra), wrong);
+        assert_eq!(check_enrollment(&state, &name("h"), &missing), wrong);
+    }
+
+    fn old(service: &str, state: StackState) -> Stack {
+        stack("old", policy(Some(service), &[], state))
     }
 
     #[test]
-    fn only_a_purged_stack_owns_its_node_for_deletion() {
-        let node = NodeLabel::new("vaultwarden").unwrap();
-        let purged = stack(Some("vaultwarden"), &[], StackState::Purged);
-        let active = stack(Some("vaultwarden"), &[], StackState::Active);
-        let other = stack(Some("other"), &[], StackState::Purged);
-        assert!(is_purged_node(&purged, &node));
-        assert!(!is_purged_node(&active, &node));
-        assert!(!is_purged_node(&other, &node));
+    fn only_a_purged_stack_of_the_callers_host_owns_its_node_for_deletion() {
+        let node = NodeLabel::new("vault").unwrap();
+        let purged = desired(vec![host("h", vec![old("vault", StackState::Purged)])]);
+        let active = desired(vec![host("h", vec![old("vault", StackState::Active)])]);
+        let other = desired(vec![host("h", vec![old("other", StackState::Purged)])]);
+        let elsewhere = desired(vec![
+            host("h", Vec::new()),
+            host("g", vec![old("vault", StackState::Purged)]),
+        ]);
+        assert!(purges_node(&purged, &name("h"), &node));
+        assert!(!purges_node(&active, &name("h"), &node));
+        assert!(!purges_node(&other, &name("h"), &node));
+        assert!(!purges_node(&elsewhere, &name("h"), &node));
+    }
+
+    #[test]
+    fn a_node_name_another_host_still_uses_is_never_deleted() {
+        let node = NodeLabel::new("vault").unwrap();
+        let moved = desired(vec![
+            host("h", vec![old("vault", StackState::Purged)]),
+            host(
+                "g",
+                vec![stack("app", policy(Some("vault"), &[], StackState::Active))],
+            ),
+        ]);
+        assert!(!purges_node(&moved, &name("h"), &node));
     }
 }

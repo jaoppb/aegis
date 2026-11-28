@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_adapters::BaseUrl;
-use aegis_adapters::api::{ApiClient, ClientError, enroll_routes, node_routes};
+use aegis_adapters::api::{AgentAddress, ApiClient, ClientError, Hub, enroll_routes, node_routes};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
 use aegis_api::version_1::{
     ControllerStatus, MAX_REPLY_BYTES, ReconcileRequest, RefusalReason, STATUS_PATH, StatusReport,
@@ -33,6 +33,45 @@ const OTHER_HOST: [(&str, &str); 1] = [(
     "hosts/g/web/compose.yaml",
     "services:\n  web:\n    image: nginx:1.27\n",
 )];
+
+/// Stacks that fail to load: one under `h`, one under `g` and one under `hh`, whose directory
+/// starts like `h`'s.
+#[cfg(test)]
+const BROKEN: [(&str, &str); 3] = [
+    ("hosts/h/broken/readme", "no compose file"),
+    ("hosts/g/broken/readme", "no compose file"),
+    ("hosts/hh/broken/readme", "no compose file"),
+];
+
+/// A stack of `g` that is purged, one of `h` whose node name `g` moved to, and the active stack of
+/// `g` that uses it now.
+#[cfg(test)]
+const MOVED: [(&str, &str); 6] = [
+    (
+        "hosts/g/gone/compose.yaml",
+        "services:\n  gnode:\n    image: nginx:1.27\n",
+    ),
+    (
+        "hosts/g/gone/aegis.toml",
+        "state = \"purged\"\ntailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"gnode\"\nport = 80\n",
+    ),
+    (
+        "hosts/h/moved/compose.yaml",
+        "services:\n  moved:\n    image: nginx:1.27\n",
+    ),
+    (
+        "hosts/h/moved/aegis.toml",
+        "state = \"purged\"\ntailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"moved\"\nport = 80\n",
+    ),
+    (
+        "hosts/g/moved/compose.yaml",
+        "services:\n  moved:\n    image: nginx:1.27\n",
+    ),
+    (
+        "hosts/g/moved/aegis.toml",
+        "tailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"moved\"\nport = 80\n",
+    ),
+];
 
 #[cfg(test)]
 const VAULT: [(&str, &str); 2] = [
@@ -95,6 +134,7 @@ impl SidecarEnroller for Minting {
 #[cfg(test)]
 struct World {
     agent: String,
+    agent_g: String,
     bootstrapped: String,
     stranger: String,
     operator: String,
@@ -117,8 +157,24 @@ fn allowance(count: u32) -> Allowance {
 
 #[cfg(test)]
 async fn world_within(name: &str, limits: MintLimits) -> World {
-    let files = [VAULT.to_vec(), OLD.to_vec(), OTHER_HOST.to_vec()].concat();
-    let hub = world::loaded_hub(name, &files, limits).await;
+    let parts = [VAULT.to_vec(), OLD.to_vec(), OTHER_HOST.to_vec()];
+    let files = [parts.concat(), BROKEN.to_vec(), MOVED.to_vec()].concat();
+    world_over(world::loaded_hub(name, &files, limits).await).await
+}
+
+/// A world over a hub that has not loaded a commit: it only knows the agents of `h` and `g`.
+#[cfg(test)]
+async fn unloaded_world() -> World {
+    let nowhere = |name: &str| {
+        let host = HostName::new(name).unwrap();
+        AgentAddress::new(host, BaseUrl::new("http://127.0.0.1:1"))
+    };
+    let hub = Hub::limited(&[nowhere("h"), nowhere("g")], MintLimits::standard());
+    world_over(hub.unwrap()).await
+}
+
+#[cfg(test)]
+async fn world_over(hub: Hub) -> World {
     let minted = Arc::new(AtomicUsize::new(0));
     let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
     let dead = BaseUrl::new("http://127.0.0.1:1");
@@ -133,6 +189,7 @@ async fn world_within(name: &str, limits: MintLimits) -> World {
         .merge(node_routes(api, hub.binding()));
     World {
         agent: serve_as(&routes, agent_of("h")).await,
+        agent_g: serve_as(&routes, agent_of("g")).await,
         bootstrapped: serve_as(&routes, agent_of("h-aegis-agent")).await,
         stranger: serve_as(&routes, agent_of("stranger")).await,
         operator: serve_as(&routes, Caller::Operator).await,
@@ -249,7 +306,10 @@ fn an_agent_reads_its_own_host_and_an_operator_reads_the_fleet() {
     runtime().block_on(async {
         let world = world("scope").await;
         assert_eq!(host_names(&status_at(&world.agent).await), ["h"]);
-        assert_eq!(host_names(&status_at(&world.operator).await), ["g", "h"]);
+        assert_eq!(
+            host_names(&status_at(&world.operator).await),
+            ["g", "h", "hh"]
+        );
     });
 }
 
@@ -436,8 +496,10 @@ fn an_endless_chunked_agent_answer_is_abandoned_at_the_cap() {
     runtime().block_on(async {
         let base = endless_agent(CHUNKED, 65_536).await;
         let client = ApiClient::new(base).unwrap();
-        let answer = client.reconcile(&ReconcileRequest::new("abc1234")).await;
-        assert!(matches!(answer, Err(ClientError::TooLarge)));
+        let request = ReconcileRequest::new("abc1234");
+        let call = client.reconcile(&request);
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), call).await;
+        assert!(matches!(answer, Ok(Err(ClientError::TooLarge))));
     });
 }
 
@@ -446,8 +508,10 @@ fn an_agent_answer_that_announces_more_than_the_cap_is_refused_unread() {
     runtime().block_on(async {
         let base = endless_agent(ANNOUNCED, 1).await;
         let client = ApiClient::new(base).unwrap();
-        let answer = client.reconcile(&ReconcileRequest::new("abc1234")).await;
-        assert!(matches!(answer, Err(ClientError::TooLarge)));
+        let request = ReconcileRequest::new("abc1234");
+        let call = client.reconcile(&request);
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), call).await;
+        assert!(matches!(answer, Ok(Err(ClientError::TooLarge))));
     });
 }
 
@@ -461,5 +525,114 @@ fn an_agent_answer_within_the_cap_is_read() {
         let client = ApiClient::new(base).unwrap();
         let read = client.reconcile(&ReconcileRequest::new("abc1234")).await;
         assert_eq!(read.unwrap(), report);
+    });
+}
+
+#[cfg(test)]
+fn refusing_hosts(status: &ControllerStatus) -> Vec<String> {
+    let refusals = status.refusals().iter();
+    refusals.map(|each| each.host().to_owned()).collect()
+}
+
+#[cfg(test)]
+fn rejected_directories(status: &ControllerStatus) -> Vec<String> {
+    let rejected = status.target().unwrap().rejected().iter();
+    rejected.map(|each| each.directory().to_owned()).collect()
+}
+
+#[test]
+fn an_agent_sees_only_its_own_refusals_and_an_operator_sees_all() {
+    runtime().block_on(async {
+        let world = world("own-refusals").await;
+        let wrong = wish("vault", "vaultwarden", &["tag:admin"]);
+        enroll_at(&world.agent, &wrong).await;
+        enroll_at(&world.agent_g, &vaultwarden()).await;
+        assert_eq!(refusing_hosts(&status_at(&world.agent).await), ["h"]);
+        assert_eq!(refusing_hosts(&status_at(&world.agent_g).await), ["g"]);
+        assert_eq!(
+            refusing_hosts(&status_at(&world.operator).await),
+            ["h", "g"]
+        );
+    });
+}
+
+#[test]
+fn a_made_up_stack_name_is_not_kept_in_the_status() {
+    runtime().block_on(async {
+        let world = world("made-up").await;
+        let invented = wish("invented", "vaultwarden", &["tag:app"]);
+        assert_eq!(
+            enroll_at(&world.agent, &invented).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        let seen = status_at(&world.operator).await;
+        assert_eq!(seen.refusals()[0].reason(), RefusalReason::NotPlaced);
+        assert_eq!(seen.refusals()[0].stack(), None);
+    });
+}
+
+#[test]
+fn a_node_of_a_purged_stack_of_another_host_or_still_in_use_is_not_deleted() {
+    runtime().block_on(async {
+        let world = world("not-mine").await;
+        let theirs = delete_node(&world.agent, "gnode").await;
+        let moved = delete_node(&world.agent, "moved").await;
+        assert_eq!(theirs.status(), StatusCode::FORBIDDEN);
+        assert_eq!(moved.status(), StatusCode::FORBIDDEN);
+        let seen = status_at(&world.operator).await;
+        assert!(
+            seen.refusals()
+                .iter()
+                .all(|each| each.reason() == RefusalReason::NotPurged)
+        );
+        let own = delete_node(&world.agent_g, "gnode").await;
+        assert_eq!(
+            own.status(),
+            StatusCode::BAD_GATEWAY,
+            "g's own purged node reaches Tailscale"
+        );
+    });
+}
+
+#[test]
+fn an_operator_cannot_report_enrol_or_delete_through_the_agent_routes() {
+    runtime().block_on(async {
+        let world = world("operator").await;
+        let report = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
+        let posted = post_json(&world.operator, STATUS_PATH, &report).await;
+        let enrolled = enroll_at(&world.operator, &vaultwarden()).await;
+        let deleted = delete_node(&world.operator, "vault").await;
+        let answers = [posted.status(), enrolled.status(), deleted.status()];
+        assert_eq!(answers, [StatusCode::FORBIDDEN; 3]);
+        assert_eq!(world.minted.load(Ordering::SeqCst), 0);
+    });
+}
+
+#[test]
+fn before_a_commit_loads_enrolment_and_deletion_wait_and_the_agent_sees_no_target() {
+    runtime().block_on(async {
+        let world = unloaded_world().await;
+        let enrolled = enroll_at(&world.agent, &vaultwarden()).await;
+        let deleted = delete_node(&world.agent, "vault").await;
+        assert_eq!(enrolled.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(deleted.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(world.minted.load(Ordering::SeqCst), 0);
+        assert!(status_at(&world.agent).await.target().is_none());
+        assert!(status_at(&world.operator).await.refusals().is_empty());
+    });
+}
+
+#[test]
+fn an_agent_sees_only_the_rejected_stacks_of_its_own_host() {
+    runtime().block_on(async {
+        let world = world("rejected").await;
+        assert_eq!(
+            rejected_directories(&status_at(&world.agent).await),
+            ["hosts/h/broken"]
+        );
+        assert_eq!(
+            rejected_directories(&status_at(&world.operator).await).len(),
+            3
+        );
     });
 }

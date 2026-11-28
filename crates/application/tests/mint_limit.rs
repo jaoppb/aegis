@@ -93,4 +93,14 @@ mod cases {
         assert!(limiter.reserve(minting("a", "x"), after).is_ok());
         assert!(limiter.reserve(minting("a", "x"), after).is_ok());
     }
+
+    #[test]
+    fn a_key_just_inside_the_window_still_counts() {
+        let mut limiter = limiter();
+        let start = Instant::now();
+        limiter.reserve(minting("a", "x"), start).unwrap();
+        limiter.reserve(minting("a", "x"), start).unwrap();
+        let almost = start + Duration::from_secs(99);
+        assert!(limiter.reserve(minting("a", "x"), almost).is_err());
+    }
 }

@@ -257,8 +257,8 @@ struct Trouble {
 /// Absent values are `null`, never left out. `target` is the last good commit and stays in force
 /// while `invalid` names a newer commit whose tree cannot be read, or `fetch_error` says the remote
 /// cannot be reached. `refusals` lists the requests for nodes the controller refused (at most 50
-/// entries, kept in memory and forgotten when the controller restarts); a client that predates it
-/// reads it as empty.
+/// entries, kept in memory and forgotten when the controller restarts); a status without it
+/// (from an older controller) reads as having none.
 ///
 /// An operator gets the whole fleet. An agent gets only its own host: the target with the
 /// rejected stacks of its host, its own `HostStatus` and its own refusals, and never `invalid` or

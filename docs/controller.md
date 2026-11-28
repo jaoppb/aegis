@@ -1,6 +1,6 @@
 # Running the controller
 
-The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it, serves the status of the fleet and enrols the Tailscale sidecars of exposed stacks (`POST /v1/enroll`, see [exposure.md](exposure.md)) and deletes the node of a purged stack (`DELETE /v1/nodes/{hostname}`, see [agent.md](agent.md)). One router serves `/v1/status`, `/v1/enroll`, `/v1/nodes/{hostname}` and the sync routes. Every route is behind the tag check that admits only `tag:aegis-agent` peers, bound to the host the caller serves ([Which host a caller is](#which-host-a-caller-is)), with two differences for operators (see `AEGIS_OPERATORS`): `GET /v1/status` and `GET /v1/health` also admit an operator, and the sync routes admit operators only (an agent gets `403`). It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
+The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it, serves the status of the fleet and enrols the Tailscale sidecars of exposed stacks (`POST /v1/enroll`, see [exposure.md](exposure.md)) and deletes the node of a purged stack (`DELETE /v1/nodes/{hostname}`, see [agent.md](agent.md)). One router serves `/v1/status`, `/v1/enroll`, `/v1/nodes/{hostname}` and the sync routes. Every route is behind the tag check that admits only `tag:aegis-agent` peers, and every agent route but `GET /v1/health` is bound to the host the caller serves ([Which host a caller is](#which-host-a-caller-is)), with two differences for operators (see `AEGIS_OPERATORS`): `GET /v1/status` and `GET /v1/health` also admit an operator, and the sync routes admit operators only (an agent gets `403`). It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
 
 ## Configuration
 
@@ -16,7 +16,7 @@ The controller polls the GitOps repository, loads and validates each new commit,
 | `AEGIS_OPERATORS` | no | Comma-separated Tailscale logins, such as `ada@example.com`, of the people who may use `aegis status`, `diff` and `sync` ([cli.md](cli.md)). Only an untagged node owned by one of them is an operator; unset or empty admits nobody. Logins must be printable ASCII without spaces or commas (otherwise the controller does not start) and compare without regard to ASCII case. |
 | `AEGIS_MINT_PER_STACK`, `AEGIS_MINT_PER_HOST`, `AEGIS_MINT_TOTAL` | no | How many sidecar keys the controller mints in the window, for one stack of one host, for one host and in total. Defaults `3`, `20` and `50`; a whole number of at least `1` ([exposure.md](exposure.md)). |
 | `AEGIS_MINT_WINDOW_SECS` | no | The window the three limits count in, in seconds. Default `3600`, at least `60`. |
-| `AEGIS_AGENTS` | no | The agents, as comma-separated `host=url` pairs such as `jao-server=http://100.64.0.7:7480`. A URL with credentials is refused. A host of the repository without an entry is never told to reconcile. The name of a host is also the name its agent's node has on the tailnet (the first label of its MagicDNS name): the controller serves the routes of an agent only to a tagged node whose name is a host listed here ([Which host a caller is](#which-host-a-caller-is)). |
+| `AEGIS_AGENTS` | no | The agents, as comma-separated `host=url` pairs such as `jao-server=http://100.64.0.7:7480`. A URL with credentials is refused. A host of the repository without an entry is never told to reconcile. The name of a host is also the name its agent's node has on the tailnet, or `<host>-aegis-agent`, the name `aegis bootstrap` gives it (the first label of its MagicDNS name): the controller serves the routes of an agent only to a tagged node whose name is a host listed here in one of those forms ([Which host a caller is](#which-host-a-caller-is)). |
 
 Git authenticates with what it inherits from the controller's environment: a deploy key through the SSH agent or `~/.ssh/config`, or a git credential helper. Aegis never reads, stores or logs a token. Only the `https`, `ssh` and `file` transports are allowed. Write access is not needed.
 
@@ -43,7 +43,7 @@ An agent is the node it joined the tailnet as, and the controller binds each req
 | Status | Meaning |
 |--------|---------|
 | `204` | The report was kept. It confirms the host only when it is for the target commit. |
-| `400` | The host name or the commit is malformed. |
+| `400` | The commit is malformed. |
 | `403` | The caller is not tagged `tag:aegis-agent`, is no agent of a host of `AEGIS_AGENTS`, or reports for another host. |
 | `413` | The body is larger than 1 MiB. |
 | `503` | The whois lookup failed. |
@@ -66,7 +66,7 @@ An agent is the node it joined the tailnet as, and the controller binds each req
 - `agent` is `mapped` or `unmapped` (the repository declares the host, but `AEGIS_AGENTS` has no address for it).
 - `confirmation` is `"confirmed"` (the host reported the target commit), `"pending"`, or `{"failing": "<reason>"}` (the last call to its agent failed).
 - `report` is the last report of the host, for any commit.
-- `refusals` lists the requests for a node the controller refused, one entry per host, stack and `reason` with how many times (`count`) and how long ago the last one was (`seconds_ago`), at most 50 entries, forgotten when the controller restarts. A `reason` is `rate_limited` (too many keys, see [exposure.md](exposure.md)), `not_placed` (the desired state does not place that stack and service on the host), `wrong_tags` (the tags are not the stack's) or `not_purged` (a node delete for a stack that is not purged). A client that predates the field reads it as empty.
+- `refusals` lists the requests for a node the controller refused, one entry per host, stack and `reason` with how many times (`count`) and how long ago the last one was (`seconds_ago`), at most 50 entries, forgotten when the controller restarts. `stack` is `null` for `not_purged`, and for a request that named a stack the host does not have. A `reason` is `rate_limited` (too many keys, see [exposure.md](exposure.md)), `not_placed` (the desired state does not place that stack and service on the host), `wrong_tags` (the tags are not the stack's) or `not_purged` (a node delete for a stack that is not purged). A status without the field (from an older controller) reads as having none.
 
 An agent reads a smaller `GET /v1/status`: the target with only the rejected stacks of its own host, its own host and its own refusals. It never sees `invalid` or `fetch_error` (they are `null`), the other hosts or their refusals.
 
