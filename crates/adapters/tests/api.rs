@@ -34,7 +34,8 @@ impl WhoIs for Scripted {
 #[cfg(test)]
 mod cases {
     use super::Scripted;
-    use aegis_adapters::api::{ApiClient, BaseUrl, ClientError, serve};
+    use aegis_adapters::BaseUrl;
+    use aegis_adapters::api::{ApiClient, ClientError, serve};
     use aegis_api::version_1::{Health, Role};
     use aegis_application::{Reason, WhoIsError};
     use std::sync::Arc;
@@ -145,7 +146,17 @@ mod cases {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
         tokio::spawn(serve(listener, Role::Agent, tagged(&[])));
+        let provider = rustls::crypto::ring::default_provider();
+        drop(provider.install_default());
         reqwest::get(url).await.unwrap().status()
+    }
+
+    /// Nextest runs every test in a fresh process, so nothing has installed the TLS provider yet:
+    /// the client must install it itself.
+    #[test]
+    fn the_api_client_builds_in_a_fresh_process() {
+        let client = ApiClient::new(BaseUrl::new("http://127.0.0.1:1"));
+        assert!(client.is_ok());
     }
 
     #[test]

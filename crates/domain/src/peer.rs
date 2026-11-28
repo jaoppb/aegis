@@ -12,7 +12,16 @@ pub enum AegisRole {
     Agent,
 }
 
+const CONTROLLER_TAG: &str = "tag:aegis-controller";
+const AGENT_TAG: &str = "tag:aegis-agent";
+
 impl AegisRole {
+    /// Whether `tag` is the tag of an Aegis role, which the API authorizer trusts.
+    #[must_use]
+    pub fn is_role_tag(tag: &TailnetTag) -> bool {
+        matches!(tag.as_str(), CONTROLLER_TAG | AGENT_TAG)
+    }
+
     /// The tag a node of this role carries in the tailnet.
     ///
     /// # Errors
@@ -20,8 +29,8 @@ impl AegisRole {
     /// Returns a [`ValueError`] only if the built-in tag name were invalid.
     pub fn tag(self) -> Result<TailnetTag, ValueError> {
         match self {
-            Self::Controller => TailnetTag::new("tag:aegis-controller"),
-            Self::Agent => TailnetTag::new("tag:aegis-agent"),
+            Self::Controller => TailnetTag::new(CONTROLLER_TAG),
+            Self::Agent => TailnetTag::new(AGENT_TAG),
         }
     }
 
@@ -69,6 +78,13 @@ mod tests {
         let peer = PeerIdentity::new(TailnetTags::new(vec![tag("tag:aegis-agent")]));
         assert!(peer.has_tag(&tag("tag:aegis-agent")));
         assert!(!peer.has_tag(&tag("tag:aegis-controller")));
+    }
+
+    #[test]
+    fn only_the_role_tags_are_role_tags() {
+        assert!(AegisRole::is_role_tag(&tag("tag:aegis-agent")));
+        assert!(AegisRole::is_role_tag(&tag("tag:aegis-controller")));
+        assert!(!AegisRole::is_role_tag(&tag("tag:app")));
     }
 
     #[test]

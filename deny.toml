@@ -8,6 +8,10 @@ all-features = true
 allow = [
     "Apache-2.0",
     "BSD-3-Clause",
+    # rustls with ring (reqwest TLS, #18): ISC for ring and the webpki crates, CDLA-Permissive-2.0
+    # for the bundled webpki root certificate data.
+    "CDLA-Permissive-2.0",
+    "ISC",
     "MIT",
     "Unicode-3.0",
 ]
@@ -24,6 +28,7 @@ deny = [
 ]
 skip = [
     { crate = "syn", reason = "arch-lint pulls syn 3 beside the syn 2 the workspace pins (same exception as clippy.toml)" },
+    { crate = "windows-sys", reason = "ring (reqwest TLS, #18) pulls windows-sys 0.52 beside the 0.61 the rest of the tree uses (same exception as clippy.toml)" },
 ]
 
 [sources]

@@ -9,6 +9,7 @@ pub mod parse;
 pub mod reconcile;
 pub mod secrets;
 pub mod source;
+pub mod tailnet;
 pub mod validate;
 
 pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
@@ -22,4 +23,8 @@ pub use parse::{ParseError, StackParser};
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};
 pub use secrets::{DecryptError, SecretDecryptor, SecretStore, Slot, StoreError};
 pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
+pub use tailnet::{
+    AuthKey, DeviceId, DeviceRef, EnrollError, Enrolled, Enrollment, KeyMinter, NodeRemover,
+    SidecarState, StateVolume, TagError, TailnetError,
+};
 pub use validate::{EncryptionCheck, validate_desired_state};

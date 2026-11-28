@@ -4,7 +4,8 @@
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
-use aegis_adapters::api::{ApiClient, BaseUrl, ClientError, reconcile_routes, serve_agent};
+use aegis_adapters::BaseUrl;
+use aegis_adapters::api::{ApiClient, ClientError, reconcile_routes, serve_agent};
 use aegis_api::version_1::{ReconcileRequest, STATUS_PATH, StackState, StatusReport};
 use aegis_application::{
     GitError, PeerAddress, Reason, Reconcile, ReconcileError, WhoIs, WhoIsError,
