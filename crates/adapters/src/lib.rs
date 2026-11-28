@@ -7,6 +7,7 @@ mod filesystem;
 mod parser;
 pub mod policy;
 mod sops;
+pub mod tailscale;
 mod whois;
 
 pub use filesystem::FsRepo;

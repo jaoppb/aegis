@@ -20,7 +20,7 @@ impl BaseUrl {
         Self(url.trim_end_matches('/').to_owned())
     }
 
-    fn join(&self, path: &str) -> String {
+    pub(crate) fn join(&self, path: &str) -> String {
         format!("{}{path}", self.0)
     }
 }
