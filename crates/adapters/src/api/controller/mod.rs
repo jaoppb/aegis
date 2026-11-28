@@ -4,6 +4,8 @@
 //! The controller keeps no state on disk. Its view is derived: a restart looks at the repository
 //! again and tells every agent again, and a reconcile is idempotent.
 
+mod sync;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,7 +19,7 @@ use aegis_application::{Fleet, Goal, Invalid, Notice, Observation, Order, Poller
 use aegis_domain::{CommitSha, HostName, HostNames};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use super::wire::rejection_status;
@@ -69,6 +71,8 @@ impl Book {
 struct Shared {
     book: Mutex<Book>,
     agents: BTreeMap<HostName, ApiClient>,
+    /// Held while the repository is fetched, so a poll and a sync never fetch at the same time.
+    fetching: tokio::sync::Mutex<()>,
 }
 
 impl Shared {
@@ -279,6 +283,7 @@ impl Hub {
         let shared = Shared {
             book: Mutex::new(book),
             agents: clients.0,
+            fetching: tokio::sync::Mutex::new(()),
         };
         Ok(Self {
             shared: Arc::new(shared),
@@ -289,17 +294,42 @@ impl Hub {
     /// `403` or `503`). `POST` answers `204`, `400` for a malformed host or commit and `404` for a
     /// host that has no agent address; `GET` answers a [`ControllerStatus`].
     pub fn routes(&self) -> Router {
-        let methods = get(snapshot).post(receive);
+        self.read_routes().merge(self.report_routes())
+    }
+
+    /// `GET /v1/status` alone: the status an operator reads, answering a [`ControllerStatus`].
+    pub fn read_routes(&self) -> Router {
         Router::new()
-            .route(STATUS_PATH, methods)
+            .route(STATUS_PATH, get(snapshot))
             .with_state(Arc::clone(&self.shared))
+    }
+
+    /// `POST /v1/status` alone: the reports of agents, answering `204`, `400` for a malformed
+    /// host or commit and `404` for a host that has no agent address.
+    pub fn report_routes(&self) -> Router {
+        Router::new()
+            .route(STATUS_PATH, post(receive))
+            .with_state(Arc::clone(&self.shared))
+    }
+
+    /// The sync routes, which look at the repository with `poller` when asked and make the agents
+    /// converge: `POST /v1/syncs` for every host and `POST /v1/hosts/{host}/syncs` for one. They
+    /// are to be served behind the operator check (which answers `403` or `503`); the answers are
+    /// listed with [`aegis_api::version_1::SYNCS_PATH`].
+    pub fn sync_routes<Up>(&self, poller: Arc<Poller<Up>>) -> Router
+    where
+        Up: Upstream + Send + Sync + 'static,
+    {
+        sync::routes(Arc::clone(&self.shared), poller)
     }
 
     /// Look at the repository once and tell the hosts that have not confirmed the newest good
     /// commit to converge to it. A failed fetch or an unreadable commit changes nothing that runs.
     pub async fn tick<Up: Upstream + Sync>(&self, poller: &Poller<Up>) {
+        let fetching = self.shared.fetching.lock().await;
         let observation = poller.observe().await;
         let order = plan(&self.shared, observation);
+        drop(fetching);
         tell(&self.shared, order);
     }
 

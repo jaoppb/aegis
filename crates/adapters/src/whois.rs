@@ -4,7 +4,7 @@ use std::process::Output;
 use std::time::Duration;
 
 use aegis_application::{PeerAddress, Reason, WhoIs, WhoIsError};
-use aegis_domain::{PeerIdentity, TailnetTag, TailnetTags};
+use aegis_domain::{Login, PeerIdentity, TailnetTag, TailnetTags};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -79,6 +79,14 @@ fn failure_of(stderr: &[u8]) -> WhoIsError {
 struct Reply {
     #[serde(rename = "Node")]
     node: Option<Node>,
+    #[serde(rename = "UserProfile")]
+    user: Option<User>,
+}
+
+#[derive(Deserialize)]
+struct User {
+    #[serde(rename = "LoginName")]
+    login: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,16 +96,24 @@ struct Node {
 }
 
 /// Read the identity out of the JSON `tailscale whois --json` printed. A node without tags (a
-/// user-owned node) is an identity with no tags; a tag that is not a valid ACL tag can never match
-/// a required one, so it is dropped.
+/// user-owned node) is an identity with no tags and the login of its owner; a tag that is not a
+/// valid ACL tag can never match a required one, so it is dropped. A node that lists any tag at
+/// all belongs to the tailnet, not to a person, so its login is ignored.
 fn parse_identity(json: &[u8]) -> Result<PeerIdentity, WhoIsError> {
     let reply: Reply = serde_json::from_slice(json).map_err(|failure| unavailable(&failure))?;
     let node = reply
         .node
         .ok_or_else(|| unavailable(&"the reply has no node"))?;
     let tags = node.tags.unwrap_or_default();
+    let owned_by_person = tags.is_empty();
     let valid = tags.into_iter().filter_map(|tag| TailnetTag::new(tag).ok());
-    Ok(PeerIdentity::new(valid.collect::<TailnetTags>()))
+    let identity = PeerIdentity::new(valid.collect::<TailnetTags>());
+    let login = reply.user.and_then(|user| user.login);
+    let owner = login.and_then(|name| Login::new(&name).ok());
+    Ok(match owner {
+        Some(owner) if owned_by_person => identity.with_login(owner),
+        _ => identity,
+    })
 }
 
 #[cfg(test)]
@@ -130,6 +146,31 @@ mod tests {
         let no_tags = parse_identity(br#"{"Node":{}}"#).unwrap();
         assert_eq!(null_tags, PeerIdentity::default());
         assert_eq!(no_tags, PeerIdentity::default());
+    }
+
+    #[test]
+    fn a_user_owned_node_carries_the_login_of_its_owner() {
+        let json = br#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"Ada@Example.com"}}"#;
+        let peer = parse_identity(json).unwrap();
+        let operators = aegis_domain::Logins::parse_list("ada@example.com").unwrap();
+        assert!(peer.is_operator(&operators));
+    }
+
+    #[test]
+    fn a_tagged_node_ignores_the_login_of_its_profile() {
+        let json = br#"{"Node":{"Tags":["tag:aegis-agent"]},"UserProfile":{"LoginName":"ada@example.com"}}"#;
+        let peer = parse_identity(json).unwrap();
+        let operators = aegis_domain::Logins::parse_list("ada@example.com").unwrap();
+        assert!(!peer.is_operator(&operators));
+        assert!(peer.has_tag(&tag("tag:aegis-agent")));
+    }
+
+    #[test]
+    fn a_node_whose_only_tags_are_invalid_is_still_not_a_person() {
+        let json = br#"{"Node":{"Tags":["bogus"]},"UserProfile":{"LoginName":"ada@example.com"}}"#;
+        let peer = parse_identity(json).unwrap();
+        let operators = aegis_domain::Logins::parse_list("ada@example.com").unwrap();
+        assert!(!peer.is_operator(&operators));
     }
 
     #[test]

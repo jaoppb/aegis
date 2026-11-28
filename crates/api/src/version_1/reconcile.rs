@@ -14,6 +14,8 @@ pub const STATUS_PATH: &str = "/v1/status";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconcileRequest {
     commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stack: Option<String>,
 }
 
 impl ReconcileRequest {
@@ -22,6 +24,18 @@ impl ReconcileRequest {
     pub fn new<Text: Into<String>>(commit: Text) -> Self {
         Self {
             commit: commit.into(),
+            stack: None,
+        }
+    }
+
+    /// The same request, limited to the stack named `stack`: the agent leaves the others alone
+    /// and does not report to the controller, because a partial report must not stand for the
+    /// host.
+    #[must_use]
+    pub fn only<Text: Into<String>>(self, stack: Text) -> Self {
+        Self {
+            stack: Some(stack.into()),
+            ..self
         }
     }
 
@@ -29,6 +43,12 @@ impl ReconcileRequest {
     #[must_use]
     pub fn commit(&self) -> &str {
         &self.commit
+    }
+
+    /// The only stack to converge, when not all of them.
+    #[must_use]
+    pub fn stack(&self) -> Option<&str> {
+        self.stack.as_deref()
     }
 }
 
@@ -142,6 +162,14 @@ mod tests {
     fn a_reconcile_request_has_a_stable_wire_shape() {
         let json = serde_json::to_string(&ReconcileRequest::new("abc1234")).unwrap();
         assert_eq!(json, r#"{"commit":"abc1234"}"#);
+    }
+
+    #[test]
+    fn a_request_for_one_stack_names_it_and_an_old_body_still_reads() {
+        let json = serde_json::to_string(&ReconcileRequest::new("abc1234").only("web")).unwrap();
+        assert_eq!(json, r#"{"commit":"abc1234","stack":"web"}"#);
+        let old: ReconcileRequest = serde_json::from_str(r#"{"commit":"abc1234"}"#).unwrap();
+        assert_eq!(old.stack(), None);
     }
 
     #[test]

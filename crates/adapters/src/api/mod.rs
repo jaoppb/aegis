@@ -18,4 +18,6 @@ pub use enroll::{
     CLIENT_ID_VAR, CLIENT_SECRET_VAR, CONTROLLER_REQUIRED, ControllerDesk, enroll_routes,
 };
 pub use nodes::node_routes;
-pub use server::{ListenAddress, ServeError, serve, serve_controller};
+pub use server::{
+    ListenAddress, Operated, Routes, ServeError, serve, serve_controller, serve_controller_for,
+};

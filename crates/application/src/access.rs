@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 
-use aegis_domain::{AegisRole, PeerIdentity, TailnetTag, ValueError};
+use aegis_domain::{AegisRole, Logins, PeerIdentity, TailnetTag, ValueError};
 
 use crate::source::Reason;
 
@@ -79,18 +79,36 @@ impl fmt::Display for AccessError {
 
 impl std::error::Error for AccessError {}
 
-/// Lets a peer through only when it carries one required ACL tag.
+/// Who a route lets through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admit {
+    /// Only the node that carries the server's required ACL tag.
+    Tagged,
+    /// Only an operator: a person's untagged node, listed in the operators.
+    Operator,
+    /// Either of the above.
+    Either,
+}
+
+/// Lets a peer through when it carries one required ACL tag or, on the routes that say so, when it
+/// is an operator.
 #[derive(Debug)]
 pub struct Authorizer<Lookup> {
     whois: Lookup,
     required: TailnetTag,
+    operators: Logins,
 }
 
 impl<Lookup: WhoIs + Sync> Authorizer<Lookup> {
-    /// An authorizer that resolves peers with `whois` and requires `required`.
+    /// An authorizer that resolves peers with `whois` and requires `required`. It knows no
+    /// operator until [`Authorizer::with_operators`] names them.
     #[must_use]
-    pub const fn new(whois: Lookup, required: TailnetTag) -> Self {
-        Self { whois, required }
+    pub fn new(whois: Lookup, required: TailnetTag) -> Self {
+        Self {
+            whois,
+            required,
+            operators: Logins::default(),
+        }
     }
 
     /// An authorizer for a server with `role`, which admits only the other side's tag.
@@ -102,6 +120,13 @@ impl<Lookup: WhoIs + Sync> Authorizer<Lookup> {
         Ok(Self::new(whois, role.caller_tag()?))
     }
 
+    /// The same authorizer that also admits the people `operators` on the routes that allow them.
+    /// Without it no operator is admitted: access fails closed.
+    #[must_use]
+    pub fn with_operators(self, operators: Logins) -> Self {
+        Self { operators, ..self }
+    }
+
     /// Check that `peer` carries the required tag.
     ///
     /// # Errors
@@ -109,9 +134,47 @@ impl<Lookup: WhoIs + Sync> Authorizer<Lookup> {
     /// Returns [`AccessError::Denied`] for an unknown, untagged or wrongly tagged peer, and
     /// [`AccessError::Unavailable`] when the lookup failed.
     pub async fn authorize(&self, peer: &PeerAddress) -> Result<(), AccessError> {
-        let identity = self.whois.identify(peer).await.map_err(refuse)?;
-        let carries = identity.has_tag(&self.required);
-        carries.then_some(()).ok_or(AccessError::Denied)
+        self.authorize_for(peer, Admit::Tagged).await
+    }
+
+    /// Check that `peer` is one of the callers `admit` names.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Authorizer::authorize`]; an operator on a route that does not admit
+    /// operators is denied.
+    pub async fn authorize_for(&self, peer: &PeerAddress, admit: Admit) -> Result<(), AccessError> {
+        let identity = self.identify(peer).await?;
+        self.admits(&identity, admit)
+    }
+
+    /// Resolve `peer` to the node behind it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError::Denied`] for an address that is no tailnet node, and
+    /// [`AccessError::Unavailable`] when the lookup failed.
+    pub async fn identify(&self, peer: &PeerAddress) -> Result<PeerIdentity, AccessError> {
+        self.whois.identify(peer).await.map_err(refuse)
+    }
+
+    /// Check that `identity` is one of the callers `admit` names.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError::Denied`] when it is not.
+    pub fn admits(&self, identity: &PeerIdentity, admit: Admit) -> Result<(), AccessError> {
+        let operator = identity.is_operator(&self.operators);
+        let allowed = match admit {
+            Admit::Tagged => self.is_tagged(identity),
+            Admit::Operator => operator,
+            Admit::Either => self.is_tagged(identity) || operator,
+        };
+        allowed.then_some(()).ok_or(AccessError::Denied)
+    }
+
+    fn is_tagged(&self, identity: &PeerIdentity) -> bool {
+        identity.has_tag(&self.required)
     }
 }
 

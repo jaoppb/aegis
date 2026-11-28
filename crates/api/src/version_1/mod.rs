@@ -5,6 +5,7 @@ mod health;
 mod nodes;
 mod reconcile;
 mod status;
+mod sync;
 
 pub use enroll::{ENROLL_PATH, EnrollRequest, EnrollResponse, SidecarVolume};
 pub use health::{HEALTH_PATH, Health, Role, VERSION};
@@ -13,3 +14,4 @@ pub use reconcile::{
     RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StackState, StackStatus, StatusReport,
 };
 pub use status::{Agent, Confirmation, ControllerStatus, HostStatus, InvalidCommit, TargetStatus};
+pub use sync::{HOST_SYNCS_PATH, HostSync, SYNCS_PATH, SyncRequest, SyncResponse, host_syncs_path};
