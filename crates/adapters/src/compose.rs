@@ -234,12 +234,10 @@ fn read_document(text: &str) -> Result<Option<RawCompose>, ParseError> {
     document
         .apply_merge()
         .map_err(|error| ParseError::Invalid(error.to_string()))?;
-    if has_merge_key(&document) {
-        return Err(ParseError::Invalid(
-            "chained YAML merge keys (`<<`) are not supported: write the merged content out"
-                .to_owned(),
-        ));
-    }
+    refuse(
+        "chained YAML merge keys (`<<`) are not supported: write the merged content out at",
+        &allowlist::merge_keys(&document),
+    )?;
     refuse(
         "keys Aegis does not support (remove them or use an `x-` extension key):",
         &allowlist::unsupported_keys(&document),
@@ -257,18 +255,6 @@ fn refuse(reason: &str, found: &[String]) -> Result<(), ParseError> {
         "{reason} {}",
         paths.join(", ")
     )))
-}
-
-/// Whether a `<<` key is left anywhere, which `apply_merge` does for a merge inside a merged
-/// anchor. Compose resolves those, so what is left unread here would slip past the rules.
-fn has_merge_key(value: &serde_norway::Value) -> bool {
-    match value {
-        serde_norway::Value::Mapping(mapping) => mapping
-            .iter()
-            .any(|(key, inner)| key.as_str() == Some("<<") || has_merge_key(inner)),
-        serde_norway::Value::Sequence(items) => items.iter().any(has_merge_key),
-        _ => false,
-    }
 }
 
 fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, ParseError> {

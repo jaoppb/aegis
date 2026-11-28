@@ -149,6 +149,33 @@ const CONFIG: &[&str] = &[
     "name",
 ];
 const INCLUDE: &[&str] = &["path"];
+const NETWORK: &[&str] = &[
+    "driver",
+    "driver_opts",
+    "attachable",
+    "enable_ipv4",
+    "enable_ipv6",
+    "external",
+    "internal",
+    "ipam",
+    "labels",
+    "name",
+];
+const SERVICE_NETWORK: &[&str] = &[
+    "aliases",
+    "driver_opts",
+    "gw_priority",
+    "interface_name",
+    "ipv4_address",
+    "ipv6_address",
+    "link_local_ips",
+    "mac_address",
+    "priority",
+];
+const SERVICE_SECRET: &[&str] = &["source", "target", "uid", "gid", "mode"];
+const BIND: &[&str] = &["propagation", "create_host_path", "selinux", "recursive"];
+const VOLUME_OPTIONS: &[&str] = &["nocopy", "subpath", "labels"];
+const TMPFS: &[&str] = &["size", "mode"];
 
 const RULES: &[Rule] = &[
     Rule {
@@ -174,6 +201,38 @@ const RULES: &[Rule] = &[
     Rule {
         route: &["services", "*", "volumes", "*"],
         allowed: MOUNT,
+    },
+    Rule {
+        route: &["services", "*", "networks", "*"],
+        allowed: SERVICE_NETWORK,
+    },
+    Rule {
+        route: &["services", "*", "secrets", "*"],
+        allowed: SERVICE_SECRET,
+    },
+    Rule {
+        route: &["services", "*", "configs", "*"],
+        allowed: SERVICE_SECRET,
+    },
+    Rule {
+        route: &["services", "*", "build", "secrets", "*"],
+        allowed: SERVICE_SECRET,
+    },
+    Rule {
+        route: &["services", "*", "volumes", "*", "bind"],
+        allowed: BIND,
+    },
+    Rule {
+        route: &["services", "*", "volumes", "*", "volume"],
+        allowed: VOLUME_OPTIONS,
+    },
+    Rule {
+        route: &["services", "*", "volumes", "*", "tmpfs"],
+        allowed: TMPFS,
+    },
+    Rule {
+        route: &["networks", "*"],
+        allowed: NETWORK,
     },
     Rule {
         route: &["volumes", "*"],
@@ -267,12 +326,28 @@ impl<'doc> Member<'doc> {
             .collect()
     }
 
-    /// The paths of every YAML tag at or below this node.
-    fn tags(&self) -> Vec<String> {
-        match self.node {
-            Value::Tagged(_) => vec![self.path.clone()],
-            _ => self.children().iter().flat_map(Self::tags).collect(),
-        }
+    /// What `find` reports at this node and at every node below it.
+    fn everywhere(&self, find: fn(&Self) -> Vec<String>) -> Vec<String> {
+        let below = self.children();
+        let inner = below.iter().flat_map(|member| member.everywhere(find));
+        find(self).into_iter().chain(inner).collect()
+    }
+
+    /// This node's path when it is tagged, and the paths of its tagged keys (`!custom <<: *a`).
+    fn tagged(&self) -> Vec<String> {
+        let here = matches!(self.node, Value::Tagged(_)).then(|| self.path.clone());
+        let keys = self.node.as_mapping().into_iter().flat_map(Mapping::keys);
+        let keys = keys.filter(|key| matches!(key, Value::Tagged(_)));
+        let keys = keys.map(|key| join(&self.path, &key_text(key)));
+        here.into_iter().chain(keys).collect()
+    }
+
+    /// The paths of the `<<` keys of this mapping.
+    fn merges(&self) -> Vec<String> {
+        let keys = self.node.as_mapping().into_iter().flat_map(Mapping::keys);
+        keys.filter(|key| key.as_str() == Some("<<"))
+            .map(|key| join(&self.path, &key_text(key)))
+            .collect()
     }
 }
 
@@ -303,7 +378,14 @@ impl Rule {
 /// Every YAML tag of `document`, as the dotted paths of the tagged nodes.
 #[must_use]
 pub fn tags(document: &Value) -> Vec<String> {
-    Member::root(document).tags()
+    Member::root(document).everywhere(Member::tagged)
+}
+
+/// Every `<<` merge key `apply_merge` left in `document`, as dotted paths. Compose resolves
+/// them (a merge inside a merged anchor), so what is left unread would slip past the rules.
+#[must_use]
+pub fn merge_keys(document: &Value) -> Vec<String> {
+    Member::root(document).everywhere(Member::merges)
 }
 
 /// Every key of `document` the model does not understand, as dotted paths.

@@ -370,6 +370,12 @@ fn a_merge_key_inside_a_tagged_node_is_refused() {
 }
 
 #[test]
+fn a_tagged_merge_key_is_refused() {
+    let text = "x-a: &a\n  volumes: ['./data:/data']\nservices:\n  app:\n    image: x\n    !custom <<: *a\n";
+    assert!(rejection(text).contains("tag"));
+}
+
+#[test]
 fn every_yaml_tag_is_refused_with_its_path() {
     for tag in ["!reset", "!override", "!custom"] {
         let text = format!("services:\n  app:\n    image: x\n    ports: {tag} []\n");
@@ -380,7 +386,7 @@ fn every_yaml_tag_is_refused_with_its_path() {
 #[test]
 fn a_tag_inside_an_anchor_is_refused() {
     let text = "x-a: &a !reset\n  image: x\nservices:\n  app:\n    <<: *a\n";
-    assert!(rejection(text).contains("tag"));
+    assert!(rejection(text).contains("`x-a`"));
 }
 
 const REFUSED: &[(&str, &str)] = &[
