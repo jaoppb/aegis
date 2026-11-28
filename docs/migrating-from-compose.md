@@ -67,7 +67,7 @@ For each `.env`, `env_file` and `secrets` file of the stack, encrypt it in place
 sops encrypt --in-place hosts/<host>/<stack>/.env
 ```
 
-Then check each file before you stage it (a copied plaintext `.env` is one `git add -A` from a commit): `sops filestatus <file>` reports `"encrypted":true`, and `aegis validate` rejects any `.env`, `env_file` or `secrets` file that is not SOPS-encrypted. Only then `git add`, and read `git diff --cached` before you commit: it shows `ENC[...]` values and a `sops_` metadata block, never a plain secret. Mind the rules that Aegis checks ([sops.md](sops.md)):
+Then check each file before you stage it (a copied plaintext `.env` is one `git add -A` from a commit): `sops filestatus <file>` reports `"encrypted":true` (pass `--input-type dotenv` for a dotenv file not named `.env` or `*.env`), and `aegis validate` rejects any `.env`, `env_file` or `secrets` file that is not SOPS-encrypted. Only then `git add`, and read `git diff --cached` before you commit: it shows `ENC[...]` values and a `sops_` metadata block, never a plain secret. Mind the rules that Aegis checks ([sops.md](sops.md)):
 
 - A file with another name than `.env` or `*.env` needs `--input-type dotenv --output-type dotenv`, or `sops` encrypts it as binary and the agent cannot read it.
 - A PEM or another raw value goes into a YAML or JSON file, encrypted in that format.
@@ -101,7 +101,7 @@ aegis diff                     # the stack is "same", and the override of an exp
 aegis status                   # the host confirmed the target commit and the stack is running
 ```
 
-Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack that exposes a service and has a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again ([exposure.md](exposure.md), "Things to know").
+Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack that exposes a service and has a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again.
 
 ## Rolling back
 
