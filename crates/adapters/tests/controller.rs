@@ -1,16 +1,15 @@
 //! The controller end to end: a real git origin, the polling adapters, the status routes on a real
 //! socket and a fake agent that answers `POST /v1/reconcile`.
 
-use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aegis_adapters::api::{AgentAddress, ApiClient, Hub};
-use aegis_adapters::{BaseUrl, FsRepo, GitCheckout, Remote, SerdeStackParser, SopsCheck};
+use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
-    Agent, Confirmation, ControllerStatus, RECONCILE_PATH, ReconcileRequest, STATUS_PATH,
-    StackState, StackStatus, StatusReport,
+    Agent as Wire, Confirmation, ControllerStatus, HostStatus, RECONCILE_PATH, ReconcileRequest,
+    STATUS_PATH, StackState, StackStatus, StatusReport,
 };
 use aegis_application::{Poller, Repository};
 use aegis_domain::HostName;
@@ -56,10 +55,10 @@ impl World {
         self.root.join("origin")
     }
 
-    fn poller(&self) -> Poller<GitCheckout> {
+    fn poller(&self) -> Poller<GitFollower> {
         let work = self.root.join("work");
         let remote = Remote::new(self.origin().to_str().unwrap(), "trunk").unwrap();
-        let git = GitCheckout::new(&work).with_remote(remote);
+        let git = GitFollower::new(&work, remote);
         let repository = Repository::new(FsRepo::new(&work), SerdeStackParser, SopsCheck);
         Poller::new(git, repository)
     }
@@ -81,6 +80,11 @@ impl World {
         let client = ApiClient::new(BaseUrl::new(&self.url)).unwrap();
         wait_confirmed(&client, host).await
     }
+
+    async fn failing(&self, host: &str) -> ControllerStatus {
+        let client = ApiClient::new(BaseUrl::new(&self.url)).unwrap();
+        wait_failing(&client, host).await
+    }
 }
 
 #[cfg(test)]
@@ -96,34 +100,90 @@ async fn write_files(origin: &Path, files: &[(&str, &str)]) {
 
 #[cfg(test)]
 async fn wait_confirmed(client: &ApiClient, host: &str) -> ControllerStatus {
+    wait_for(client, host, |found| {
+        *found.confirmation() == Confirmation::Confirmed
+    })
+    .await
+}
+
+#[cfg(test)]
+async fn wait_failing(client: &ApiClient, host: &str) -> ControllerStatus {
+    let failing = |found: &HostStatus| matches!(found.confirmation(), Confirmation::Failing(_));
+    wait_for(client, host, failing).await
+}
+
+/// Poll the status until `host` satisfies `wanted`: agent calls end in tasks of their own.
+#[cfg(test)]
+async fn wait_for(
+    client: &ApiClient,
+    host: &str,
+    wanted: impl Fn(&HostStatus) -> bool,
+) -> ControllerStatus {
     let mut status = client.controller_status().await.unwrap();
     let mut tries: u32 = 0;
-    while !has_confirmed(&status, host) && tries < 250 {
+    while !holds(&status, host, &wanted) && tries < 250 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         status = client.controller_status().await.unwrap();
         tries = tries.saturating_add(1);
     }
-    assert!(has_confirmed(&status, host), "{host} never confirmed");
+    assert!(holds(&status, host, &wanted), "{host} never got there");
     status
 }
 
 #[cfg(test)]
-fn has_confirmed(status: &ControllerStatus, host: &str) -> bool {
+fn holds(status: &ControllerStatus, host: &str, wanted: &impl Fn(&HostStatus) -> bool) -> bool {
     let found = status.hosts().iter().find(|found| found.host() == host);
-    found.is_some_and(|found| found.confirmation() == Confirmation::Confirmed)
+    found.is_some_and(wanted)
+}
+
+/// How the fake agent answers: it fails the first `failures` calls with a 500, waits `delay`
+/// before answering and names `answers_as` as the host in its report.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct Behaviour {
+    failures: usize,
+    delay: Duration,
+    answers_as: &'static str,
 }
 
 #[cfg(test)]
-async fn fake_agent(calls: Arc<Mutex<Vec<String>>>) -> BaseUrl {
-    let handler = |State(seen): State<Arc<Mutex<Vec<String>>>>,
-                   Json(request): Json<ReconcileRequest>| {
-        seen.lock().unwrap().push(request.commit().to_owned());
-        let stack = StackStatus::new("hosts/h/web", StackState::Running, Vec::new());
-        ready(Json(StatusReport::new("h", request.commit(), vec![stack])))
+const WELL_BEHAVED: Behaviour = Behaviour {
+    failures: 0,
+    delay: Duration::ZERO,
+    answers_as: "h",
+};
+
+#[cfg(test)]
+#[derive(Clone)]
+struct Agent {
+    calls: Arc<Mutex<Vec<String>>>,
+    behaviour: Behaviour,
+}
+
+#[cfg(test)]
+async fn answer(
+    State(agent): State<Agent>,
+    Json(request): Json<ReconcileRequest>,
+) -> Result<Json<StatusReport>, StatusCode> {
+    let number = {
+        let mut calls = agent.calls.lock().unwrap();
+        calls.push(request.commit().to_owned());
+        calls.len()
     };
+    tokio::time::sleep(agent.behaviour.delay).await;
+    if number <= agent.behaviour.failures {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let stack = StackStatus::new("hosts/h/web", StackState::Running, Vec::new());
+    let host = agent.behaviour.answers_as;
+    Ok(Json(StatusReport::new(host, request.commit(), vec![stack])))
+}
+
+#[cfg(test)]
+async fn fake_agent(agent: Agent) -> BaseUrl {
     let app = Router::new()
-        .route(RECONCILE_PATH, post(handler))
-        .with_state(calls);
+        .route(RECONCILE_PATH, post(answer))
+        .with_state(agent);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));
     tokio::spawn(async move { axum::serve(listener, app).await });
@@ -132,6 +192,11 @@ async fn fake_agent(calls: Arc<Mutex<Vec<String>>>) -> BaseUrl {
 
 #[cfg(test)]
 async fn world(name: &str) -> World {
+    world_with(name, WELL_BEHAVED).await
+}
+
+#[cfg(test)]
+async fn world_with(name: &str, behaviour: Behaviour) -> World {
     let root = std::env::temp_dir().join(format!("aegis-ctl-{}-{name}", std::process::id()));
     tokio::fs::remove_dir_all(&root).await.ok();
     tokio::fs::create_dir_all(root.join("origin"))
@@ -139,19 +204,28 @@ async fn world(name: &str) -> World {
         .unwrap();
     git(&root.join("origin"), &["init", "-q", "-b", "trunk"]).await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let agent = fake_agent(calls.clone()).await;
-    let address = AgentAddress::new(HostName::new("h").unwrap(), agent);
+    let agent = Agent {
+        calls: calls.clone(),
+        behaviour,
+    };
+    let address = AgentAddress::new(HostName::new("h").unwrap(), fake_agent(agent).await);
     let hub = Hub::new(&[address]).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let routes = hub.routes();
-    tokio::spawn(async move { axum::serve(listener, routes).await });
+    let url = serve(hub.routes()).await;
     World {
         root,
         calls,
         hub,
         url,
     }
+}
+
+/// Serve `routes` on a free local port and say where.
+#[cfg(test)]
+async fn serve(routes: Router) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, routes).await });
+    url
 }
 
 #[cfg(test)]
@@ -244,7 +318,7 @@ fn a_failed_fetch_leaves_the_target_and_the_confirmations_alone() {
         let status = world.status().await;
         assert!(status.fetch_error().is_some());
         assert_eq!(status.target().unwrap().commit(), good);
-        assert_eq!(status.hosts()[0].confirmation(), Confirmation::Confirmed);
+        assert_eq!(status.hosts()[0].confirmation(), &Confirmation::Confirmed);
         assert_eq!(world.calls.lock().unwrap().len(), 1);
     });
 }
@@ -260,7 +334,7 @@ fn a_host_of_the_repository_without_an_agent_is_listed_as_unmapped() {
         world.confirmed("h").await;
         let status = world.status().await;
         let lonely = status.hosts().iter().find(|found| found.host() == "lonely");
-        assert_eq!(lonely.unwrap().agent(), Agent::Unmapped);
+        assert_eq!(lonely.unwrap().agent(), Wire::Unmapped);
     });
 }
 
@@ -286,5 +360,146 @@ fn a_status_report_is_accepted_only_from_a_known_host_with_a_valid_commit() {
         assert_eq!(post_report(&world, &genuine).await, StatusCode::NO_CONTENT);
         let kept = world.status().await.hosts()[0].report().cloned();
         assert_eq!(kept, Some(genuine));
+    });
+}
+
+#[cfg(test)]
+async fn restore_hosts(world: &World) -> String {
+    git(&world.origin(), &["rm", "-q", "hosts"]).await;
+    world.commit(&GOOD).await
+}
+
+#[test]
+fn the_controller_recovers_once_a_good_commit_follows_an_unreadable_one() {
+    runtime().block_on(async {
+        let world = world("recover").await;
+        world.commit(&GOOD).await;
+        git(&world.origin(), &["rm", "-rq", "hosts"]).await;
+        world.commit(&[("hosts", "now a file")]).await;
+        world.hub.tick(&world.poller()).await;
+        assert!(world.status().await.invalid().is_some());
+        let fixed = restore_hosts(&world).await;
+        world.hub.tick(&world.poller()).await;
+        let status = world.confirmed("h").await;
+        assert!(status.invalid().is_none());
+        assert_eq!(status.target().unwrap().commit(), fixed);
+    });
+}
+
+#[test]
+fn an_unreadable_aegis_directory_makes_the_commit_unreadable_too() {
+    runtime().block_on(async {
+        let world = world("aegis-root").await;
+        let good = world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        world.confirmed("h").await;
+        let broken = world.commit(&[("aegis", "now a file")]).await;
+        world.hub.tick(&world.poller()).await;
+        let status = world.status().await;
+        assert_eq!(status.invalid().unwrap().commit(), broken);
+        assert_eq!(status.target().unwrap().commit(), good);
+    });
+}
+
+#[test]
+fn a_host_whose_agent_failed_is_told_again_on_the_next_poll() {
+    runtime().block_on(async {
+        let behaviour = Behaviour {
+            failures: 1,
+            ..WELL_BEHAVED
+        };
+        let world = world_with("retry", behaviour).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        let failed = world.failing("h").await;
+        assert_eq!(failed.hosts()[0].report(), None);
+        world.hub.tick(&world.poller()).await;
+        world.confirmed("h").await;
+        assert_eq!(world.calls.lock().unwrap().len(), 2);
+    });
+}
+
+#[test]
+fn an_answer_about_another_host_does_not_confirm_the_asked_host() {
+    runtime().block_on(async {
+        let behaviour = Behaviour {
+            answers_as: "other",
+            ..WELL_BEHAVED
+        };
+        let world = world_with("impostor", behaviour).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        let status = world.failing("h").await;
+        assert_eq!(status.hosts()[0].report(), None);
+    });
+}
+
+#[test]
+fn a_host_with_a_call_in_flight_is_not_told_again() {
+    runtime().block_on(async {
+        let behaviour = Behaviour {
+            delay: Duration::from_millis(300),
+            ..WELL_BEHAVED
+        };
+        let world = world_with("flying", behaviour).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        world.hub.tick(&world.poller()).await;
+        world.confirmed("h").await;
+        assert_eq!(world.calls.lock().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn the_polling_loop_picks_up_a_commit_without_a_manual_tick() {
+    runtime().block_on(async {
+        let world = world("loop").await;
+        let commit = world.commit(&GOOD).await;
+        let poller = world.poller();
+        let looping = world.hub.run(&poller, Duration::from_millis(50));
+        let status = tokio::select! {
+            never = looping => match never {},
+            status = world.confirmed("h") => status,
+        };
+        assert_eq!(status.target().unwrap().commit(), commit);
+    });
+}
+
+#[cfg(test)]
+const NEVER_ANSWERS: Behaviour = Behaviour {
+    failures: usize::MAX,
+    ..WELL_BEHAVED
+};
+
+#[test]
+fn a_report_for_an_older_commit_is_kept_but_does_not_confirm_the_host() {
+    runtime().block_on(async {
+        let world = world_with("stale", NEVER_ANSWERS).await;
+        world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        world.failing("h").await;
+        let stale = StatusReport::new("h", "1234567", Vec::new());
+        assert_eq!(post_report(&world, &stale).await, StatusCode::NO_CONTENT);
+        let status = world.status().await;
+        let host = &status.hosts()[0];
+        assert_eq!(host.report(), Some(&stale));
+        assert_ne!(host.confirmation(), &Confirmation::Confirmed);
+    });
+}
+
+#[test]
+fn refused_reports_are_not_kept() {
+    runtime().block_on(async {
+        let world = world_with("refused", NEVER_ANSWERS).await;
+        let commit = world.commit(&GOOD).await;
+        world.hub.tick(&world.poller()).await;
+        world.failing("h").await;
+        let stranger = StatusReport::new("stranger", commit.as_str(), Vec::new());
+        post_report(&world, &stranger).await;
+        let garbled = StatusReport::new("h", "not a commit", Vec::new());
+        post_report(&world, &garbled).await;
+        let status = world.status().await;
+        assert_eq!(status.hosts().len(), 1);
+        assert_eq!(status.hosts()[0].report(), None);
     });
 }

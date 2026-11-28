@@ -109,16 +109,6 @@ impl Order {
     }
 }
 
-/// The agents the controller can tell to converge. Telling is fire and forget: an agent that
-/// converges reports back, and the report reaches [`Fleet::acknowledge`].
-pub trait Agents {
-    /// The hosts that have an agent.
-    fn hosts(&self) -> HostNames;
-
-    /// Start telling every host of `order` to converge. A host already being told is skipped.
-    fn converge(&self, order: &Order);
-}
-
 /// The controller's view: the goal, the notice and the hosts that confirmed the goal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fleet {
@@ -270,5 +260,24 @@ mod tests {
         fleet.observe(goal("aaaaaaa"));
         assert_eq!(fleet.notice(), &Notice::Clear);
         assert!(fleet.is_confirmed(&host("a")));
+    }
+
+    #[test]
+    fn an_unreadable_first_commit_leaves_no_goal() {
+        let mut fleet = Fleet::default();
+        let invalid = Invalid::new(commit("bbbbbbb"), Violations::default());
+        fleet.observe(Observation::Unloadable(invalid));
+        assert!(fleet.goal().is_none());
+        assert!(fleet.order(&hosts(&["a"])).is_none());
+    }
+
+    #[test]
+    fn confirming_a_host_twice_counts_it_once() {
+        let mut fleet = Fleet::default();
+        fleet.observe(goal("aaaaaaa"));
+        fleet.acknowledge(&host("a"), &commit("aaaaaaa"));
+        fleet.acknowledge(&host("a"), &commit("aaaaaaa"));
+        assert!(fleet.order(&hosts(&["a"])).is_none());
+        assert_eq!(fleet.order(&hosts(&["a", "b"])).unwrap().hosts().len(), 1);
     }
 }

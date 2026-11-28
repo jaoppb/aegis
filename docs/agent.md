@@ -61,4 +61,4 @@ The answer is the status report: the host, the commit and one entry per stack wi
 
 Only one reconcile runs at a time; a second request waits for the first.
 
-The agent also posts the same report to the controller's `POST /v1/status`. The controller does not serve that route yet (#14), so until then the post is best effort and the answer above is the report. Stacks with `state = "purged"` are skipped (#20).
+The agent also posts the same report to the controller's `POST /v1/status` ([controller.md](controller.md)). The post is best effort: a failure is ignored, and the answer above is the report either way. Stacks with `state = "purged"` are skipped (#20).

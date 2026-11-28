@@ -76,14 +76,17 @@ pub enum Agent {
     Unmapped,
 }
 
-/// Whether a host reported the target commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether a host reported the target commit. On the wire it is the string `"confirmed"` or
+/// `"pending"`, or `{"failing": "<reason>"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Confirmation {
     /// The host reported the target commit.
     Confirmed,
     /// The host has not reported the target commit yet.
     Pending,
+    /// The last call to the host's agent failed, for this reason, and is retried every poll.
+    Failing(String),
 }
 
 /// One host: whether the controller can reach an agent for it, whether it confirmed the target and
@@ -131,8 +134,8 @@ impl HostStatus {
 
     /// Whether the host reported the target commit.
     #[must_use]
-    pub const fn confirmation(&self) -> Confirmation {
-        self.confirmation
+    pub const fn confirmation(&self) -> &Confirmation {
+        &self.confirmation
     }
 
     /// The last report of the host, for any commit.
@@ -143,6 +146,10 @@ impl HostStatus {
 }
 
 /// The body of `GET /v1/status`.
+///
+/// Absent values are `null`, never left out. `target` is the last good commit and stays in force
+/// while `invalid` names a newer commit whose tree cannot be read, or `fetch_error` says the remote
+/// cannot be reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerStatus {
     target: Option<TargetStatus>,

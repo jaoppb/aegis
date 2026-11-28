@@ -19,7 +19,7 @@ pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,
     Extras, GitError, Target, Upstream,
 };
-pub use fleet::{Agents, Fleet, Goal, Invalid, Notice, Observation, Order};
+pub use fleet::{Fleet, Goal, Invalid, Notice, Observation, Order};
 pub use loader::load_desired_state;
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};

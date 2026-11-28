@@ -1,6 +1,6 @@
 //! Wires a full controller from its environment.
 
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::time::Duration;
 
 use aegis_api::version_1::Role;
@@ -13,7 +13,7 @@ use super::controller::{AgentAddress, Hub};
 use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
 use crate::git::Remote;
 use crate::http::BaseUrl;
-use crate::{FsRepo, GitCheckout, SerdeStackParser, SopsCheck, TailscaleWhois};
+use crate::{FsRepo, GitFollower, SerdeStackParser, SopsCheck, TailscaleWhois};
 
 const REPO_URL_VAR: &str = "AEGIS_REPO_URL";
 const REPO_BRANCH_VAR: &str = "AEGIS_REPO_BRANCH";
@@ -77,9 +77,14 @@ fn interval_from(variable: Option<&str>) -> Result<Duration, ServeError> {
 /// `AEGIS_WORKDIR`, which is wiped and rebuilt as needed, so it must be absolute.
 fn workdir_from(value: &str) -> Result<PathBuf, ServeError> {
     let path = PathBuf::from(value);
-    path.is_absolute()
-        .then_some(path)
-        .ok_or_else(|| invalid(WORKDIR_VAR, &"must be an absolute path"))
+    let climbs = path.components().any(|part| part == Component::ParentDir);
+    let usable = path.is_absolute() && path.parent().is_some() && !climbs;
+    usable.then_some(path).ok_or_else(|| {
+        invalid(
+            WORKDIR_VAR,
+            &"must be an absolute path below the root, without ..",
+        )
+    })
 }
 
 impl Settings {
@@ -100,8 +105,8 @@ impl Settings {
         })
     }
 
-    fn poller(&self) -> Poller<GitCheckout> {
-        let git = GitCheckout::new(&self.workdir).with_remote(self.remote.clone());
+    fn poller(&self) -> Poller<GitFollower> {
+        let git = GitFollower::new(&self.workdir, self.remote.clone());
         let repository = Repository::new(FsRepo::new(&self.workdir), SerdeStackParser, SopsCheck);
         Poller::new(git, repository)
     }
@@ -152,6 +157,7 @@ mod tests {
     fn the_poll_interval_defaults_to_a_minute_and_has_a_floor() {
         assert_eq!(interval_from(None).unwrap(), Duration::from_secs(60));
         assert_eq!(interval_from(Some("30")).unwrap(), Duration::from_secs(30));
+        assert_eq!(interval_from(Some("5")).unwrap(), Duration::from_secs(5));
         assert!(matches!(
             interval_from(Some("4")),
             Err(ServeError::Invalid { .. })
@@ -160,6 +166,12 @@ mod tests {
             interval_from(Some("soon")),
             Err(ServeError::Invalid { .. })
         ));
+    }
+
+    #[test]
+    fn a_zero_or_empty_poll_interval_is_refused() {
+        assert!(interval_from(Some("0")).is_err());
+        assert!(interval_from(Some("")).is_err());
     }
 
     #[test]
@@ -181,6 +193,8 @@ mod tests {
     #[test]
     fn the_work_directory_must_be_absolute() {
         assert!(workdir_from("relative").is_err());
+        assert!(workdir_from("/").is_err());
+        assert!(workdir_from("/var/../etc").is_err());
         assert!(workdir_from("/var/lib/aegis/work").is_ok());
     }
 }

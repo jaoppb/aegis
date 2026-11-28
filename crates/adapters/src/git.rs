@@ -1,6 +1,6 @@
 //! The `git` CLI adapter of the [`Checkout`] port. The controller's git polling reuses it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ const INHERITED: [&str; 6] = [
     "GIT_SSL_CAINFO",
 ];
 
+/// The transports git may use, so a URL cannot start another `git-remote-*` helper.
+const ALLOWED_PROTOCOLS: &str = "https:ssh:file";
+
 /// How long one git command may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -32,7 +35,6 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct GitCheckout {
     program: String,
     directory: PathBuf,
-    remote: Option<Remote>,
 }
 
 /// The remote branch a controller follows.
@@ -89,6 +91,9 @@ fn check_url(url: &str) -> Result<(), RemoteError> {
     if !plain(url) {
         return Err(RemoteError::BadUrl);
     }
+    if url.contains("::") {
+        return Err(RemoteError::BadUrl);
+    }
     let Some((scheme, rest)) = url.split_once("://") else {
         return Ok(());
     };
@@ -96,7 +101,7 @@ fn check_url(url: &str) -> Result<(), RemoteError> {
     let Some((userinfo, _host)) = authority.rsplit_once('@') else {
         return Ok(());
     };
-    let web = matches!(scheme, "http" | "https");
+    let web = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https");
     if web || userinfo.contains(':') {
         return Err(RemoteError::Credentials);
     }
@@ -133,16 +138,6 @@ impl GitCheckout {
         Self {
             program: program.into(),
             directory: directory.into(),
-            remote: None,
-        }
-    }
-
-    /// The same working tree, following `remote` for [`Upstream::advance`].
-    #[must_use]
-    pub fn with_remote(self, remote: Remote) -> Self {
-        Self {
-            remote: Some(remote),
-            ..self
         }
     }
 
@@ -151,6 +146,7 @@ impl GitCheckout {
         command.arg("-C").arg(&self.directory).args(arguments);
         cli::inherit_only(&mut command, &INHERITED);
         command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS);
         command
     }
 
@@ -209,12 +205,31 @@ impl GitCheckout {
 
     async fn start_over(&self) -> Result<(), GitError> {
         let failed = |error: std::io::Error| GitError::new(Reason::new(&error.kind()));
+        let adoptable = is_adoptable(&self.directory).await.map_err(failed)?;
+        adoptable
+            .then_some(())
+            .ok_or_else(|| GitError::new(Reason::new(&"the work directory is not empty")))?;
         let removed = tokio::fs::remove_dir_all(self.directory.join(".git")).await;
         removed.or_else(forgive_missing).map_err(failed)?;
         let created = tokio::fs::create_dir_all(&self.directory).await;
         created.map_err(failed)?;
         self.step(&["init", "--quiet"]).await
     }
+}
+
+/// Whether `directory` may become the work directory: it is missing, empty or already a git
+/// repository. Anything else could be somebody's data, which `git clean` would delete.
+async fn is_adoptable(directory: &Path) -> std::io::Result<bool> {
+    if tokio::fs::try_exists(directory.join(".git")).await? {
+        return Ok(true);
+    }
+    let opened = tokio::fs::read_dir(directory).await;
+    let mut entries = match opened {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+    };
+    Ok(entries.next_entry().await?.is_none())
 }
 
 fn forgive_missing(error: std::io::Error) -> std::io::Result<()> {
@@ -232,19 +247,41 @@ impl Checkout for GitCheckout {
     }
 }
 
-impl Upstream for GitCheckout {
+/// A working tree that follows the newest commit of a remote branch.
+#[derive(Debug, Clone)]
+pub struct GitFollower {
+    checkout: GitCheckout,
+    remote: Remote,
+}
+
+impl GitFollower {
+    /// The working tree in `directory`, following `remote`.
+    #[must_use]
+    pub fn new<Directory: Into<PathBuf>>(directory: Directory, remote: Remote) -> Self {
+        Self {
+            checkout: GitCheckout::new(directory),
+            remote,
+        }
+    }
+}
+
+impl Upstream for GitFollower {
     async fn advance(&self) -> Result<CommitSha, GitError> {
-        let missing = || GitError::new(Reason::new(&"no remote is configured"));
-        let remote = self.remote.as_ref().ok_or_else(missing)?;
-        self.prepare().await?;
-        let fetch = ["fetch", "--quiet", remote.url.as_str(), &remote.refspec()];
-        self.step(&fetch).await?;
-        let head = self
+        let git = &self.checkout;
+        git.prepare().await?;
+        let fetch = [
+            "fetch",
+            "--quiet",
+            self.remote.url.as_str(),
+            &self.remote.refspec(),
+        ];
+        git.step(&fetch).await?;
+        let head = git
             .capture(&["rev-parse", "--verify", "FETCH_HEAD"])
             .await?;
         let commit = CommitSha::new(head).map_err(|error| GitError::new(Reason::new(&error)))?;
-        self.detach(&commit).await?;
-        self.step(&["clean", "--quiet", "-ffdx"]).await?;
+        git.detach(&commit).await?;
+        git.step(&["clean", "--quiet", "-ffdx"]).await?;
         Ok(commit)
     }
 }
