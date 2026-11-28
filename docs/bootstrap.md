@@ -119,3 +119,5 @@ the variables the controller requires to start (`docs/controller.md`): `AEGIS_TS
 `AEGIS_REPO_URL` (from `--repo`), `AEGIS_WORKDIR` (a disposable checkout inside the container, empty on
 every new container) and `AEGIS_LISTEN`, plus `AEGIS_AGENTS` so it tells the agents to reconcile. The
 branch (`main`) and the poll interval (60 seconds) keep the controller's defaults.
+
+To move existing hand-written Compose stacks into the repository, see [migrating-from-compose.md](migrating-from-compose.md).
