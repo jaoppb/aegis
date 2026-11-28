@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 /// The path of the reconcile endpoint, served by agents.
 pub const RECONCILE_PATH: &str = "/v1/reconcile";
 
-/// The path of the status endpoint, served by the controller (the route is pending #14; agents
-/// report to it best effort until then).
+/// The path of the status endpoint, served by the controller: agents `POST` their reports to it
+/// and `GET` answers with a [`ControllerStatus`](super::ControllerStatus).
 pub const STATUS_PATH: &str = "/v1/status";
 
 /// The body of `POST /v1/reconcile`: converge the host to one commit of the repository. The

@@ -24,6 +24,7 @@ const BOOTSTRAP: Spec = Spec {
         "--stacks",
         "--image-tag",
         "--enroll-tags",
+        "--agents",
     ],
 };
 

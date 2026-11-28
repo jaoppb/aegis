@@ -44,6 +44,7 @@ aegis bootstrap --repo https://github.com/me/infra.git --host jao-server \
 | `--host` | The host's name: the directory under `hosts/`. | required |
 | `--controller` | The URL the agent reports to. | required |
 | `--with-controller` | Also install the controller on this host. | agent only |
+| `--agents` | With `--with-controller`: the agents of other hosts, comma-separated `host=url` pairs (`AEGIS_AGENTS` of the controller). The agent installed here is always listed first, at `http://<host>-aegis-agent:7480`. No credentials in a URL. | this host only |
 | `--enroll-tags` | With `--with-controller`: the ACL tags a stack's node may carry, comma-separated (`AEGIS_ENROLL_TAGS` of the controller). Never an Aegis role tag. | required with the controller |
 | `--checkout` | Where the repository is cloned (`AEGIS_CHECKOUT` of the agent). | `/var/lib/aegis/repo` |
 | `--stacks` | Where the `aegis/` stack files are rendered. | `/var/lib/aegis/stacks` |
@@ -112,5 +113,9 @@ image tag), the agent recreates itself in the middle of a reconcile; the first r
 Until then, to upgrade, re-render with `aegis bootstrap --image-tag <tag>` on the host, copy the new
 `aegis/` files into the repository and commit them: running bootstrap alone is not enough, because the
 agent redeploys the committed files, which still name the old tag. The `aegis/controller` stack stays on
-the variables the controller requires to start: `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET` (the
-encrypted `controller.env`) and `AEGIS_ENROLL_TAGS` (from `--enroll-tags`), besides `AEGIS_LISTEN`.
+the variables the controller requires to start (`docs/controller.md`): `AEGIS_TS_CLIENT_ID` and
+`AEGIS_TS_CLIENT_SECRET` (the encrypted `controller.env`), `AEGIS_ENROLL_TAGS` (from `--enroll-tags`),
+`AEGIS_REPO_URL` (from `--repo`), `AEGIS_WORKDIR` (a disposable checkout inside the container, empty on
+every new container) and `AEGIS_LISTEN`, plus `AEGIS_AGENTS` so it tells the agents to reconcile. The
+branch (`main`) and the poll interval (60 seconds) keep the controller's defaults. The controller fetches
+`--repo` itself, so the same limit as for the agent applies: no SSH material is mounted into it.

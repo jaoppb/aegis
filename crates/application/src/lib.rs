@@ -5,9 +5,11 @@ pub mod access;
 pub mod bootstrap;
 pub mod deploy;
 pub mod enroll;
+pub mod fleet;
 pub mod loader;
 pub mod outcome;
 pub mod parse;
+pub mod poll;
 pub mod reconcile;
 pub mod render;
 pub mod secrets;
@@ -18,19 +20,21 @@ pub mod validate;
 
 pub use access::{AccessError, Authorizer, PeerAddress, WhoIs, WhoIsError};
 pub use bootstrap::{
-    AegisNodes, AgeRecipient, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport,
-    ControllerChoice, ControllerSetup, ControllerUrl, Existing, FileText, HostFiles, HostKey,
-    HostSide, ImageTag, Joined, NodeKeys, Outcomes, RenderedFile, RepoUrl, SecretEncryptor,
-    Sources, StackOutcome, StackRunner, Written,
+    AegisNodes, AgeRecipient, AgentEndpoint, AgentEndpoints, AgentUrl, Bootstrap, BootstrapError,
+    BootstrapPlan, BootstrapReport, ControllerChoice, ControllerSetup, ControllerUrl, Existing,
+    FileText, HostFiles, HostKey, HostSide, ImageTag, Joined, NodeKeys, Outcomes, RenderedFile,
+    RepoUrl, SecretEncryptor, Sources, StackOutcome, StackRunner, Written,
 };
 pub use deploy::{
     BuiltServices, Checkout, ComposeError, ComposeRunner, DeployRequest, Environment, ExtraFiles,
-    Extras, GitError, Target,
+    Extras, GitError, Target, Upstream,
 };
 pub use enroll::{Enroller, EnrollmentRequest, Grant, SidecarEnroller, StateProbe, TailnetNames};
+pub use fleet::{Fleet, Goal, Invalid, Notice, Observation, Order};
 pub use loader::load_desired_state;
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
+pub use poll::Poller;
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};
 pub use secrets::{DecryptError, SecretDecryptor, SecretStore, Slot, StoreError};
 pub use sidecar::{

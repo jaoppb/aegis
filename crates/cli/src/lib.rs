@@ -15,7 +15,7 @@ enum Stream {
 }
 
 const USAGE: &str = "usage: aegis bootstrap --repo <git url> --host <name> --controller <url> \
-[--with-controller --enroll-tags <tag,...>] [--checkout <dir>] [--stacks <dir>] [--image-tag <tag>]
+[--with-controller --enroll-tags <tag,...> [--agents <host=url,...>]] [--checkout <dir>] [--stacks <dir>] [--image-tag <tag>]
 
 Reads AEGIS_TS_CLIENT_ID and AEGIS_TS_CLIENT_SECRET from the environment.
 ";

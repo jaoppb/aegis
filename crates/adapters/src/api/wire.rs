@@ -1,7 +1,7 @@
 //! Maps a reconcile [`Report`] onto the `/v1` wire types.
 
 use aegis_api::version_1::{StackState, StackStatus, StatusReport};
-use aegis_domain::{Deployment, Report, StackReport};
+use aegis_domain::{Deployment, Rejection, Report, StackReport};
 
 pub(super) fn status_report(report: &Report) -> StatusReport {
     let origin = report.origin();
@@ -23,4 +23,11 @@ fn stack_status(report: &StackReport) -> StackStatus {
             StackStatus::new(directory, StackState::Invalid, details)
         }
     }
+}
+
+/// A stack the loader or the validation rules rejected, as every agent will report it.
+pub(super) fn rejection_status(rejection: &Rejection) -> StackStatus {
+    let details = rejection.violations().iter().map(ToString::to_string);
+    let directory = rejection.directory().as_str();
+    StackStatus::new(directory, StackState::Invalid, details.collect())
 }

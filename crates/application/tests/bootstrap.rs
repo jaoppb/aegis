@@ -5,10 +5,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_application::{
-    AegisNodes, AgeRecipient, AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice,
-    ControllerSetup, ControllerUrl, Enrollment, Existing, FileText, HostFiles, HostKey, HostSide,
-    ImageTag, KeyMinter, NodeKeys, Reason, RenderedFile, RepoUrl, SecretEncryptor, Sources,
-    StackRunner, StateProbe, StateVolume, TailnetError, Written,
+    AegisNodes, AgeRecipient, AgentEndpoints, AuthKey, Bootstrap, BootstrapError, BootstrapPlan,
+    ControllerChoice, ControllerSetup, ControllerUrl, Enrollment, Existing, FileText, HostFiles,
+    HostKey, HostSide, ImageTag, KeyMinter, NodeKeys, Reason, RenderedFile, RepoUrl,
+    SecretEncryptor, Sources, StackRunner, StateProbe, StateVolume, TailnetError, Written,
 };
 use aegis_domain::{
     AegisRole, HostName, HostPath, ProjectName, Secret, StackName, TailnetTag, TailnetTags,
@@ -309,9 +309,49 @@ mod cases {
         run(&files, &runner, Scenario::new(Some(AUTH_KEY), install()));
         let compose = files.text_of("aegis/controller/compose.yaml");
         assert!(compose.contains("AEGIS_ENROLL_TAGS: \"tag:app\""));
+        assert!(compose.contains("AEGIS_REPO_URL: \"git@github.com:me/infra.git\""));
+        assert!(compose.contains("AEGIS_WORKDIR: \"/var/lib/aegis/work\""));
+        let agents = "AEGIS_AGENTS: \"jao-server=http://jao-server-aegis-agent:7480\"";
+        assert!(compose.contains(agents), "{compose}");
         assert!(compose.contains("env_file:"));
         assert!(compose.contains("controller.env"));
         assert!(compose.contains("condition: service_healthy"));
+    }
+
+    #[test]
+    fn the_other_agents_follow_the_local_one() {
+        let (files, runner) = (Files::default(), Runner::default());
+        let others = AgentEndpoints::parse_list("h2=http://h2-agent:7480,h3=https://h3:9").unwrap();
+        let setup = match install() {
+            ControllerChoice::Install(setup) => setup,
+            ControllerChoice::Skip => panic!("install() installs the controller"),
+        };
+        let choice = ControllerChoice::Install(setup.with_agents(others));
+        run(&files, &runner, Scenario::new(Some(AUTH_KEY), choice));
+        let compose = files.text_of("aegis/controller/compose.yaml");
+        let expected = "AEGIS_AGENTS: \"jao-server=http://jao-server-aegis-agent:7480,h2=http://h2-agent:7480,h3=https://h3:9\"";
+        assert!(compose.contains(expected), "{compose}");
+    }
+
+    #[test]
+    fn an_agent_url_cannot_carry_credentials_or_break_the_list() {
+        assert!(AgentEndpoints::parse_list("h=http://user:pw@h:1").is_err());
+        assert!(AgentEndpoints::parse_list("h=http://token@h:1").is_err());
+        assert!(AgentEndpoints::parse_list("h=ftp://h").is_err());
+        assert!(AgentEndpoints::parse_list("no-equals").is_err());
+        assert!(AgentEndpoints::parse_list("bad/host=http://h").is_err());
+        assert!(
+            AgentEndpoints::parse_list(" , ")
+                .unwrap()
+                .iter()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_repository_url_cannot_be_interpolated_by_compose() {
+        assert!(RepoUrl::new("git@host:me/$HOME.git").is_err());
     }
 
     #[test]

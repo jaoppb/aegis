@@ -84,7 +84,7 @@ fn validate_repo_url(value: &str) -> Result<(), ValueError> {
     }
     let forbidden = value
         .chars()
-        .find(|candidate| candidate.is_whitespace() || candidate.is_control());
+        .find(|candidate| candidate.is_whitespace() || candidate.is_control() || *candidate == '$');
     if let Some(found) = forbidden {
         return Err(ValueError::ForbiddenChar(found));
     }
@@ -125,9 +125,17 @@ fn validate_controller_url(value: &str) -> Result<(), ValueError> {
     let forbidden = value.chars().find(|candidate| {
         candidate.is_whitespace()
             || candidate.is_control()
-            || matches!(candidate, '"' | '\\' | '$' | '\'')
+            || matches!(candidate, '"' | '\\' | '$' | '\'' | ',')
     });
-    forbidden.map_or(Ok(()), |found| Err(ValueError::ForbiddenChar(found)))
+    if let Some(found) = forbidden {
+        return Err(ValueError::ForbiddenChar(found));
+    }
+    let rest = value.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority
+        .contains('@')
+        .then_some(())
+        .map_or(Ok(()), |()| Err(ValueError::EmbeddedPassword))
 }
 
 text_value!(
@@ -151,6 +159,80 @@ text_value!(
     ControllerUrl,
     validate_controller_url
 );
+
+text_value!(
+    /// The URL the controller reaches one agent at, without credentials.
+    AgentUrl,
+    validate_controller_url
+);
+
+impl fmt::Debug for AgentUrl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "AgentUrl({})", self.0)
+    }
+}
+
+/// One agent the controller tells to reconcile: the host it serves and where it listens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEndpoint {
+    host: HostName,
+    url: AgentUrl,
+}
+
+impl AgentEndpoint {
+    /// The agent of `host`, reached at `url`.
+    #[must_use]
+    pub const fn new(host: HostName, url: AgentUrl) -> Self {
+        Self { host, url }
+    }
+
+    /// The entry of `AEGIS_AGENTS` for this agent: `host=url`.
+    #[must_use]
+    pub fn entry(&self) -> String {
+        format!("{}={}", self.host, self.url.as_str())
+    }
+}
+
+/// The agents of a controller, in the order they are listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentEndpoints(Vec<AgentEndpoint>);
+
+impl AgentEndpoints {
+    /// The agents of a comma-separated `host=url` list; blank items are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValueError`] when an item is not `host=url` with a valid host and URL.
+    pub fn parse_list(list: &str) -> Result<Self, ValueError> {
+        let items = list.split(',').map(str::trim);
+        let present = items.filter(|item| !item.is_empty());
+        let entries: Result<Vec<AgentEndpoint>, ValueError> =
+            present.map(Self::parse_one).collect();
+        entries.map(Self)
+    }
+
+    fn parse_one(item: &str) -> Result<AgentEndpoint, ValueError> {
+        let (host, url) = item.split_once('=').ok_or(ValueError::Empty)?;
+        Ok(AgentEndpoint::new(
+            HostName::new(host.trim())?,
+            AgentUrl::new(url.trim())?,
+        ))
+    }
+
+    /// The endpoints, in order.
+    pub fn iter(&self) -> std::slice::Iter<'_, AgentEndpoint> {
+        self.0.iter()
+    }
+}
+
+impl<'items> IntoIterator for &'items AgentEndpoints {
+    type Item = &'items AgentEndpoint;
+    type IntoIter = std::slice::Iter<'items, AgentEndpoint>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
 
 impl fmt::Debug for RepoUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -268,6 +350,7 @@ pub enum ControllerChoice {
 pub struct ControllerSetup {
     credentials: Secret,
     tags: TailnetTags,
+    agents: AgentEndpoints,
 }
 
 impl ControllerSetup {
@@ -276,8 +359,25 @@ impl ControllerSetup {
     /// never plaintext in git or on disk, and the `tags` stack nodes may carry
     /// (`AEGIS_ENROLL_TAGS`). The running container's environment still holds the decrypted values.
     #[must_use]
-    pub const fn new(credentials: Secret, tags: TailnetTags) -> Self {
-        Self { credentials, tags }
+    pub fn new(credentials: Secret, tags: TailnetTags) -> Self {
+        Self {
+            credentials,
+            tags,
+            agents: AgentEndpoints::default(),
+        }
+    }
+
+    /// The same controller that also reaches the agents of other hosts, besides the one bootstrap
+    /// installs on this host.
+    #[must_use]
+    pub fn with_agents(self, agents: AgentEndpoints) -> Self {
+        Self { agents, ..self }
+    }
+
+    /// The agents of other hosts.
+    #[must_use]
+    pub const fn agents(&self) -> &AgentEndpoints {
+        &self.agents
     }
 
     /// The dotenv text of the credentials.

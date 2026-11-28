@@ -441,7 +441,9 @@ mod rendered {
             read(&directory.join("compose.yaml")),
             read(&directory.join("controller.env"))
         );
-        let required = aegis_adapters::api::CONTROLLER_REQUIRED.iter();
+        let required = aegis_adapters::api::CONTROLLER_REQUIRED
+            .iter()
+            .chain(aegis_adapters::api::REPOSITORY_REQUIRED.iter());
         let missing = required.filter(|name| !supplies(&provided, name));
         assert_eq!(missing.collect::<Vec<_>>(), Vec::<&&str>::new());
         assert!(provided.contains("AEGIS_LISTEN:"));

@@ -17,8 +17,8 @@ pub use compose::{
     ServiceSource, Services, Volumes,
 };
 pub use deployment::{
-    CommitSha, Deployment, Detail, Origin, ProjectName, Report, ReservedStacks, StackReport,
-    StackReports,
+    CommitSha, Deployment, Detail, HostNames, Origin, ProjectName, Report, ReservedStacks,
+    StackReport, StackReports,
 };
 pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};

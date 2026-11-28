@@ -25,7 +25,7 @@ pub use decrypting::{DecryptingCompose, SecretPorts};
 pub use docker_compose::DockerCompose;
 pub use docker_state::DockerStateProbe;
 pub use filesystem::FsRepo;
-pub use git::GitCheckout;
+pub use git::{GitCheckout, GitFollower, Remote, RemoteError};
 pub use http::BaseUrl;
 pub use parser::SerdeStackParser;
 pub use sidecar_compose::{SidecarCompose, SidecarPorts};

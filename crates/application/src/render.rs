@@ -4,7 +4,8 @@
 use aegis_domain::{AegisRole, HostName, HostPath, ProjectName, RepoPath, StackName, ValueError};
 
 use crate::bootstrap::{
-    BootstrapPlan, ControllerChoice, ControllerSetup, Existing, FileText, HostKey, ImageTag,
+    AgentEndpoint, BootstrapPlan, ControllerChoice, ControllerSetup, Existing, FileText, HostKey,
+    ImageTag,
 };
 use crate::sidecar::{KEY_VARIABLE, STATE_DIRECTORY, STATE_VOLUME, TAILSCALE_IMAGE};
 
@@ -18,6 +19,10 @@ pub const LISTEN: &str = "0.0.0.0:7480";
 /// Where the host's age key and the volatile workspace are mounted inside the agent container.
 const KEY_IN_CONTAINER: &str = "/etc/aegis/age.txt";
 const RUNTIME_DIRECTORY: &str = "/run/aegis-agent";
+
+/// The controller's disposable checkout, inside its container: it starts empty on every new
+/// container, which the controller accepts.
+const CONTROLLER_WORKDIR: &str = "/var/lib/aegis/work";
 
 /// The file of the controller that holds its OAuth credentials, encrypted.
 const CONTROLLER_ENV: &str = "controller.env";
@@ -84,6 +89,9 @@ const CONTROLLER: &str = r#"  controller:
     environment:
       AEGIS_LISTEN: "@@LISTEN@@"
       AEGIS_ENROLL_TAGS: "@@TAGS@@"
+      AEGIS_REPO_URL: "@@REPO@@"
+      AEGIS_WORKDIR: "@@WORKDIR@@"
+      AEGIS_AGENTS: "@@AGENTS@@"
     volumes:
       - "socket:/var/run/tailscale"
 "#;
@@ -281,14 +289,34 @@ fn agent_document(
     Ok(format!("{head}{}", volumes()))
 }
 
-fn controller_document(plan: &BootstrapPlan, setup: &ControllerSetup, node: &HostName) -> String {
+/// The `AEGIS_AGENTS` list: the agent bootstrap installs on this host, reached by its tailnet
+/// name, then the ones of other hosts.
+fn agents_of(plan: &BootstrapPlan, setup: &ControllerSetup) -> Result<String, ValueError> {
+    let agent = node_of(plan, &StackName::new("agent")?)?;
+    let port = LISTEN.rsplit_once(':').map_or("", |(_, port)| port);
+    let local = format!("{}=http://{agent}:{port}", plan.host());
+    let others = setup.agents().into_iter().map(AgentEndpoint::entry);
+    Ok(std::iter::once(local)
+        .chain(others)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+fn controller_document(
+    plan: &BootstrapPlan,
+    setup: &ControllerSetup,
+    node: &HostName,
+) -> Result<String, ValueError> {
     let filled = Template::new(CONTROLLER.to_owned())
         .with("IMAGE", &image(CONTROLLER_IMAGE, plan.image()))
         .with("ENV_FILE", CONTROLLER_ENV)
         .with("TAGS", &setup.enroll_tags())
+        .with("REPO", plan.sources().repo().as_str())
+        .with("WORKDIR", CONTROLLER_WORKDIR)
+        .with("AGENTS", &agents_of(plan, setup)?)
         .with("LISTEN", LISTEN);
     let head = format!("services:\n{}{}", sidecar(node), filled.0);
-    format!("{head}{}", volumes())
+    Ok(format!("{head}{}", volumes()))
 }
 
 fn compose_file(directory: &str, text: String) -> Result<PlannedFile, ValueError> {
@@ -324,7 +352,7 @@ fn controller_stack(
 ) -> Result<RenderedStack, ValueError> {
     let name = StackName::new("controller")?;
     let node = node_of(plan, &name)?;
-    let compose = compose_file("aegis/controller", controller_document(plan, setup, &node))?;
+    let compose = compose_file("aegis/controller", controller_document(plan, setup, &node)?)?;
     let env = PlannedFile {
         path: RepoPath::new(format!("aegis/controller/{CONTROLLER_ENV}"))?,
         content: Content::Encrypted(setup.credentials().clone()),

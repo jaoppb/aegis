@@ -9,9 +9,9 @@ use aegis_adapters::bootstrap::{
 };
 use aegis_adapters::tailscale::TailscaleApi;
 use aegis_application::{
-    AegisNodes, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice,
-    ControllerSetup, ControllerUrl, Enrollment, HostSide, ImageTag, Reason, RepoUrl, Sources,
-    TailnetError,
+    AegisNodes, AgentEndpoints, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport,
+    ControllerChoice, ControllerSetup, ControllerUrl, Enrollment, HostSide, ImageTag, Reason,
+    RepoUrl, Sources, TailnetError,
 };
 use aegis_domain::{AegisRole, HostName, HostPath, TailnetTags, ValueError};
 
@@ -81,11 +81,18 @@ fn enroll_tags(flags: &Flags) -> Result<TailnetTags, UsageError> {
     Ok(tags)
 }
 
+/// The agents of other hosts from `--agents`, as comma-separated `host=url` pairs.
+fn agents(flags: &Flags) -> Result<AgentEndpoints, UsageError> {
+    let listed = flags.value("--agents").unwrap_or_default();
+    parsed("--agents", AgentEndpoints::parse_list(listed))
+}
+
 fn choice(flags: &Flags, oauth: &OAuthEnvironment) -> Result<ControllerChoice, UsageError> {
     if !flags.has("--with-controller") {
         return Ok(ControllerChoice::Skip);
     }
     let setup = ControllerSetup::new(oauth.dotenv().clone(), enroll_tags(flags)?);
+    let setup = setup.with_agents(agents(flags)?);
     Ok(ControllerChoice::Install(setup))
 }
 
@@ -230,5 +237,38 @@ mod tests {
         let line = format!("{REQUIRED} --with-controller --enroll-tags ,");
         let error = plan(&flags(&line), &oauth()).unwrap_err();
         assert_eq!(error, UsageError::Required("--enroll-tags"));
+    }
+
+    #[test]
+    fn agents_of_other_hosts_are_listed_with_their_urls() {
+        let line = format!(
+            "{REQUIRED} --with-controller --enroll-tags tag:app --agents h2=http://h2-agent:7480"
+        );
+        let plan = plan(&flags(&line), &oauth()).unwrap();
+        let setup = match plan.controller() {
+            ControllerChoice::Install(setup) => setup,
+            ControllerChoice::Skip => panic!("the controller is not installed"),
+        };
+        let entries: Vec<String> = setup
+            .agents()
+            .iter()
+            .map(aegis_application::AgentEndpoint::entry)
+            .collect();
+        assert_eq!(entries, ["h2=http://h2-agent:7480"]);
+    }
+
+    #[test]
+    fn an_agent_url_with_credentials_is_refused() {
+        let line = format!(
+            "{REQUIRED} --with-controller --enroll-tags tag:app --agents h2=http://user:pw@h2:7480"
+        );
+        let error = plan(&flags(&line), &oauth()).unwrap_err();
+        assert!(matches!(
+            error,
+            UsageError::Invalid {
+                flag: "--agents",
+                ..
+            }
+        ));
     }
 }
