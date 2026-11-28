@@ -1,8 +1,7 @@
 //! The aegis-agent binary.
 
-use aegis_adapters::api::{ServeError, serve_from_env};
-use aegis_api::version_1::Role;
+use aegis_adapters::api::{ServeError, serve_agent_from_env};
 
 fn main() -> Result<(), ServeError> {
-    serve_from_env(Role::Agent)
+    serve_agent_from_env()
 }
