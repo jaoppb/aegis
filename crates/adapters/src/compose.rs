@@ -119,11 +119,19 @@ const REFERENCE_PREFIXES: &[&str] = &[
     "git://",
 ];
 
+/// Whether `value` is the scp form `git@host:path`: a host without a `/` before the first colon,
+/// as `BuildKit` reads it. Anything else starting with `git@` is a local path.
+fn is_scp_git(value: &str) -> bool {
+    let host = value
+        .strip_prefix("git@")
+        .and_then(|rest| rest.split_once(':'));
+    host.is_some_and(|(name, _)| !name.is_empty() && !name.contains('/'))
+}
+
 /// An additional build context: `Some` path in the checkout, `None` for a known reference, and
 /// a refusal for any other scheme (`oci-layout://` is a host directory), so the unknown fails closed.
 fn additional_context(value: String) -> Result<Option<String>, ParseError> {
-    let scp_git = value.starts_with("git@") && value.contains(':');
-    if scp_git
+    if is_scp_git(&value)
         || REFERENCE_PREFIXES
             .iter()
             .any(|prefix| value.starts_with(prefix))

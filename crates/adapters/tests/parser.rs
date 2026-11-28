@@ -581,6 +581,8 @@ fn driver_options_without_a_dollar_are_accepted() {
 fn a_git_at_context_without_a_host_and_path_is_a_checkout_path() {
     let found = extra_contexts("\n        a: git@x/../../..\n");
     assert_eq!(found.unwrap(), ["git@x/../../.."]);
+    let late = extra_contexts("\n        a: 'git@x/../../../:/../etc'\n");
+    assert_eq!(late.unwrap(), ["git@x/../../../:/../etc"]);
 }
 
 #[test]
