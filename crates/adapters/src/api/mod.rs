@@ -3,9 +3,13 @@
 
 mod agent;
 mod client;
+mod controller;
+mod controller_env;
 mod server;
 mod wire;
 
 pub use agent::{reconcile_routes, serve_agent, serve_agent_from_env};
 pub use client::{ApiClient, ClientError};
+pub use controller::{AgentAddress, Hub};
+pub use controller_env::serve_controller_from_env;
 pub use server::{ListenAddress, ServeError, serve, serve_from_env};

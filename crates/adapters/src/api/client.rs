@@ -1,12 +1,19 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{
-    HEALTH_PATH, Health, RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport,
+    ControllerStatus, HEALTH_PATH, Health, RECONCILE_PATH, ReconcileRequest, STATUS_PATH,
+    StatusReport,
 };
+use std::time::Duration;
+
 use reqwest::{Response, StatusCode};
 use serde::Serialize;
 
 use crate::http::BaseUrl;
+
+/// How long a reconcile may take: pulling images and starting stacks takes far longer than the
+/// default request timeout.
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// A call to the API failed.
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +45,16 @@ impl ApiClient {
         Ok(Self { http, base })
     }
 
+    /// Ask the server for what it reports.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`].
+    pub async fn controller_status(&self) -> Result<ControllerStatus, ClientError> {
+        let response = self.http.get(self.base.join(STATUS_PATH)).send().await?;
+        Ok(accepted(response)?.json().await?)
+    }
+
     /// Ask the server for its health.
     ///
     /// # Errors
@@ -55,7 +72,8 @@ impl ApiClient {
     ///
     /// The same as [`ApiClient::health`].
     pub async fn reconcile(&self, request: &ReconcileRequest) -> Result<StatusReport, ClientError> {
-        let response = self.post(RECONCILE_PATH, request).await?;
+        let call = self.http.post(self.base.join(RECONCILE_PATH)).json(request);
+        let response = accepted(call.timeout(RECONCILE_TIMEOUT).send().await?)?;
         Ok(response.json().await?)
     }
 

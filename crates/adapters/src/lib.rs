@@ -21,7 +21,7 @@ mod whois;
 pub use decrypting::{DecryptingCompose, SecretPorts};
 pub use docker_compose::DockerCompose;
 pub use filesystem::FsRepo;
-pub use git::GitCheckout;
+pub use git::{GitCheckout, Remote, RemoteError};
 pub use http::BaseUrl;
 pub use parser::SerdeStackParser;
 pub use sops::SopsCheck;

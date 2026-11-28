@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
 
-use aegis_application::{Checkout, GitError, Reason};
+use aegis_application::{Checkout, GitError, Reason, Upstream};
 use aegis_domain::CommitSha;
 use tokio::process::Command;
 
@@ -32,6 +32,89 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct GitCheckout {
     program: String,
     directory: PathBuf,
+    remote: Option<Remote>,
+}
+
+/// The remote branch a controller follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    url: String,
+    branch: String,
+}
+
+/// A remote that cannot be followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RemoteError {
+    /// The URL is empty, starts with `-` or holds whitespace or control characters.
+    #[error("the repository URL is empty or malformed")]
+    BadUrl,
+    /// The URL carries credentials; use a deploy key or a git credential helper instead.
+    #[error("the repository URL carries credentials")]
+    Credentials,
+    /// The branch name is empty or not a plain branch name.
+    #[error("the branch name is empty or malformed")]
+    BadBranch,
+}
+
+impl Remote {
+    /// The `branch` of the repository at `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RemoteError`] when either is malformed, or when the URL holds a password or a
+    /// token (user info of an `http` or `https` URL).
+    pub fn new(url: &str, branch: &str) -> Result<Self, RemoteError> {
+        check_url(url)?;
+        check_branch(branch)?;
+        Ok(Self {
+            url: url.to_owned(),
+            branch: branch.to_owned(),
+        })
+    }
+
+    fn refspec(&self) -> String {
+        format!("+refs/heads/{}", self.branch)
+    }
+}
+
+fn plain(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with('-')
+        && !text
+            .chars()
+            .any(|found| found.is_whitespace() || found.is_control())
+}
+
+fn check_url(url: &str) -> Result<(), RemoteError> {
+    if !plain(url) {
+        return Err(RemoteError::BadUrl);
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Ok(());
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return Ok(());
+    };
+    let web = matches!(scheme, "http" | "https");
+    if web || userinfo.contains(':') {
+        return Err(RemoteError::Credentials);
+    }
+    Ok(())
+}
+
+fn check_branch(branch: &str) -> Result<(), RemoteError> {
+    let forbidden = ['~', '^', ':', '?', '*', '[', '\\'];
+    let bad = !plain(branch)
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.ends_with('/')
+        || branch.to_ascii_lowercase().ends_with(".lock")
+        || branch.chars().any(|found| forbidden.contains(&found));
+    if bad {
+        return Err(RemoteError::BadBranch);
+    }
+    Ok(())
 }
 
 impl GitCheckout {
@@ -50,6 +133,16 @@ impl GitCheckout {
         Self {
             program: program.into(),
             directory: directory.into(),
+            remote: None,
+        }
+    }
+
+    /// The same working tree, following `remote` for [`Upstream::advance`].
+    #[must_use]
+    pub fn with_remote(self, remote: Remote) -> Self {
+        Self {
+            remote: Some(remote),
+            ..self
         }
     }
 
@@ -69,6 +162,14 @@ impl GitCheckout {
     }
 }
 
+/// The output of a command that succeeded.
+fn stdout_of(output: &Output) -> Result<String, Reason> {
+    succeeded(output)?;
+    String::from_utf8(output.stdout.clone())
+        .map(|text| text.trim().to_owned())
+        .map_err(|_| Reason::new(&"git printed invalid UTF-8"))
+}
+
 fn succeeded(output: &Output) -> Result<(), Reason> {
     if output.status.success() {
         return Ok(());
@@ -76,10 +177,15 @@ fn succeeded(output: &Output) -> Result<(), Reason> {
     Err(Reason::new(&format!("git exited with {}", output.status)))
 }
 
-impl Checkout for GitCheckout {
-    async fn sync(&self, commit: &CommitSha) -> Result<(), GitError> {
-        self.step(&["fetch", "--quiet", "--prune", "origin"])
-            .await?;
+impl GitCheckout {
+    async fn capture(&self, arguments: &[&str]) -> Result<String, GitError> {
+        let output = cli::run(self.command(arguments), String::new(), GIT_TIMEOUT).await;
+        output
+            .and_then(|finished| stdout_of(&finished))
+            .map_err(GitError::new)
+    }
+
+    async fn detach(&self, commit: &CommitSha) -> Result<(), GitError> {
         let detach = [
             "checkout",
             "--quiet",
@@ -89,6 +195,57 @@ impl Checkout for GitCheckout {
             "--",
         ];
         self.step(&detach).await
+    }
+
+    /// Make sure the directory is the top of a git repository, starting over when it is missing
+    /// or damaged. Only a `.git` directory is ever removed, never other files.
+    async fn prepare(&self) -> Result<(), GitError> {
+        let top = self.capture(&["rev-parse", "--git-dir"]).await;
+        match top.as_deref() {
+            Ok(".git") => Ok(()),
+            _ => self.start_over().await,
+        }
+    }
+
+    async fn start_over(&self) -> Result<(), GitError> {
+        let failed = |error: std::io::Error| GitError::new(Reason::new(&error.kind()));
+        let removed = tokio::fs::remove_dir_all(self.directory.join(".git")).await;
+        removed.or_else(forgive_missing).map_err(failed)?;
+        let created = tokio::fs::create_dir_all(&self.directory).await;
+        created.map_err(failed)?;
+        self.step(&["init", "--quiet"]).await
+    }
+}
+
+fn forgive_missing(error: std::io::Error) -> std::io::Result<()> {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return Ok(());
+    }
+    Err(error)
+}
+
+impl Checkout for GitCheckout {
+    async fn sync(&self, commit: &CommitSha) -> Result<(), GitError> {
+        self.step(&["fetch", "--quiet", "--prune", "origin"])
+            .await?;
+        self.detach(commit).await
+    }
+}
+
+impl Upstream for GitCheckout {
+    async fn advance(&self) -> Result<CommitSha, GitError> {
+        let missing = || GitError::new(Reason::new(&"no remote is configured"));
+        let remote = self.remote.as_ref().ok_or_else(missing)?;
+        self.prepare().await?;
+        let fetch = ["fetch", "--quiet", remote.url.as_str(), &remote.refspec()];
+        self.step(&fetch).await?;
+        let head = self
+            .capture(&["rev-parse", "--verify", "FETCH_HEAD"])
+            .await?;
+        let commit = CommitSha::new(head).map_err(|error| GitError::new(Reason::new(&error)))?;
+        self.detach(&commit).await?;
+        self.step(&["clean", "--quiet", "-ffdx"]).await?;
+        Ok(commit)
     }
 }
 

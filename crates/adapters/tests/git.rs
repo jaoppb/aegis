@@ -146,3 +146,106 @@ fn a_redirecting_git_variable_of_the_agent_does_not_reach_git() {
         assert!(status.success());
     });
 }
+
+use aegis_adapters::Remote;
+use aegis_application::Upstream;
+
+#[cfg(test)]
+async fn branch_of(origin: &Path) -> String {
+    git(origin, &["rev-parse", "--abbrev-ref", "HEAD"]).await
+}
+
+/// A checkout in a new directory that follows `pair`'s origin.
+#[cfg(test)]
+async fn follower(pair: &Pair) -> GitCheckout {
+    let branch = branch_of(&pair.origin).await;
+    let remote = Remote::new(pair.origin.to_str().unwrap(), &branch).unwrap();
+    GitCheckout::new(pair.root.join("follower")).with_remote(remote)
+}
+
+#[test]
+fn a_followed_remote_is_cloned_into_a_missing_directory_and_tracks_new_commits() {
+    runtime().block_on(async {
+        let pair = Pair::new("follow").await;
+        let follower = follower(&pair).await;
+        let first = follower.advance().await.unwrap();
+        assert_eq!(
+            first.as_str(),
+            git(&pair.origin, &["rev-parse", "HEAD"]).await
+        );
+        let second = pair.commit("two").await;
+        assert_eq!(follower.advance().await.unwrap().as_str(), second);
+        let text = tokio::fs::read_to_string(pair.root.join("follower/file")).await;
+        assert_eq!(text.unwrap(), "two");
+    });
+}
+
+#[test]
+fn files_the_commit_does_not_hold_are_removed_from_the_work_directory() {
+    runtime().block_on(async {
+        let pair = Pair::new("clean").await;
+        let follower = follower(&pair).await;
+        follower.advance().await.unwrap();
+        let stray = pair.root.join("follower/stray");
+        tokio::fs::write(&stray, "leftover").await.unwrap();
+        follower.advance().await.unwrap();
+        assert!(!stray.exists());
+    });
+}
+
+#[test]
+fn a_damaged_git_directory_is_rebuilt() {
+    runtime().block_on(async {
+        let pair = Pair::new("damaged").await;
+        let follower = follower(&pair).await;
+        follower.advance().await.unwrap();
+        tokio::fs::write(pair.root.join("follower/.git/HEAD"), "garbage")
+            .await
+            .unwrap();
+        assert!(follower.advance().await.is_ok());
+    });
+}
+
+#[test]
+fn an_unreachable_remote_is_an_error_that_leaves_the_checkout_where_it_was() {
+    runtime().block_on(async {
+        let pair = Pair::new("gone").await;
+        let follower = follower(&pair).await;
+        let before = follower.advance().await.unwrap();
+        tokio::fs::remove_dir_all(&pair.origin).await.unwrap();
+        let failure = follower.advance().await.unwrap_err().to_string();
+        assert!(!failure.contains(pair.origin.to_str().unwrap()));
+        let head = git(&pair.root.join("follower"), &["rev-parse", "HEAD"]).await;
+        assert_eq!(head, before.as_str());
+    });
+}
+
+#[test]
+fn a_checkout_without_a_remote_cannot_advance() {
+    runtime().block_on(async {
+        let pair = Pair::new("noremote").await;
+        let failure = GitCheckout::new(&pair.checkout).advance().await;
+        assert!(failure.is_err());
+    });
+}
+
+#[test]
+fn remotes_with_credentials_are_refused() {
+    assert!(Remote::new("https://github.com/acme/aegis.git", "main").is_ok());
+    assert!(Remote::new("git@github.com:acme/aegis.git", "main").is_ok());
+    assert!(Remote::new("ssh://git@github.com/acme/aegis.git", "release/1").is_ok());
+    assert!(Remote::new("/srv/git/aegis.git", "main").is_ok());
+    assert!(Remote::new("https://token@github.com/acme/aegis.git", "main").is_err());
+    assert!(Remote::new("https://user:pass@github.com/a.git", "main").is_err());
+    assert!(Remote::new("ssh://git:secret@host/a.git", "main").is_err());
+}
+
+#[test]
+fn remotes_with_odd_names_are_refused() {
+    assert!(Remote::new("--upload-pack=evil", "main").is_err());
+    assert!(Remote::new("", "main").is_err());
+    assert!(Remote::new("https://host/a.git", "").is_err());
+    assert!(Remote::new("https://host/a.git", "-x").is_err());
+    assert!(Remote::new("https://host/a.git", "a..b").is_err());
+    assert!(Remote::new("https://host/a.git", "a b").is_err());
+}

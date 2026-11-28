@@ -1,8 +1,7 @@
 //! The aegis-controller binary.
 
-use aegis_adapters::api::{ServeError, serve_from_env};
-use aegis_api::version_1::Role;
+use aegis_adapters::api::{ServeError, serve_controller_from_env};
 
 fn main() -> Result<(), ServeError> {
-    serve_from_env(Role::Controller)
+    serve_controller_from_env()
 }

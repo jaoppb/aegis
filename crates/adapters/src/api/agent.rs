@@ -121,11 +121,11 @@ struct Hosting {
     reserved: ReservedStacks,
 }
 
-fn required(name: &'static str) -> Result<String, ServeError> {
+pub(super) fn required(name: &'static str) -> Result<String, ServeError> {
     std::env::var(name).map_err(|_| ServeError::Missing(name))
 }
 
-fn invalid(variable: &'static str, cause: &impl std::fmt::Display) -> ServeError {
+pub(super) fn invalid(variable: &'static str, cause: &impl std::fmt::Display) -> ServeError {
     ServeError::Invalid {
         variable,
         cause: cause.to_string(),

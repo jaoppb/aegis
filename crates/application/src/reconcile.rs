@@ -65,7 +65,7 @@ impl Repository {
         }
     }
 
-    fn load(&self) -> Outcome {
+    pub(crate) fn load(&self) -> Outcome {
         let loaded = load_desired_state(&*self.source, &*self.parser);
         validate_desired_state(&loaded, &*self.source, &*self.check)
     }

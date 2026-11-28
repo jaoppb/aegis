@@ -295,3 +295,13 @@ pub trait Checkout {
     /// Returns a [`GitError`] when git cannot be run, times out or reports a failure.
     fn sync(&self, commit: &CommitSha) -> impl Future<Output = Result<(), GitError>> + Send;
 }
+
+/// A git working tree that follows the newest commit of a remote branch.
+pub trait Upstream {
+    /// Fetch the branch, check its newest commit out, detached, and say which commit that is.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`GitError`] when git cannot be run, times out or reports a failure.
+    fn advance(&self) -> impl Future<Output = Result<CommitSha, GitError>> + Send;
+}
