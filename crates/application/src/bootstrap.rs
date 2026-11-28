@@ -7,14 +7,14 @@ use std::fmt;
 use std::future::Future;
 
 use aegis_domain::{
-    AegisRole, HostName, HostPath, RepoPath, Secret, StackName, TailnetTags, ValueError, VolumeName,
+    AegisRole, HostName, HostPath, ProjectName, RepoPath, Secret, StackName, TailnetTag,
+    TailnetTags, ValueError,
 };
 
+use crate::enroll::StateProbe;
 use crate::render::{self, Content, PlannedFile, RenderedStack, Stacks};
 use crate::source::Reason;
-use crate::tailnet::{
-    AuthKey, EnrollError, Enrolled, Enrollment, KeyMinter, SidecarState, TailnetError,
-};
+use crate::tailnet::{AuthKey, Enrolled, Enrollment, KeyMinter, TailnetError};
 
 /// Define a validated text value: private field, validating constructor, `as_str`.
 macro_rules! text_value {
@@ -258,10 +258,40 @@ impl Sources {
 pub enum ControllerChoice {
     /// Only the agent.
     Skip,
-    /// The controller as well, with the dotenv text holding its Tailscale OAuth credentials. The
-    /// text is encrypted to the host key before it is written, so it is never plaintext in git or
-    /// on disk. The running controller container's environment still holds the decrypted values.
-    Install(Secret),
+    /// The controller as well, with its credentials and the tags its stacks' nodes may carry.
+    Install(ControllerSetup),
+}
+
+/// What the controller needs besides its image: the OAuth credentials it mints keys with and the
+/// ACL tags it lets a stack's node carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerSetup {
+    credentials: Secret,
+    tags: TailnetTags,
+}
+
+impl ControllerSetup {
+    /// A controller with the dotenv text of its OAuth `credentials` (`AEGIS_TS_CLIENT_ID` and
+    /// `AEGIS_TS_CLIENT_SECRET`), which is encrypted to the host key before it is written so it is
+    /// never plaintext in git or on disk, and the `tags` stack nodes may carry
+    /// (`AEGIS_ENROLL_TAGS`). The running container's environment still holds the decrypted values.
+    #[must_use]
+    pub const fn new(credentials: Secret, tags: TailnetTags) -> Self {
+        Self { credentials, tags }
+    }
+
+    /// The dotenv text of the credentials.
+    #[must_use]
+    pub const fn credentials(&self) -> &Secret {
+        &self.credentials
+    }
+
+    /// The value of `AEGIS_ENROLL_TAGS`: the allowed tags, comma-separated.
+    #[must_use]
+    pub fn enroll_tags(&self) -> String {
+        let names: Vec<&str> = self.tags.iter().map(TailnetTag::as_str).collect();
+        names.join(",")
+    }
 }
 
 /// What `aegis bootstrap` is asked to do.
@@ -489,7 +519,8 @@ pub trait SecretEncryptor {
 
 /// Gives a node the key it joins the tailnet with.
 pub trait NodeKeys {
-    /// A key for the node `node` in `role`, or `None` when its sidecar already has state.
+    /// A key for the node of the stack `project` in `role`, or `None` when its sidecar already
+    /// has state.
     ///
     /// # Errors
     ///
@@ -497,45 +528,41 @@ pub trait NodeKeys {
     /// [`BootstrapError::Mint`] when no key can be minted.
     fn key_for(
         &self,
-        node: &HostName,
+        project: &ProjectName,
         role: AegisRole,
     ) -> impl Future<Output = Result<Option<AuthKey>, BootstrapError>> + Send;
 }
 
-/// The name of the state volume of the sidecar of `node`.
+/// The nodes of Aegis itself: a key is minted for one only while its sidecar has no state.
 ///
-/// # Errors
-///
-/// Returns a [`ValueError`] when the node name makes an invalid volume name.
-pub fn sidecar_volume(node: &HostName) -> Result<VolumeName, ValueError> {
-    VolumeName::new(format!("{node}-tailscale"))
+/// An Aegis node carries its role tag, which a stack's own enrolment refuses, so this goes
+/// around that tag check and nothing else: the minting path is the one [`Enrollment`] has, so a
+/// rerun never creates a second node.
+#[derive(Debug)]
+pub struct AegisNodes<Probe, Minter> {
+    probe: Probe,
+    enrollment: Enrollment<Minter>,
 }
 
-fn enrol_failure(failure: EnrollError) -> BootstrapError {
-    match failure {
-        EnrollError::State(reason) => BootstrapError::State(reason),
-        EnrollError::Mint(error) => BootstrapError::Mint(error),
-        EnrollError::Tags(refused) => {
-            BootstrapError::Mint(TailnetError::Rejected(Reason::new(&refused)))
-        }
+impl<Probe, Minter> AegisNodes<Probe, Minter> {
+    /// Read sidecar state with `probe` and mint through `enrollment`.
+    #[must_use]
+    pub const fn new(probe: Probe, enrollment: Enrollment<Minter>) -> Self {
+        Self { probe, enrollment }
     }
 }
 
-/// An Aegis node carries its role tag, which a stack's own enrolment refuses, so this goes
-/// around the tag check and nothing else: the key is still minted only while the sidecar has no
-/// state, so a rerun never creates a second node.
-impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> NodeKeys for Enrollment<State, Minter> {
+impl<Probe: StateProbe + Sync, Minter: KeyMinter + Sync> NodeKeys for AegisNodes<Probe, Minter> {
     async fn key_for(
         &self,
-        node: &HostName,
+        project: &ProjectName,
         role: AegisRole,
     ) -> Result<Option<AuthKey>, BootstrapError> {
+        let state = self.probe.probe(project).await;
+        let state = state.map_err(BootstrapError::State)?;
         let tags = TailnetTags::new(vec![role.tag()?]);
-        let enrolled = self
-            .enroll_tagged(node, &tags)
-            .await
-            .map_err(enrol_failure)?;
-        Ok(match enrolled {
+        let enrolled = self.enrollment.enroll_tagged(&tags, state).await;
+        Ok(match enrolled.map_err(BootstrapError::Mint)? {
             Enrolled::Minted(key) => Some(key),
             Enrolled::AlreadyEnrolled => None,
         })
@@ -737,7 +764,7 @@ where
         key: &HostKey,
     ) -> Result<StackOutcome, BootstrapError> {
         let files = write_files(&self.host, stack, key).await?;
-        let node = self.keys.key_for(stack.node(), stack.role()).await?;
+        let node = self.keys.key_for(stack.project(), stack.role()).await?;
         let joined = node
             .as_ref()
             .map_or(Joined::ExistingNode, |_| Joined::NewNode);

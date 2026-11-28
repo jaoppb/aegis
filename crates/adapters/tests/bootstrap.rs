@@ -6,15 +6,18 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use aegis_adapters::bootstrap::{ComposeStacks, DockerVolumes, Layout, LocalHost, SopsEncrypt};
+use aegis_adapters::bootstrap::{ComposeStacks, Layout, LocalHost, SopsEncrypt};
 use aegis_adapters::{FsRepo, SerdeStackParser, SopsCheck};
 use aegis_application::{
-    AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice, ControllerUrl, Existing,
-    FileText, HostFiles, HostKey, HostSide, ImageTag, NodeKeys, RenderedFile, RepoUrl,
-    SecretEncryptor, SidecarState, Sources, StackRunner, StateVolume, Written, load_desired_state,
+    AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice, ControllerSetup,
+    ControllerUrl, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag, NodeKeys,
+    RenderedFile, RepoUrl, SecretEncryptor, Sources, StackRunner, Written, load_desired_state,
     validate_desired_state,
 };
-use aegis_domain::{AegisRole, HostName, HostPath, RepoPath, Secret, StackName};
+use aegis_domain::{
+    AegisRole, HostName, HostPath, ProjectName, RepoPath, Secret, StackName, TailnetTag,
+    TailnetTags,
+};
 
 #[cfg(test)]
 fn block_on<Output>(future: impl Future<Output = Output>) -> Output {
@@ -208,7 +211,7 @@ impl Fake {
     fn install(root: &Path, body: &str) -> Self {
         let log = root.join("docker.log");
         let script = format!(
-            "#!/bin/sh\necho \"ARGS:$*\" >> {log}\necho \"KEY:${{TS_AUTHKEY-unset}}\" >> {log}\n{body}\n",
+            "#!/bin/sh\necho \"ARGS:$*\" >> {log}\necho \"KEY:${{AEGIS_TS_AUTHKEY-unset}}\" >> {log}\n{body}\n",
             log = log.display()
         );
         let program = root.join("fake-docker");
@@ -223,64 +226,6 @@ impl Fake {
 
     fn program(&self) -> String {
         self.program.display().to_string()
-    }
-}
-
-#[cfg(test)]
-fn node() -> HostName {
-    HostName::new("jao-server-aegis-agent").unwrap()
-}
-
-#[cfg(test)]
-mod volumes {
-    use super::*;
-
-    fn state(body: &str) -> (Fake, Result<StateVolume, aegis_application::Reason>) {
-        let root = scratch("volumes");
-        let fake = Fake::install(&root, body);
-        let volumes = DockerVolumes::with_program(fake.program());
-        let found = block_on(volumes.volume(&node()));
-        (fake, found)
-    }
-
-    #[test]
-    fn a_missing_volume_is_empty_without_running_a_container() {
-        let (fake, found) = state("exit 0");
-        assert_eq!(found.unwrap(), StateVolume::Empty);
-        assert!(!fake.logged().contains("run --rm"));
-    }
-
-    #[test]
-    fn a_volume_with_a_state_file_is_populated() {
-        let listing =
-            "case \"$1\" in volume) echo jao-server-aegis-agent-tailscale; exit 0;; esac\nexit 0";
-        let (fake, found) = state(listing);
-        assert_eq!(found.unwrap(), StateVolume::Populated);
-        assert!(
-            fake.logged()
-                .contains("-v jao-server-aegis-agent-tailscale:/state:ro")
-        );
-    }
-
-    #[test]
-    fn a_volume_without_a_state_file_is_empty() {
-        let listing =
-            "case \"$1\" in volume) echo jao-server-aegis-agent-tailscale; exit 0;; esac\nexit 1";
-        let (_fake, found) = state(listing);
-        assert_eq!(found.unwrap(), StateVolume::Empty);
-    }
-
-    #[test]
-    fn a_docker_failure_is_an_error_so_nothing_is_minted() {
-        let (_fake, found) = state("exit 125");
-        assert!(found.is_err());
-    }
-
-    #[test]
-    fn a_volume_with_a_longer_name_does_not_count() {
-        let listing = "case \"$1\" in volume) echo jao-server-aegis-agent-tailscale-old; exit 0;; esac\nexit 0";
-        let (_fake, found) = state(listing);
-        assert_eq!(found.unwrap(), StateVolume::Empty);
     }
 }
 
@@ -328,7 +273,7 @@ mod compose {
 
     #[test]
     fn a_compose_failure_never_leaks_the_key() {
-        let (_fake, runner) = stacks("echo \"boom $TS_AUTHKEY\" >&2\nexit 1");
+        let (_fake, runner) = stacks("echo \"boom $AEGIS_TS_AUTHKEY\" >&2\nexit 1");
         let key = AuthKey::new("tskey-auth-leaky");
         let failure = block_on(runner.start(&agent(), Some(&key))).unwrap_err();
         assert!(
@@ -374,7 +319,7 @@ struct Joined;
 impl NodeKeys for Joined {
     fn key_for(
         &self,
-        _node: &HostName,
+        _project: &ProjectName,
         _role: AegisRole,
     ) -> impl Future<Output = Result<Option<AuthKey>, BootstrapError>> + Send {
         ready(Ok(None))
@@ -405,6 +350,30 @@ fn render_to_disk(root: &Path, choice: ControllerChoice) -> PathBuf {
 
 #[cfg(test)]
 fn bootstrap_on_disk(root: &Path, choice: ControllerChoice) -> aegis_application::BootstrapReport {
+    bootstrap_with(root, choice, SopsEncrypt)
+}
+
+/// A cipher that "encrypts" to the plaintext, so a test can read what the controller will see.
+#[cfg(test)]
+struct Clear;
+
+#[cfg(test)]
+impl SecretEncryptor for Clear {
+    fn encrypt(
+        &self,
+        plaintext: &Secret,
+        _recipient: &aegis_application::AgeRecipient,
+    ) -> impl Future<Output = Result<FileText, BootstrapError>> + Send {
+        ready(Ok(FileText::new(plaintext.expose())))
+    }
+}
+
+#[cfg(test)]
+fn bootstrap_with<Cipher: SecretEncryptor + Sync>(
+    root: &Path,
+    choice: ControllerChoice,
+    cipher: Cipher,
+) -> aegis_application::BootstrapReport {
     let host = host_in(root);
     let key = block_on(host.ensure_age_key()).unwrap();
     let sources = Sources::new(
@@ -416,15 +385,23 @@ fn bootstrap_on_disk(root: &Path, choice: ControllerChoice) -> aegis_application
     let plan = BootstrapPlan::new(HostName::new("jao-server").unwrap(), sources, image);
     let disk = Disk { host, key };
     let started = Started::default();
-    let bootstrap = Bootstrap::new(HostSide::new(disk, SopsEncrypt), Joined, &started);
+    let bootstrap = Bootstrap::new(HostSide::new(disk, cipher), Joined, &started);
     block_on(bootstrap.run(&plan.with_controller(choice))).unwrap()
 }
 
 #[cfg(test)]
+const OAUTH_DOTENV: &str = "AEGIS_TS_CLIENT_ID=a\nAEGIS_TS_CLIENT_SECRET=b\n";
+
+#[cfg(test)]
 fn controller() -> ControllerChoice {
-    ControllerChoice::Install(Secret::new(
-        "TS_OAUTH_CLIENT_ID=a\nTS_OAUTH_CLIENT_SECRET=b\n",
-    ))
+    let tags = TailnetTags::new(vec![TailnetTag::new("tag:app").unwrap()]);
+    let setup = ControllerSetup::new(Secret::new(OAUTH_DOTENV), tags);
+    ControllerChoice::Install(setup)
+}
+
+#[cfg(test)]
+fn supplies(text: &str, name: &str) -> bool {
+    text.contains(&format!("{name}=")) || text.contains(&format!("{name}:"))
 }
 
 #[cfg(test)]
@@ -452,6 +429,22 @@ mod rendered {
         let names = outcome.state().reserved().iter();
         let names: Vec<String> = names.map(|stack| stack.name().to_string()).collect();
         assert_eq!(names, ["agent", "controller"]);
+    }
+
+    #[test]
+    fn the_controller_stack_provides_every_variable_the_controller_requires() {
+        let root = scratch("required");
+        bootstrap_with(&root, controller(), Clear);
+        let directory = root.join("stacks/aegis/controller");
+        let provided = format!(
+            "{}{}",
+            read(&directory.join("compose.yaml")),
+            read(&directory.join("controller.env"))
+        );
+        let required = aegis_adapters::api::CONTROLLER_REQUIRED.iter();
+        let missing = required.filter(|name| !supplies(&provided, name));
+        assert_eq!(missing.collect::<Vec<_>>(), Vec::<&&str>::new());
+        assert!(provided.contains("AEGIS_LISTEN:"));
     }
 
     #[test]

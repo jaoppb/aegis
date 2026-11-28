@@ -1,6 +1,6 @@
 //! The JSON and form bodies of the Tailscale API.
 
-use aegis_domain::{AegisRole, TailnetTag, TailnetTags};
+use aegis_domain::{AegisRole, TailnetName, TailnetTag, TailnetTags};
 use serde::{Deserialize, Serialize};
 
 /// How long a minted key stays valid. It is single-use, so this only bounds an unused key.
@@ -98,6 +98,8 @@ struct Device {
     #[serde(rename = "id")]
     identifier: String,
     hostname: Option<String>,
+    /// The device's full `MagicDNS` name, such as `app.taildfab0.ts.net`.
+    name: Option<String>,
     tags: Option<Vec<String>>,
 }
 
@@ -117,7 +119,29 @@ impl Device {
     }
 }
 
+/// The suffix every tailnet's `MagicDNS` names end in.
+const MAGIC_DNS_ROOT: &str = ".ts.net";
+
+impl Device {
+    /// The tailnet in this device's `MagicDNS` name: everything after its first label.
+    fn tailnet(&self) -> Option<TailnetName> {
+        let full = self
+            .name
+            .as_deref()?
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let (_, suffix) = full.split_once('.')?;
+        let named = suffix.ends_with(MAGIC_DNS_ROOT);
+        named.then(|| TailnetName::new(suffix).ok()).flatten()
+    }
+}
+
 impl DeviceList {
+    /// The tailnet the devices belong to, read from the first device that names it.
+    pub(super) fn tailnet(&self) -> Option<TailnetName> {
+        self.devices.iter().find_map(Device::tailnet)
+    }
+
     /// The ids of the tagged devices whose hostname is `hostname`.
     pub(super) fn ids_of(&self, hostname: &str) -> Vec<&str> {
         let matching = self
@@ -177,6 +201,24 @@ mod tests {
             ]}"#,
         );
         assert!(devices.ids_of("app").is_empty());
+    }
+
+    #[test]
+    fn the_tailnet_is_the_suffix_of_a_device_name() {
+        let devices = list(
+            r#"{"devices":[
+                {"id":"1","hostname":"odd","name":"nodots"},
+                {"id":"2","hostname":"app","name":"app.taildfab0.ts.net"}
+            ]}"#,
+        );
+        assert_eq!(devices.tailnet().unwrap().as_str(), "taildfab0.ts.net");
+    }
+
+    #[test]
+    fn a_name_outside_ts_net_is_not_a_tailnet() {
+        let devices = list(r#"{"devices":[{"id":"1","name":"app.example.com"}]}"#);
+        assert!(devices.tailnet().is_none());
+        assert!(list(r#"{"devices":[]}"#).tailnet().is_none());
     }
 
     #[test]

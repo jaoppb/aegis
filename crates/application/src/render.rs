@@ -1,14 +1,12 @@
 //! The compose files Bootstrap renders for the agent and the controller. Everything a template
 //! takes is validated first, so no value can break out of its YAML scalar or its volume mapping.
 
-use aegis_domain::{AegisRole, HostName, HostPath, RepoPath, StackName, ValueError};
+use aegis_domain::{AegisRole, HostName, HostPath, ProjectName, RepoPath, StackName, ValueError};
 
 use crate::bootstrap::{
-    BootstrapPlan, ControllerChoice, Existing, FileText, HostKey, ImageTag, sidecar_volume,
+    BootstrapPlan, ControllerChoice, ControllerSetup, Existing, FileText, HostKey, ImageTag,
 };
-
-/// The Tailscale image of the sidecars.
-pub const TAILSCALE_IMAGE: &str = "ghcr.io/tailscale/tailscale:v1.82.0";
+use crate::sidecar::{KEY_VARIABLE, STATE_DIRECTORY, STATE_VOLUME, TAILSCALE_IMAGE};
 
 /// The Aegis images, without their tag.
 const AGENT_IMAGE: &str = "ghcr.io/jaoppb/aegis-agent";
@@ -32,11 +30,11 @@ const SIDECAR: &str = r#"  tailscale:
     device_cgroup_rules:
       - "c 10:200 rwm"
     environment:
-      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_AUTHKEY: "${@@KEY@@:-}"
       TS_HOSTNAME: "@@NODE@@"
       TS_USERSPACE: "false"
       TS_ACCEPT_DNS: "true"
-      TS_STATE_DIR: /var/lib/tailscale
+      TS_STATE_DIR: "@@STATE_DIRECTORY@@"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
     healthcheck:
       test:
@@ -46,7 +44,7 @@ const SIDECAR: &str = r#"  tailscale:
       timeout: 5s
       retries: 24
     volumes:
-      - "@@VOLUME@@:/var/lib/tailscale"
+      - "@@STATE_VOLUME@@:@@STATE_DIRECTORY@@"
       - "/dev/net/tun:/dev/net/tun"
       - "socket:/var/run/tailscale"
 "#;
@@ -85,13 +83,13 @@ const CONTROLLER: &str = r#"  controller:
       - "@@ENV_FILE@@"
     environment:
       AEGIS_LISTEN: "@@LISTEN@@"
+      AEGIS_ENROLL_TAGS: "@@TAGS@@"
     volumes:
       - "socket:/var/run/tailscale"
 "#;
 
 const VOLUMES: &str = r#"volumes:
-  "@@VOLUME@@":
-    name: "@@VOLUME@@"
+  "@@STATE_VOLUME@@": {}
   socket: {}
 "#;
 
@@ -100,6 +98,7 @@ const VOLUMES: &str = r#"volumes:
 pub struct Identity {
     name: StackName,
     node: HostName,
+    project: ProjectName,
     role: AegisRole,
 }
 
@@ -180,6 +179,12 @@ impl RenderedStack {
         &self.identity.node
     }
 
+    /// The Compose project of the stack, which names its sidecar's state volume.
+    #[must_use]
+    pub const fn project(&self) -> &ProjectName {
+        &self.identity.project
+    }
+
     /// The role of the node.
     #[must_use]
     pub const fn role(&self) -> AegisRole {
@@ -234,21 +239,21 @@ fn mountable(path: &HostPath) -> Result<&str, ValueError> {
     })
 }
 
-fn sidecar(node: &HostName) -> Result<String, ValueError> {
-    let volume = sidecar_volume(node)?;
+fn sidecar(node: &HostName) -> String {
     let template = Template::new(SIDECAR.to_owned());
     let filled = template
         .with("TAILSCALE", TAILSCALE_IMAGE)
         .with("NODE", node.as_str())
-        .with("VOLUME", volume.as_str());
-    Ok(filled.0)
+        .with("KEY", KEY_VARIABLE)
+        .with("STATE_DIRECTORY", STATE_DIRECTORY)
+        .with("STATE_VOLUME", STATE_VOLUME);
+    filled.0
 }
 
-fn volumes(node: &HostName) -> Result<String, ValueError> {
-    let volume = sidecar_volume(node)?;
-    Ok(Template::new(VOLUMES.to_owned())
-        .with("VOLUME", volume.as_str())
-        .0)
+fn volumes() -> String {
+    Template::new(VOLUMES.to_owned())
+        .with("STATE_VOLUME", STATE_VOLUME)
+        .0
 }
 
 fn image(name: &str, tag: &ImageTag) -> String {
@@ -279,17 +284,18 @@ fn agent_document(
     key: &HostKey,
     node: &HostName,
 ) -> Result<String, ValueError> {
-    let head = format!("services:\n{}{}", sidecar(node)?, agent_text(plan, key)?);
-    Ok(format!("{head}{}", volumes(node)?))
+    let head = format!("services:\n{}{}", sidecar(node), agent_text(plan, key)?);
+    Ok(format!("{head}{}", volumes()))
 }
 
-fn controller_document(plan: &BootstrapPlan, node: &HostName) -> Result<String, ValueError> {
+fn controller_document(plan: &BootstrapPlan, setup: &ControllerSetup, node: &HostName) -> String {
     let filled = Template::new(CONTROLLER.to_owned())
         .with("IMAGE", &image(CONTROLLER_IMAGE, plan.image()))
         .with("ENV_FILE", CONTROLLER_ENV)
+        .with("TAGS", &setup.enroll_tags())
         .with("LISTEN", LISTEN);
-    let head = format!("services:\n{}{}", sidecar(node)?, filled.0);
-    Ok(format!("{head}{}", volumes(node)?))
+    let head = format!("services:\n{}{}", sidecar(node), filled.0);
+    format!("{head}{}", volumes())
 }
 
 fn compose_file(directory: &str, text: String) -> Result<PlannedFile, ValueError> {
@@ -309,6 +315,7 @@ fn agent_stack(plan: &BootstrapPlan, key: &HostKey) -> Result<RenderedStack, Val
     let node = node_of(plan, &name)?;
     let file = compose_file("aegis/agent", agent_document(plan, key, &node)?)?;
     let identity = Identity {
+        project: ProjectName::of(&name)?,
         name,
         node,
         role: AegisRole::Agent,
@@ -321,17 +328,18 @@ fn agent_stack(plan: &BootstrapPlan, key: &HostKey) -> Result<RenderedStack, Val
 
 fn controller_stack(
     plan: &BootstrapPlan,
-    credentials: &aegis_domain::Secret,
+    setup: &ControllerSetup,
 ) -> Result<RenderedStack, ValueError> {
     let name = StackName::new("controller")?;
     let node = node_of(plan, &name)?;
-    let compose = compose_file("aegis/controller", controller_document(plan, &node)?)?;
+    let compose = compose_file("aegis/controller", controller_document(plan, setup, &node))?;
     let env = PlannedFile {
         path: RepoPath::new(format!("aegis/controller/{CONTROLLER_ENV}"))?,
-        content: Content::Encrypted(credentials.clone()),
+        content: Content::Encrypted(setup.credentials().clone()),
         existing: Existing::Keep,
     };
     let identity = Identity {
+        project: ProjectName::of(&name)?,
         name,
         node,
         role: AegisRole::Controller,
@@ -349,8 +357,8 @@ fn controller_stack(
 /// Returns a [`ValueError`] when a value derived from the plan cannot be used in a compose file.
 pub fn stacks(plan: &BootstrapPlan, key: &HostKey) -> Result<Stacks, ValueError> {
     let mut rendered = Vec::new();
-    if let ControllerChoice::Install(credentials) = plan.controller() {
-        rendered.push(controller_stack(plan, credentials)?);
+    if let ControllerChoice::Install(setup) = plan.controller() {
+        rendered.push(controller_stack(plan, setup)?);
     }
     rendered.push(agent_stack(plan, key)?);
     Ok(Stacks(rendered))

@@ -273,3 +273,39 @@ fn each_request_carries_the_compose_summary_of_its_stack_for_decryption() {
         .collect();
     assert_eq!(names, ["App", "db"]);
 }
+
+#[cfg(test)]
+fn deploy_host3(compose: &FakeCompose) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/reconcile");
+    let repository = Repository::new(FsRepo::new(root), SerdeStackParser, SopsCheck);
+    let ports = ReconcilePorts::new(FakeGit::default(), compose.clone(), repository);
+    let reconciler = Reconciler::new(HostName::new("host3").unwrap(), ports);
+    runtime().block_on(reconciler.reconcile(commit())).unwrap();
+}
+
+#[test]
+fn a_stack_that_exposes_a_service_is_deployed_with_its_exposure() {
+    let compose = FakeCompose::default();
+    deploy_host3(&compose);
+    let requests = compose.requests();
+    let exposed = requests
+        .iter()
+        .find(|request| request.target().project().as_str() == "aegis-exposed")
+        .unwrap();
+    let exposure = exposed.target().exposure().unwrap();
+    assert_eq!(exposure.expose().service().as_str(), "vault");
+    assert_eq!(exposure.expose().port().get(), 80);
+    assert_eq!(exposure.tags().as_slice()[0].as_str(), "tag:app");
+}
+
+#[test]
+fn a_stack_without_expose_is_deployed_without_an_exposure() {
+    let compose = FakeCompose::default();
+    deploy_host3(&compose);
+    let requests = compose.requests();
+    let plain = requests
+        .iter()
+        .find(|request| request.target().project().as_str() == "aegis-plain")
+        .unwrap();
+    assert!(plain.target().exposure().is_none());
+}

@@ -5,12 +5,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_application::{
-    AgeRecipient, AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice,
-    ControllerUrl, Enrollment, Existing, FileText, HostFiles, HostKey, HostSide, ImageTag,
-    KeyMinter, NodeKeys, Reason, RenderedFile, RepoUrl, SecretEncryptor, SidecarState, Sources,
-    StackRunner, StateVolume, TailnetError, Written,
+    AegisNodes, AgeRecipient, AuthKey, Bootstrap, BootstrapError, BootstrapPlan, ControllerChoice,
+    ControllerSetup, ControllerUrl, Enrollment, Existing, FileText, HostFiles, HostKey, HostSide,
+    ImageTag, KeyMinter, NodeKeys, Reason, RenderedFile, RepoUrl, SecretEncryptor, Sources,
+    StackRunner, StateProbe, StateVolume, TailnetError, Written,
 };
-use aegis_domain::{AegisRole, HostName, HostPath, Secret, StackName, TailnetTags};
+use aegis_domain::{
+    AegisRole, HostName, HostPath, ProjectName, Secret, StackName, TailnetTag, TailnetTags,
+};
 
 #[cfg(test)]
 const RECIPIENT: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
@@ -102,7 +104,7 @@ struct PerRole;
 impl NodeKeys for PerRole {
     fn key_for(
         &self,
-        _node: &HostName,
+        _project: &ProjectName,
         role: AegisRole,
     ) -> impl Future<Output = Result<Option<AuthKey>, BootstrapError>> + Send {
         ready(Ok(Some(AuthKey::new(format!("key-for-{role:?}")))))
@@ -113,7 +115,7 @@ impl NodeKeys for PerRole {
 impl NodeKeys for Keys {
     fn key_for(
         &self,
-        _node: &HostName,
+        _project: &ProjectName,
         _role: AegisRole,
     ) -> impl Future<Output = Result<Option<AuthKey>, BootstrapError>> + Send {
         ready(Ok(self.0.map(AuthKey::new)))
@@ -172,9 +174,11 @@ fn plan(controller: ControllerChoice) -> BootstrapPlan {
 
 #[cfg(test)]
 fn install() -> ControllerChoice {
-    ControllerChoice::Install(Secret::new(format!(
-        "TS_OAUTH_CLIENT_ID=id\nTS_OAUTH_CLIENT_SECRET={OAUTH_SECRET}\n"
-    )))
+    let credentials = Secret::new(format!(
+        "AEGIS_TS_CLIENT_ID=id\nAEGIS_TS_CLIENT_SECRET={OAUTH_SECRET}\n"
+    ));
+    let tags = TailnetTags::new(vec![TailnetTag::new("tag:app").unwrap()]);
+    ControllerChoice::Install(ControllerSetup::new(credentials, tags))
 }
 
 #[cfg(test)]
@@ -236,7 +240,7 @@ mod cases {
         );
         let compose = files.text_of("aegis/agent/compose.yaml");
         assert!(!compose.contains(AUTH_KEY));
-        assert!(compose.contains("${TS_AUTHKEY:-}"));
+        assert!(compose.contains("${AEGIS_TS_AUTHKEY:-}"));
         assert_eq!(
             *runner.keys.lock().unwrap(),
             [("agent".to_owned(), Some(AUTH_KEY.to_owned()))]
@@ -297,6 +301,17 @@ mod cases {
         let (files, runner) = (Files::default(), Runner::default());
         run(&files, &runner, Scenario::new(None, ControllerChoice::Skip));
         assert_eq!(files.paths(), ["aegis/agent/compose.yaml"]);
+    }
+
+    #[test]
+    fn the_controller_stack_provides_the_enrol_tags_and_encrypts_the_oauth_pair() {
+        let (files, runner) = (Files::default(), Runner::default());
+        run(&files, &runner, Scenario::new(Some(AUTH_KEY), install()));
+        let compose = files.text_of("aegis/controller/compose.yaml");
+        assert!(compose.contains("AEGIS_ENROLL_TAGS: \"tag:app\""));
+        assert!(compose.contains("env_file:"));
+        assert!(compose.contains("controller.env"));
+        assert!(compose.contains("condition: service_healthy"));
     }
 
     #[test]
@@ -437,8 +452,11 @@ mod cases {
 struct Volume(StateVolume);
 
 #[cfg(test)]
-impl SidecarState for Volume {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
+impl StateProbe for Volume {
+    fn probe(
+        &self,
+        _project: &ProjectName,
+    ) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
         ready(Ok(self.0))
     }
 }
@@ -447,8 +465,11 @@ impl SidecarState for Volume {
 struct Broken(Result<StateVolume, Reason>);
 
 #[cfg(test)]
-impl SidecarState for Broken {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
+impl StateProbe for Broken {
+    fn probe(
+        &self,
+        _project: &ProjectName,
+    ) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
         ready(self.0.clone())
     }
 }
@@ -490,14 +511,14 @@ impl KeyMinter for &Minter {
 mod joining {
     use super::*;
 
-    fn node() -> HostName {
-        HostName::new("jao-server-aegis-agent").unwrap()
+    fn node() -> ProjectName {
+        ProjectName::of(&StackName::new("agent").unwrap()).unwrap()
     }
 
     #[test]
     fn a_populated_sidecar_mints_nothing() {
         let minter = Minter::default();
-        let joiner = Enrollment::new(Volume(StateVolume::Populated), &minter);
+        let joiner = AegisNodes::new(Volume(StateVolume::Populated), Enrollment::new(&minter));
         let key = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap();
         assert!(key.is_none());
         assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
@@ -506,7 +527,7 @@ mod joining {
     #[test]
     fn an_agent_key_is_tagged_as_an_agent() {
         let minter = Minter::default();
-        let joiner = Enrollment::new(Volume(StateVolume::Empty), &minter);
+        let joiner = AegisNodes::new(Volume(StateVolume::Empty), Enrollment::new(&minter));
         block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap();
         assert_eq!(*minter.tags.lock().unwrap(), ["tag:aegis-agent"]);
     }
@@ -515,7 +536,7 @@ mod joining {
     fn an_unreadable_state_mints_nothing_and_says_so() {
         let minter = Minter::default();
         let broken = Err(Reason::new(&"docker down"));
-        let joiner = Enrollment::new(Broken(broken), &minter);
+        let joiner = AegisNodes::new(Broken(broken), Enrollment::new(&minter));
         let failure = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap_err();
         assert!(matches!(failure, BootstrapError::State(_)));
         assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
@@ -523,7 +544,7 @@ mod joining {
 
     #[test]
     fn a_refused_mint_is_reported_as_a_mint_failure() {
-        let joiner = Enrollment::new(Volume(StateVolume::Empty), Refusing);
+        let joiner = AegisNodes::new(Volume(StateVolume::Empty), Enrollment::new(Refusing));
         let failure = block_on(joiner.key_for(&node(), AegisRole::Agent)).unwrap_err();
         assert!(matches!(failure, BootstrapError::Mint(_)));
     }
@@ -531,7 +552,7 @@ mod joining {
     #[test]
     fn an_empty_sidecar_mints_one_key_tagged_with_its_role() {
         let minter = Minter::default();
-        let joiner = Enrollment::new(Volume(StateVolume::Empty), &minter);
+        let joiner = AegisNodes::new(Volume(StateVolume::Empty), Enrollment::new(&minter));
         let key = block_on(joiner.key_for(&node(), AegisRole::Controller)).unwrap();
         assert!(key.is_some());
         assert_eq!(*minter.tags.lock().unwrap(), ["tag:aegis-controller"]);

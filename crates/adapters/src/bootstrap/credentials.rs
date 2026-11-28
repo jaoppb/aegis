@@ -5,8 +5,8 @@ use aegis_domain::Secret;
 
 use crate::tailscale::{ClientId, ClientSecret, OAuthCredentials};
 
-const CLIENT_ID_VAR: &str = "TS_OAUTH_CLIENT_ID";
-const CLIENT_SECRET_VAR: &str = "TS_OAUTH_CLIENT_SECRET";
+const CLIENT_ID_VAR: &str = "AEGIS_TS_CLIENT_ID";
+const CLIENT_SECRET_VAR: &str = "AEGIS_TS_CLIENT_SECRET";
 
 /// The OAuth credentials are missing or cannot be written to a dotenv file.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -37,7 +37,7 @@ fn value(name: &'static str, found: Option<String>) -> Result<String, Credential
 }
 
 impl OAuthEnvironment {
-    /// Read `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`.
+    /// Read `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET`.
     ///
     /// # Errors
     ///
@@ -98,14 +98,14 @@ mod tests {
         let text = environment.dotenv().expose();
         assert_eq!(
             text,
-            "TS_OAUTH_CLIENT_ID=abc\nTS_OAUTH_CLIENT_SECRET=tskey-client-x_y\n"
+            "AEGIS_TS_CLIENT_ID=abc\nAEGIS_TS_CLIENT_SECRET=tskey-client-x_y\n"
         );
     }
 
     #[test]
     fn a_missing_value_is_named_without_printing_the_other() {
         let error = OAuthEnvironment::from_values(Some("abc".to_owned()), None).unwrap_err();
-        assert_eq!(error, CredentialsError::Missing("TS_OAUTH_CLIENT_SECRET"));
+        assert_eq!(error, CredentialsError::Missing("AEGIS_TS_CLIENT_SECRET"));
     }
 
     #[test]
@@ -113,10 +113,10 @@ mod tests {
         let newline = given("abc", "x\nEVIL=1").unwrap_err();
         assert_eq!(
             newline,
-            CredentialsError::Unsupported("TS_OAUTH_CLIENT_SECRET")
+            CredentialsError::Unsupported("AEGIS_TS_CLIENT_SECRET")
         );
         let dollar = given("a$b", "ok").unwrap_err();
-        assert_eq!(dollar, CredentialsError::Unsupported("TS_OAUTH_CLIENT_ID"));
+        assert_eq!(dollar, CredentialsError::Unsupported("AEGIS_TS_CLIENT_ID"));
         assert!(given("", "ok").is_err());
     }
 

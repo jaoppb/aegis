@@ -23,6 +23,7 @@ const BOOTSTRAP: Spec = Spec {
         "--checkout",
         "--stacks",
         "--image-tag",
+        "--enroll-tags",
     ],
 };
 
@@ -41,6 +42,9 @@ pub enum UsageError {
     /// A required flag is absent.
     #[error("{0} is required")]
     Required(&'static str),
+    /// A tag a stack's node may carry is one of Aegis's own role tags.
+    #[error("{0} is reserved for Aegis itself and cannot be a stack tag")]
+    ReservedTag(String),
     /// A flag holds a value that is not valid.
     #[error("{flag}: {cause}")]
     Invalid {

@@ -4,18 +4,10 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aegis_application::{
-    AuthKey, DeviceId, EnrollError, Enrolled, Enrollment, KeyMinter, Reason, SidecarState,
-    StateVolume, TagError, TailnetError,
+    AuthKey, DeviceId, EnrollError, Enrolled, Enrollment, KeyMinter, Reason, StateVolume, TagError,
+    TailnetError,
 };
-use aegis_domain::{HostName, TailnetTag, TailnetTags, ValueError};
-
-struct Volume(Result<StateVolume, Reason>);
-
-impl SidecarState for Volume {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
-        ready(self.0.clone())
-    }
-}
+use aegis_domain::{TailnetTag, TailnetTags, ValueError};
 
 #[derive(Default)]
 struct Counting {
@@ -51,10 +43,6 @@ mod cases {
         std::iter::once(TailnetTag::new("tag:app").unwrap()).collect()
     }
 
-    fn node() -> HostName {
-        HostName::new("app").unwrap()
-    }
-
     fn block_on<Output>(future: impl Future<Output = Output>) -> Output {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -62,18 +50,15 @@ mod cases {
         runtime.block_on(future)
     }
 
-    fn enroll(
-        volume: Result<StateVolume, Reason>,
-        minter: &Counting,
-    ) -> Result<Enrolled, EnrollError> {
-        let enrollment = Enrollment::new(Volume(volume), minter);
-        block_on(enrollment.enroll(&node(), &tags()))
+    fn enroll(volume: StateVolume, minter: &Counting) -> Result<Enrolled, EnrollError> {
+        let enrollment = Enrollment::new(minter);
+        block_on(enrollment.enroll(&tags(), volume))
     }
 
     #[test]
     fn an_empty_volume_mints_one_key() {
         let minter = Counting::default();
-        let result = enroll(Ok(StateVolume::Empty), &minter);
+        let result = enroll(StateVolume::Empty, &minter);
         let key = AuthKey::new("tskey-auth-secret");
         assert_eq!(result, Ok(Enrolled::Minted(key)));
         assert_eq!(minter.mints.load(Ordering::SeqCst), 1);
@@ -82,16 +67,8 @@ mod cases {
     #[test]
     fn existing_state_mints_nothing() {
         let minter = Counting::default();
-        let result = enroll(Ok(StateVolume::Populated), &minter);
+        let result = enroll(StateVolume::Populated, &minter);
         assert_eq!(result, Ok(Enrolled::AlreadyEnrolled));
-        assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn unreadable_state_mints_nothing() {
-        let minter = Counting::default();
-        let result = enroll(Err(Reason::new(&"agent offline")), &minter);
-        assert!(matches!(result, Err(EnrollError::State(_))));
         assert_eq!(minter.mints.load(Ordering::SeqCst), 0);
     }
 
@@ -114,8 +91,8 @@ mod cases {
             .iter()
             .map(|name| TailnetTag::new(*name).unwrap())
             .collect();
-        let enrollment = Enrollment::new(Volume(Ok(StateVolume::Empty)), minter);
-        block_on(enrollment.enroll(&node(), &chosen))
+        let enrollment = Enrollment::new(minter);
+        block_on(enrollment.enroll(&chosen, StateVolume::Empty))
     }
 
     #[test]
@@ -146,8 +123,8 @@ mod cases {
 
     #[test]
     fn a_failed_mint_is_reported() {
-        let enrollment = Enrollment::new(Volume(Ok(StateVolume::Empty)), Failing);
-        let result = block_on(enrollment.enroll(&node(), &tags()));
+        let enrollment = Enrollment::new(Failing);
+        let result = block_on(enrollment.enroll(&tags(), StateVolume::Empty));
         assert!(matches!(result, Err(EnrollError::Mint(_))));
     }
 }

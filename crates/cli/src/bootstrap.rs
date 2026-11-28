@@ -3,16 +3,17 @@
 
 use std::path::PathBuf;
 
+use aegis_adapters::DockerStateProbe;
 use aegis_adapters::bootstrap::{
-    ComposeStacks, CredentialsError, DockerVolumes, Layout, LocalHost, OAuthEnvironment,
-    SopsEncrypt,
+    ComposeStacks, CredentialsError, Layout, LocalHost, OAuthEnvironment, SopsEncrypt,
 };
 use aegis_adapters::tailscale::TailscaleApi;
 use aegis_application::{
-    Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice, ControllerUrl,
-    Enrollment, HostSide, ImageTag, Reason, RepoUrl, Sources, TailnetError,
+    AegisNodes, Bootstrap, BootstrapError, BootstrapPlan, BootstrapReport, ControllerChoice,
+    ControllerSetup, ControllerUrl, Enrollment, HostSide, ImageTag, Reason, RepoUrl, Sources,
+    TailnetError,
 };
-use aegis_domain::{HostName, HostPath, ValueError};
+use aegis_domain::{AegisRole, HostName, HostPath, TailnetTag, TailnetTags, ValueError};
 
 use crate::args::{Flags, UsageError};
 
@@ -65,10 +66,34 @@ fn sources(flags: &Flags) -> Result<Sources, UsageError> {
     Ok(Sources::new(repo, controller, checkout))
 }
 
-fn choice(flags: &Flags, oauth: &OAuthEnvironment) -> ControllerChoice {
-    let install = flags.has("--with-controller");
-    let credentials = install.then(|| oauth.dotenv().clone());
-    credentials.map_or(ControllerChoice::Skip, ControllerChoice::Install)
+/// The tags of `--enroll-tags`, comma-separated: the only tags a stack's node may carry, so none
+/// may be an Aegis role tag.
+fn enroll_tags(flags: &Flags) -> Result<TailnetTags, UsageError> {
+    let listed = flags.required("--enroll-tags")?;
+    let names = listed
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let tags: Result<Vec<TailnetTag>, UsageError> = names
+        .map(|name| parsed("--enroll-tags", TailnetTag::new(name)))
+        .collect();
+    let tags = tags?;
+    let role = tags.iter().find(|tag| AegisRole::is_role_tag(tag));
+    if let Some(reserved) = role {
+        return Err(UsageError::ReservedTag(reserved.to_string()));
+    }
+    if tags.is_empty() {
+        return Err(UsageError::Required("--enroll-tags"));
+    }
+    Ok(TailnetTags::new(tags))
+}
+
+fn choice(flags: &Flags, oauth: &OAuthEnvironment) -> Result<ControllerChoice, UsageError> {
+    if !flags.has("--with-controller") {
+        return Ok(ControllerChoice::Skip);
+    }
+    let setup = ControllerSetup::new(oauth.dotenv().clone(), enroll_tags(flags)?);
+    Ok(ControllerChoice::Install(setup))
 }
 
 /// The plan the flags and the credentials ask for.
@@ -81,7 +106,7 @@ pub fn plan(flags: &Flags, oauth: &OAuthEnvironment) -> Result<BootstrapPlan, Us
     let tag = flags.value("--image-tag").unwrap_or(VERSION);
     let image = parsed("--image-tag", ImageTag::new(tag))?;
     let plan = BootstrapPlan::new(host, sources(flags)?, image);
-    Ok(plan.with_controller(choice(flags, oauth)))
+    Ok(plan.with_controller(choice(flags, oauth)?))
 }
 
 /// Run the bootstrap the flags ask for on this host.
@@ -100,7 +125,7 @@ pub async fn run(flags: &Flags) -> Result<BootstrapReport, BootstrapFailure> {
         LocalHost::new(Layout::new(checkout, stacks.clone(), key)),
         SopsEncrypt,
     );
-    let keys = Enrollment::new(DockerVolumes::new(), api);
+    let keys = AegisNodes::new(DockerStateProbe::default(), Enrollment::new(api));
     let bootstrap = Bootstrap::new(host, keys, ComposeStacks::new(stacks));
     Ok(bootstrap.run(&plan).await?)
 }
@@ -136,12 +161,14 @@ mod tests {
 
     #[test]
     fn with_controller_carries_the_credentials_to_encrypt() {
-        let line = format!("{REQUIRED} --with-controller");
+        let line = format!("{REQUIRED} --with-controller --enroll-tags tag:app,tag:db");
         let plan = plan(&flags(&line), &oauth()).unwrap();
-        assert_eq!(
-            plan.controller(),
-            &ControllerChoice::Install(oauth().dotenv().clone())
-        );
+        let setup = match plan.controller() {
+            ControllerChoice::Install(setup) => setup,
+            ControllerChoice::Skip => panic!("the controller is not installed"),
+        };
+        assert_eq!(setup.credentials(), oauth().dotenv());
+        assert_eq!(setup.enroll_tags(), "tag:app,tag:db");
     }
 
     #[test]
@@ -184,5 +211,24 @@ mod tests {
     fn a_flag_of_another_command_is_not_accepted_by_bootstrap() {
         let words: Vec<String> = ["bootstrap", "--force"].map(str::to_owned).to_vec();
         assert!(parse(&words).is_err());
+    }
+
+    #[test]
+    fn the_controller_needs_the_tags_its_stacks_may_carry() {
+        let line = format!("{REQUIRED} --with-controller");
+        let error = plan(&flags(&line), &oauth()).unwrap_err();
+        assert_eq!(error, UsageError::Required("--enroll-tags"));
+    }
+
+    #[test]
+    fn a_stack_tag_cannot_be_an_aegis_role_tag() {
+        let line = format!("{REQUIRED} --with-controller --enroll-tags tag:app,tag:aegis-agent");
+        let error = plan(&flags(&line), &oauth()).unwrap_err();
+        assert_eq!(error, UsageError::ReservedTag("tag:aegis-agent".to_owned()));
+    }
+
+    #[test]
+    fn enroll_tags_are_not_needed_without_the_controller() {
+        assert!(plan(&flags(REQUIRED), &oauth()).is_ok());
     }
 }

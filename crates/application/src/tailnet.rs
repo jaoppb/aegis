@@ -142,16 +142,6 @@ pub enum StateVolume {
     Populated,
 }
 
-/// What the agent reports about a sidecar's state volume.
-pub trait SidecarState {
-    /// The state of the sidecar for `node`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`Reason`] when the state could not be read.
-    fn volume(&self, node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send;
-}
-
 /// What [`Enrollment::enroll`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Enrolled {
@@ -168,6 +158,8 @@ pub enum TagError {
     Empty,
     /// The tag is one of Aegis's own role tags, which the API authorizer trusts.
     Reserved(TailnetTag),
+    /// The operator did not allow this tag for stack nodes.
+    NotAllowed(TailnetTag),
 }
 
 impl fmt::Display for TagError {
@@ -175,6 +167,7 @@ impl fmt::Display for TagError {
         match self {
             Self::Empty => formatter.write_str("a node needs at least one tag"),
             Self::Reserved(tag) => write!(formatter, "{tag} is reserved for Aegis itself"),
+            Self::NotAllowed(tag) => write!(formatter, "{tag} is not allowed for stack nodes"),
         }
     }
 }
@@ -194,18 +187,21 @@ fn check_tags(tags: &TailnetTags) -> Result<(), TagError> {
 pub enum EnrollError {
     /// The stack's tags are not acceptable, so nothing was read or minted.
     Tags(TagError),
-    /// The sidecar's state could not be read, so no key was minted.
-    State(Reason),
     /// Minting the key failed.
     Mint(TailnetError),
+    /// The name of the tailnet could not be discovered.
+    Tailnet(TailnetError),
+    /// The controller could not be asked, or refused, so nothing was enrolled.
+    Controller(Reason),
 }
 
 impl fmt::Display for EnrollError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tags(error) => write!(formatter, "cannot tag the node: {error}"),
-            Self::State(reason) => write!(formatter, "cannot read the sidecar state: {reason}"),
             Self::Mint(error) => write!(formatter, "cannot mint a key: {error}"),
+            Self::Tailnet(error) => write!(formatter, "cannot discover the tailnet: {error}"),
+            Self::Controller(reason) => write!(formatter, "the controller failed: {reason}"),
         }
     }
 }
@@ -214,50 +210,53 @@ impl std::error::Error for EnrollError {}
 
 /// Mints a key for a node only while its sidecar has no state, so restarts never create nodes.
 #[derive(Debug)]
-pub struct Enrollment<State, Minter> {
-    state: State,
+pub struct Enrollment<Minter> {
     minter: Minter,
 }
 
-impl<State: SidecarState + Sync, Minter: KeyMinter + Sync> Enrollment<State, Minter> {
-    /// An enrolment that reads sidecar state from `state` and mints keys with `minter`.
+impl<Minter> Enrollment<Minter> {
+    /// An enrolment that mints keys with `minter`.
     #[must_use]
-    pub const fn new(state: State, minter: Minter) -> Self {
-        Self { state, minter }
+    pub const fn new(minter: Minter) -> Self {
+        Self { minter }
     }
+}
 
-    /// Mint a key tagged `tags` for `node`, unless its sidecar already has state.
+impl<Minter: KeyMinter + Sync> Enrollment<Minter> {
+    /// Mint a key tagged `tags` for a node whose sidecar state volume is `state`, unless it
+    /// already has state.
     ///
     /// # Errors
     ///
     /// Returns [`EnrollError::Tags`] when `tags` is empty or names an Aegis role tag (a stack
-    /// must not enrol a node as the controller or an agent), [`EnrollError::State`] when the state cannot be read (nothing is minted), and
-    /// [`EnrollError::Mint`] when the key cannot be minted.
+    /// must not enrol a node as the controller or an agent), and [`EnrollError::Mint`] when the
+    /// key cannot be minted.
     pub async fn enroll(
         &self,
-        node: &HostName,
         tags: &TailnetTags,
+        state: StateVolume,
     ) -> Result<Enrolled, EnrollError> {
         check_tags(tags).map_err(EnrollError::Tags)?;
-        self.enroll_tagged(node, tags).await
+        self.enroll_tagged(tags, state)
+            .await
+            .map_err(EnrollError::Mint)
     }
 
     /// The same enrolment without the tag check, for the nodes of Aegis itself, whose role tags
-    /// a stack may not claim.
+    /// a stack may not claim. There is still one minting path: only a sidecar with no state mints.
     pub(crate) async fn enroll_tagged(
         &self,
-        node: &HostName,
         tags: &TailnetTags,
-    ) -> Result<Enrolled, EnrollError> {
-        let volume = self.state.volume(node).await.map_err(EnrollError::State)?;
-        match volume {
+        state: StateVolume,
+    ) -> Result<Enrolled, TailnetError> {
+        match state {
             StateVolume::Populated => Ok(Enrolled::AlreadyEnrolled),
             StateVolume::Empty => self.mint_key(tags).await,
         }
     }
 
-    async fn mint_key(&self, tags: &TailnetTags) -> Result<Enrolled, EnrollError> {
-        let key = self.minter.mint(tags).await.map_err(EnrollError::Mint)?;
+    async fn mint_key(&self, tags: &TailnetTags) -> Result<Enrolled, TailnetError> {
+        let key = self.minter.mint(tags).await?;
         Ok(Enrolled::Minted(key))
     }
 }

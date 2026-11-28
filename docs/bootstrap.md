@@ -27,10 +27,11 @@ The OAuth client id and secret are read from the environment, never from argumen
 the process list:
 
 ```sh
-export TS_OAUTH_CLIENT_ID=...
-export TS_OAUTH_CLIENT_SECRET=...
+export AEGIS_TS_CLIENT_ID=...
+export AEGIS_TS_CLIENT_SECRET=...
 aegis bootstrap --repo https://github.com/me/infra.git --host jao-server \
-  --controller http://jao-server-aegis-controller:7480 --with-controller
+  --controller http://jao-server-aegis-controller:7480 \
+  --with-controller --enroll-tags tag:app
 ```
 
 | Flag | Meaning | Default |
@@ -39,6 +40,7 @@ aegis bootstrap --repo https://github.com/me/infra.git --host jao-server \
 | `--host` | The host's name: the directory under `hosts/`. | required |
 | `--controller` | The URL the agent reports to. | required |
 | `--with-controller` | Also install the controller on this host. | agent only |
+| `--enroll-tags` | With `--with-controller`: the ACL tags a stack's node may carry, comma-separated (`AEGIS_ENROLL_TAGS` of the controller). Never an Aegis role tag. | required with the controller |
 | `--checkout` | Where the repository is cloned (`AEGIS_CHECKOUT` of the agent). | `/var/lib/aegis/repo` |
 | `--stacks` | Where the `aegis/` stack files are rendered. | `/var/lib/aegis/stacks` |
 | `--image-tag` | The tag of the `ghcr.io/jaoppb/aegis-agent` and `aegis-controller` images. | the version of `aegis` |
@@ -53,7 +55,7 @@ aegis bootstrap --repo https://github.com/me/infra.git --host jao-server \
 2. Clones the repository read-only into `--checkout`, or fetches it when it is already there. Bootstrap
    never pushes.
 3. Renders `aegis/agent/compose.yaml` (and `aegis/controller/` with `--with-controller`) below
-   `--stacks`: a Tailscale sidecar with a named state volume, and the Aegis container sharing its network.
+   `--stacks`: a Tailscale sidecar with the `tailscale-state` volume the agent probes for a stack's node, and the Aegis container sharing its network.
 4. Mints a single-use, pre-authorized, tagged key for each sidecar whose state volume is empty, and runs
    `docker compose up -d` for each stack. The controller starts first so the agent can report to it.
 5. Sets `AEGIS_RESERVED` on the agent to the stacks it installed, so the agent keeps deploying them from
@@ -70,7 +72,7 @@ sidecar has a healthcheck and the agent and controller wait for it, but bootstra
 node to appear on the tailnet, so check `tailscale status` or `docker compose ps` afterwards.
 
 The first keyless `up` after a minted one (a rerun, or the agent's first reconcile of the committed
-`aegis/agent`) recreates the sidecar once, because its `TS_AUTHKEY` goes from the key to empty, and with it
+`aegis/agent`) recreates the sidecar once, because its `AEGIS_TS_AUTHKEY` goes from the key to empty, and with it
 the agent or controller that shares its network. The node keeps its identity through the state volume. If
 `up` fails after a key was minted, that unused single-use key stays valid until it expires, and the rerun
 mints another.
@@ -86,7 +88,7 @@ anyone who can reach the Docker socket can read the credentials of the running c
 same exposure as any secret an Aegis stack gets through `env_file`, and it is why the credentials are not
 put in `environment:` of the rendered compose file either.
 
-The single-use `TS_AUTHKEY` reaches `docker compose` through its process environment and the sidecar reads
+The single-use `AEGIS_TS_AUTHKEY` reaches `docker compose` through its process environment and the sidecar reads
 it from there. It is consumed when the node first joins and is useless afterwards, but `docker inspect` of
 the sidecar container still shows it until the container is recreated. Nothing writes it to a file, a log
 or an error.
@@ -106,5 +108,5 @@ image tag), the agent recreates itself in the middle of a reconcile; the first r
 Until then, to upgrade, re-render with `aegis bootstrap --image-tag <tag>` on the host, copy the new
 `aegis/` files into the repository and commit them: running bootstrap alone is not enough, because the
 agent redeploys the committed files, which still name the old tag. The `aegis/controller` stack stays on
-the OAuth variable names `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, which the controller reads when
-it mints keys (#14).
+the variables the controller requires to start: `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET` (the
+encrypted `controller.env`) and `AEGIS_ENROLL_TAGS` (from `--enroll-tags`), besides `AEGIS_LISTEN`.

@@ -9,6 +9,6 @@ mod encrypt;
 mod host;
 
 pub use credentials::{CredentialsError, OAuthEnvironment};
-pub use docker::{ComposeStacks, DockerVolumes};
+pub use docker::ComposeStacks;
 pub use encrypt::SopsEncrypt;
 pub use host::{Layout, LocalHost};

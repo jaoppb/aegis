@@ -15,9 +15,9 @@ enum Stream {
 }
 
 const USAGE: &str = "usage: aegis bootstrap --repo <git url> --host <name> --controller <url> \
-[--with-controller] [--checkout <dir>] [--stacks <dir>] [--image-tag <tag>]
+[--with-controller --enroll-tags <tag,...>] [--checkout <dir>] [--stacks <dir>] [--image-tag <tag>]
 
-Reads TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET from the environment.
+Reads AEGIS_TS_CLIENT_ID and AEGIS_TS_CLIENT_SECRET from the environment.
 ";
 
 fn report(text: &str, stream: &Stream) -> ExitCode {
