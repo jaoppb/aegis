@@ -302,19 +302,20 @@ fn tombstones(outcome: &Outcome, scope: &Scope<'_>) -> Vec<Result<Tombstone, Ref
     purged.map(|unit| attempt(&unit, known)).collect()
 }
 
-/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own, or when
-/// they are unknown (`reserved` is `None`): a user stack
+/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own (a user stack
 /// named like a reserved stack shares its project, and purging it would delete the reserved
-/// stack's data.
+/// stack's data) or when they are unknown (`reserved` is `None`).
 fn attempt(unit: &Unit<'_>, reserved: Option<&[ProjectName]>) -> Result<Tombstone, Refused> {
-    let project = ProjectName::of(unit.stack.name()).ok();
-    let shared = reserved.is_none_or(|known| project.is_some_and(|name| known.contains(&name)));
     let refused = |reason| Refused {
         directory: unit.directory.clone(),
         reason,
     };
-    if shared {
-        return Err(refused(TombstoneError::Reserved));
+    let Some(known) = reserved else {
+        return Err(refused(TombstoneError::ReservedUnknown));
+    };
+    let project = ProjectName::of(unit.stack.name()).ok();
+    if project.is_some_and(|name| known.contains(&name)) {
+        return Err(refused(TombstoneError::SharesReservedProject));
     }
     Tombstone::of(unit.directory.clone(), unit.stack).map_err(refused)
 }

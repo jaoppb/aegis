@@ -92,6 +92,14 @@ impl Projects for Fake {
 }
 
 #[cfg(test)]
+fn failure_of(report: &Report, directory: &str) -> String {
+    match deployment(report, directory) {
+        Deployment::Failed(detail) => detail.as_str().to_owned(),
+        other => panic!("not failed: {other:?}"),
+    }
+}
+
+#[cfg(test)]
 fn destroys(event: &str) -> bool {
     ["node", "volumes", "path"]
         .iter()
@@ -697,10 +705,8 @@ fn a_user_stack_named_like_a_reserved_stack_is_never_purged() {
         let fake = Fake::default();
         let report = reconcile(&files, &fake, &FakeCompose::default()).await;
         assert!(fake.events().is_empty());
-        assert!(matches!(
-            deployment(&report, "hosts/host/old"),
-            Deployment::Failed(_)
-        ));
+        let detail = failure_of(&report, "hosts/host/old");
+        assert!(detail.contains("rename it"), "{detail}");
     });
 }
 
@@ -766,10 +772,8 @@ fn a_user_stack_named_like_a_broken_reserved_stack_is_never_purged() {
         let fake = Fake::default();
         let report = reconcile(&files, &fake, &FakeCompose::default()).await;
         assert!(fake.events().is_empty());
-        assert!(matches!(
-            deployment(&report, "hosts/host/old"),
-            Deployment::Failed(_)
-        ));
+        let detail = failure_of(&report, "hosts/host/old");
+        assert!(detail.contains("rename it"), "{detail}");
     });
 }
 
@@ -789,9 +793,7 @@ fn nothing_is_purged_while_the_reserved_directory_cannot_be_read() {
         let fake = Fake::default();
         let report = reconcile(&files, &fake, &FakeCompose::default()).await;
         assert!(fake.events().is_empty());
-        assert!(matches!(
-            deployment(&report, "hosts/host/controller"),
-            Deployment::Failed(_)
-        ));
+        let detail = failure_of(&report, "hosts/host/controller");
+        assert!(detail.contains("cannot be read"), "{detail}");
     });
 }

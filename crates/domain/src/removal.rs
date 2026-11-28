@@ -67,6 +67,11 @@ pub enum TombstoneError {
     NotPurged,
     /// Aegis's own stacks are never purged.
     Reserved,
+    /// The stack has the same project name as a reserved stack, so purging it would delete that
+    /// stack's data.
+    SharesReservedProject,
+    /// The reserved `aegis/` directory cannot be read, so which names are reserved is unknown.
+    ReservedUnknown,
     /// The stack has no Compose project name.
     NoProject(ValueError),
 }
@@ -76,6 +81,12 @@ impl fmt::Display for TombstoneError {
         match self {
             Self::NotPurged => formatter.write_str("the stack is not marked purged"),
             Self::Reserved => formatter.write_str("a reserved stack cannot be purged"),
+            Self::SharesReservedProject => formatter.write_str(
+                "the stack has the project name of a reserved stack; rename it to purge it",
+            ),
+            Self::ReservedUnknown => formatter.write_str(
+                "the aegis/ directory cannot be read, so reserved names are unknown; fix it and the next reconcile retries",
+            ),
             Self::NoProject(error) => write!(formatter, "the stack has no project name: {error}"),
         }
     }
