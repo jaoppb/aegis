@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use aegis_application::Reason;
 use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, Command};
 
 /// The environment Compose inherits from the agent, and nothing else, so `COMPOSE_FILE`,
 /// `COMPOSE_PROJECT_NAME` and the like in the agent's environment cannot change what runs.
@@ -59,27 +59,38 @@ pub fn inherit_only(command: &mut Command, names: &[&str]) {
     command.envs(set);
 }
 
-/// Run `command` to completion within `limit`, feeding `input` on its stdin. The child is killed
-/// when the call is dropped or times out.
+/// Run `command` to completion within `limit`, feeding `input` on its stdin.
+///
+/// No stdin is piped when `input` is empty. A child that exits without reading all of its input
+/// is not an error: the exit status says how the run went. The child is killed when the call is
+/// dropped or times out.
 ///
 /// # Errors
 ///
 /// Returns a [`Reason`] that names only the failure kind, never the command line or its output.
 pub async fn run(mut command: Command, input: String, limit: Duration) -> Result<Output, Reason> {
     command.kill_on_drop(true);
-    command.stdin(Stdio::piped());
+    command.stdin(if input.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    });
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command.spawn().map_err(|failure| kind(&failure))?;
     let finished = tokio::time::timeout(limit, feed_and_wait(child, input)).await;
     finished.map_err(|_| Reason::new(&"timed out"))?
 }
 
+async fn feed(mut stdin: ChildStdin, input: String) -> Result<(), Reason> {
+    match stdin.write_all(input.as_bytes()).await {
+        Err(failure) if failure.kind() != std::io::ErrorKind::BrokenPipe => Err(kind(&failure)),
+        _ => Ok(()),
+    }
+}
+
 async fn feed_and_wait(mut child: Child, input: String) -> Result<Output, Reason> {
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .await
-            .map_err(|failure| kind(&failure))?;
+    if let Some(stdin) = child.stdin.take() {
+        feed(stdin, input).await?;
     }
     child
         .wait_with_output()
