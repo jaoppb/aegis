@@ -4,15 +4,15 @@ The controller polls the GitOps repository, loads and validates each new commit,
 
 ## Routes
 
-The API is resource-oriented: resources are plural nouns, no path has a verb, and the HTTP method states the action. Every route is also answered `403` to a caller its role does not admit and `503` when the whois lookup fails.
+The API is resource-oriented: resources are plural nouns, no path has a verb, and the HTTP method states the action. Every route is also answered `403` to a caller its role does not admit, `503` when the whois lookup fails (and, for a route that reads the desired state, before a commit has loaded), and the framework's `415` or `422` for a body that is not the JSON the route takes.
 
 | Route | Caller | Statuses |
 |-------|--------|----------|
 | `GET /v1/health` | agent, operator | `200` |
 | `GET /v1/fleet` | agent (its own host), operator | `200` |
-| `PUT /v1/hosts/{host}/status` | the agent of `{host}` | `204`, `400`, `403`, `413`, `415`, `422` |
-| `POST /v1/enrollments` | agent | `200`, `400`, `403`, `429`, `502`, `503` |
-| `DELETE /v1/nodes/{hostname}` | agent | `204`, `400`, `403`, `404`, `409`, `502`, `503` |
+| `PUT /v1/hosts/{host}/status` | the agent of `{host}` | `204`, `400`, `403`, `413` |
+| `POST /v1/enrollments` | agent | `200`, `400`, `403`, `429`, `502` |
+| `DELETE /v1/nodes/{hostname}` | agent | `204`, `400`, `403`, `404`, `409`, `502` |
 | `POST /v1/syncs` | operator | `200`, `400`, `409`, `502` |
 | `POST /v1/hosts/{host}/syncs` | operator | `200`, `400`, `404`, `409`, `502` |
 
