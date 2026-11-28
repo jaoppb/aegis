@@ -143,6 +143,8 @@
               # Workflow lint (actionlint runs shellcheck on `run:` blocks).
               actionlint
               shellcheck
+              # build-release checks the binaries are static.
+              file
             ]);
             # Checked by the justfile's `_devshell` guard.
             AEGIS_DEVSHELL = "1";

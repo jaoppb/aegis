@@ -20,7 +20,7 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 ### Fixed
 
-- The static musl binaries built again: `nix build .#aegis-controller` crashed with SIGSEGV in a build script (first seen as `icu_normalizer_data`), on every machine, because `pkgsStatic` leaked `-static` into the glibc compiler that links the build scripts. The flake now unsets it for the build, and CI builds the binaries and images for amd64 and arm64 on every pull request (`just build-release`, the `Release Build` job) instead of only at release (#66, #PR)
+- The static musl binaries build again: `nix build .#aegis-controller` crashed with SIGSEGV in a build script (first seen as `icu_normalizer_data`), on every machine, because `pkgsStatic` leaked `-static` into the glibc compiler that links the build scripts. The flake now unsets it for the build, and CI builds the binaries and images for amd64 and arm64 on every pull request (`just build-release`, the `Release Build` job) instead of only at release (#66, #PR)
 
 ### Changed
 
