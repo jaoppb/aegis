@@ -230,6 +230,21 @@ fn an_unreachable_remote_is_an_error_that_leaves_the_checkout_where_it_was() {
 }
 
 #[test]
+fn an_existing_repository_that_aegis_did_not_make_is_never_rebuilt_or_cleaned() {
+    runtime().block_on(async {
+        let pair = Pair::new("foreign").await;
+        let branch = branch_of(&pair.origin).await;
+        let remote = Remote::new(pair.origin.to_str().unwrap(), &branch).unwrap();
+        let follower = GitFollower::new(&pair.checkout, remote);
+        tokio::fs::write(pair.checkout.join("mine"), "data")
+            .await
+            .unwrap();
+        assert!(follower.advance().await.is_err());
+        assert!(pair.checkout.join("mine").exists());
+    });
+}
+
+#[test]
 fn a_work_directory_with_other_files_is_never_adopted() {
     runtime().block_on(async {
         let pair = Pair::new("adopt").await;

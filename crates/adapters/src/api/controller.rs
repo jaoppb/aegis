@@ -117,17 +117,24 @@ impl Shared {
             Some(_) => Agent::Mapped,
             None => Agent::Unmapped,
         };
-        let confirmation = match book.failures.get(host) {
-            _ if book.fleet.is_confirmed(host) => Confirmation::Confirmed,
-            Some(reason) => Confirmation::Failing(reason.clone()),
-            None => Confirmation::Pending,
-        };
+        let confirmation = confirmation_of(book, host);
         let status = HostStatus::new(host.as_str(), agent, confirmation);
         match book.reports.get(host) {
             Some(report) => status.with_report(report.clone()),
             None => status,
         }
     }
+}
+
+/// Whether `host` confirmed the target, and if not, whether the last call to it failed.
+fn confirmation_of(book: &Book, host: &HostName) -> Confirmation {
+    if book.fleet.is_confirmed(host) {
+        return Confirmation::Confirmed;
+    }
+    let failure = book.failures.get(host);
+    failure.map_or(Confirmation::Pending, |reason| {
+        Confirmation::Failing(reason.clone())
+    })
 }
 
 /// A report that passed the checks, with the host and commit it names.
@@ -137,7 +144,7 @@ struct Verified {
     report: StatusReport,
 }
 
-/// Keep what an agent reported, and count it as a confirmation when it is for the target.
+/// Verify a report an agent pushed, then record it.
 fn accept(shared: &Shared, report: StatusReport) -> Result<(), StatusCode> {
     let verified = shared.verify(report)?;
     shared.book().record(verified);
@@ -150,12 +157,24 @@ fn judge(
     host: &HostName,
     answer: Result<StatusReport, ClientError>,
 ) -> Result<Verified, String> {
-    let report = answer.map_err(|error| error.to_string())?;
+    let report = answer.map_err(|error| describe(&error))?;
     let asked = report.host() == host.as_str();
     asked
         .then_some(())
         .ok_or_else(|| "the agent reported another host".to_owned())?;
     shared.verify(report).map_err(|status| status.to_string())
+}
+
+/// Why a call failed, without the agent's URL: the status is readable by every agent.
+fn describe(error: &ClientError) -> String {
+    match error {
+        ClientError::Rejected(status) => format!("the agent answered {status}"),
+        ClientError::Transport(cause) if cause.is_timeout() => "the agent timed out".to_owned(),
+        ClientError::Transport(cause) if cause.is_connect() => {
+            "the agent is unreachable".to_owned()
+        }
+        ClientError::Transport(_) => "the call to the agent failed".to_owned(),
+    }
 }
 
 /// An agent answered a reconcile, or failed to: the call is over, and one lock records it.
@@ -294,12 +313,6 @@ impl Hub {
     }
 }
 
-fn tell(shared: &Arc<Shared>, order: Option<Order>) {
-    if let Some(due) = order {
-        converge(shared, &due);
-    }
-}
-
 /// The client of one agent, ready to be kept under its host name.
 struct Ready {
     host: HostName,
@@ -322,6 +335,13 @@ fn client_for(address: &AgentAddress) -> Result<Ready, ClientError> {
         host: address.host.clone(),
         client,
     })
+}
+
+/// Tell the hosts of `order`, when there is one, to converge.
+fn tell(shared: &Arc<Shared>, order: Option<Order>) {
+    if let Some(due) = order {
+        converge(shared, &due);
+    }
 }
 
 /// Take in what the repository looked like, and say whom to tell about the goal.

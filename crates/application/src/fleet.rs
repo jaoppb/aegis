@@ -277,7 +277,8 @@ mod tests {
         fleet.observe(goal("aaaaaaa"));
         fleet.acknowledge(&host("a"), &commit("aaaaaaa"));
         fleet.acknowledge(&host("a"), &commit("aaaaaaa"));
-        assert!(fleet.order(&hosts(&["a"])).is_none());
-        assert_eq!(fleet.order(&hosts(&["a", "b"])).unwrap().hosts().len(), 1);
+        fleet.acknowledge(&host("b"), &commit("aaaaaaa"));
+        assert!(fleet.order(&hosts(&["a", "b"])).is_none());
+        assert_eq!(fleet.confirmed.len(), 2);
     }
 }

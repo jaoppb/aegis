@@ -446,23 +446,47 @@ fn a_host_with_a_call_in_flight_is_not_told_again() {
         world.hub.tick(&world.poller()).await;
         world.hub.tick(&world.poller()).await;
         world.confirmed("h").await;
+        world.hub.tick(&world.poller()).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(world.calls.lock().unwrap().len(), 1);
     });
 }
 
 #[test]
-fn the_polling_loop_picks_up_a_commit_without_a_manual_tick() {
+fn the_polling_loop_picks_up_each_new_commit_without_a_manual_tick() {
     runtime().block_on(async {
         let world = world("loop").await;
-        let commit = world.commit(&GOOD).await;
+        world.commit(&GOOD).await;
         let poller = world.poller();
         let looping = world.hub.run(&poller, Duration::from_millis(50));
+        let second = commit_after_first_confirmation(&world);
         let status = tokio::select! {
             never = looping => match never {},
-            status = world.confirmed("h") => status,
+            status = second => status,
         };
-        assert_eq!(status.target().unwrap().commit(), commit);
+        assert_eq!(world.calls.lock().unwrap().len(), 2);
+        assert!(status.target().is_some());
     });
+}
+
+/// Wait for the first commit to be confirmed, push another and wait for that one too.
+#[cfg(test)]
+async fn commit_after_first_confirmation(world: &World) -> ControllerStatus {
+    world.confirmed("h").await;
+    let next = world.commit(&[("hosts/h/web/note", "x")]).await;
+    wait_target(world, &next).await
+}
+
+/// Poll until the target is `commit` and its host confirmed it.
+#[cfg(test)]
+async fn wait_target(world: &World, commit: &str) -> ControllerStatus {
+    let client = ApiClient::new(BaseUrl::new(&world.url)).unwrap();
+    let at_commit = |found: &HostStatus| {
+        let report = found.report();
+        report.is_some_and(|seen| seen.commit() == commit)
+            && *found.confirmation() == Confirmation::Confirmed
+    };
+    wait_for(&client, "h", at_commit).await
 }
 
 #[cfg(test)]
@@ -495,9 +519,9 @@ fn refused_reports_are_not_kept() {
         world.hub.tick(&world.poller()).await;
         world.failing("h").await;
         let stranger = StatusReport::new("stranger", commit.as_str(), Vec::new());
-        post_report(&world, &stranger).await;
+        assert_eq!(post_report(&world, &stranger).await, StatusCode::NOT_FOUND);
         let garbled = StatusReport::new("h", "not a commit", Vec::new());
-        post_report(&world, &garbled).await;
+        assert_eq!(post_report(&world, &garbled).await, StatusCode::BAD_REQUEST);
         let status = world.status().await;
         assert_eq!(status.hosts().len(), 1);
         assert_eq!(status.hosts()[0].report(), None);

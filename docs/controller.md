@@ -8,10 +8,10 @@ The controller polls the GitOps repository, loads and validates each new commit,
 |----------|----------|---------|
 | `AEGIS_LISTEN` | yes | The socket address to serve on, normally the tailnet address, such as `100.64.0.7:7480`. |
 | `AEGIS_REPO_URL` | yes | The repository to follow. A URL with credentials (`https://token@host/...`, or a password in any URL) is refused. |
-| `AEGIS_WORKDIR` | yes | An absolute path for the disposable checkout. It is rebuilt when missing or damaged, and everything in it that the commit does not hold is deleted, so give it a directory of its own: a non-empty directory that is not already a git checkout is refused. |
+| `AEGIS_WORKDIR` | yes | An absolute path for the disposable checkout. It is rebuilt when missing or damaged, and everything in it that the commit does not hold is deleted, so give it a directory of its own: a non-empty directory, or a git repository the controller did not create (it marks its own with `.git/aegis-managed`), is refused. |
 | `AEGIS_REPO_BRANCH` | no | The branch to follow. Default `main`. |
 | `AEGIS_POLL_SECS` | no | Seconds between two looks at the repository. Default `60`, at least `5`. |
-| `AEGIS_AGENTS` | no | The agents, as comma-separated `host=url` pairs such as `jao-server=http://100.64.0.7:7480`. A host of the repository without an entry is never told to reconcile. |
+| `AEGIS_AGENTS` | no | The agents, as comma-separated `host=url` pairs such as `jao-server=http://100.64.0.7:7480`. A URL with credentials is refused. A host of the repository without an entry is never told to reconcile. |
 
 Git authenticates with what it inherits from the controller's environment: a deploy key through the SSH agent or `~/.ssh/config`, or a git credential helper. Aegis never reads, stores or logs a token. Only the `https`, `ssh` and `file` transports are allowed. Write access is not needed.
 

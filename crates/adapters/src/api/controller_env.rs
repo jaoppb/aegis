@@ -56,6 +56,10 @@ fn agent_from(entry: &str) -> Result<AgentAddress, ServeError> {
         .split_once('=')
         .ok_or_else(|| invalid(AGENTS_VAR, &"entries are host=url"))?;
     let host = HostName::new(name.trim()).map_err(|error| invalid(AGENTS_VAR, &error))?;
+    let carries_credentials = url.contains('@');
+    carries_credentials.then_some(()).map_or(Ok(()), |()| {
+        Err(invalid(AGENTS_VAR, &"URLs carry no credentials"))
+    })?;
     Ok(AgentAddress::new(host, BaseUrl::new(url.trim())))
 }
 
@@ -180,6 +184,7 @@ mod tests {
             agents_from(Some("a=http://100.64.0.1:7480, b=http://100.64.0.2:7480,")).unwrap();
         assert_eq!(agents.len(), 2);
         assert!(agents_from(None).unwrap().is_empty());
+        assert!(agents_from(Some("a=http://user:pw@h")).is_err());
         assert!(matches!(
             agents_from(Some("a")),
             Err(ServeError::Invalid { .. })
@@ -195,6 +200,7 @@ mod tests {
         assert!(workdir_from("relative").is_err());
         assert!(workdir_from("/").is_err());
         assert!(workdir_from("/var/../etc").is_err());
+        assert!(workdir_from("/var/lib/..").is_err());
         assert!(workdir_from("/var/lib/aegis/work").is_ok());
     }
 }

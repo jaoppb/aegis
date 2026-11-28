@@ -24,6 +24,10 @@ const INHERITED: [&str; 6] = [
 /// The transports git may use, so a URL cannot start another `git-remote-*` helper.
 const ALLOWED_PROTOCOLS: &str = "https:ssh:file";
 
+/// The file inside `.git` that marks a checkout as Aegis's own; only such a checkout is ever
+/// rebuilt or cleaned.
+const MARKER: &str = "aegis-managed";
+
 /// How long one git command may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -196,6 +200,12 @@ impl GitCheckout {
     /// Make sure the directory is the top of a git repository, starting over when it is missing
     /// or damaged. Only a `.git` directory is ever removed, never other files.
     async fn prepare(&self) -> Result<(), GitError> {
+        let adoptable = is_adoptable(&self.directory).await;
+        let failed = |error: std::io::Error| GitError::new(Reason::new(&error.kind()));
+        adoptable
+            .map_err(failed)?
+            .then_some(())
+            .ok_or_else(foreign)?;
         let top = self.capture(&["rev-parse", "--git-dir"]).await;
         match top.as_deref() {
             Ok(".git") => Ok(()),
@@ -205,23 +215,22 @@ impl GitCheckout {
 
     async fn start_over(&self) -> Result<(), GitError> {
         let failed = |error: std::io::Error| GitError::new(Reason::new(&error.kind()));
-        let adoptable = is_adoptable(&self.directory).await.map_err(failed)?;
-        adoptable
-            .then_some(())
-            .ok_or_else(|| GitError::new(Reason::new(&"the work directory is not empty")))?;
         let removed = tokio::fs::remove_dir_all(self.directory.join(".git")).await;
         removed.or_else(forgive_missing).map_err(failed)?;
         let created = tokio::fs::create_dir_all(&self.directory).await;
         created.map_err(failed)?;
-        self.step(&["init", "--quiet"]).await
+        self.step(&["init", "--quiet"]).await?;
+        let marker = self.directory.join(".git").join(MARKER);
+        tokio::fs::write(marker, "").await.map_err(failed)
     }
 }
 
-/// Whether `directory` may become the work directory: it is missing, empty or already a git
-/// repository. Anything else could be somebody's data, which `git clean` would delete.
+/// Whether `directory` may become the work directory: it is missing or empty, or it is a checkout
+/// Aegis made. Anything else could be somebody's data, which `git clean` would delete.
 async fn is_adoptable(directory: &Path) -> std::io::Result<bool> {
-    if tokio::fs::try_exists(directory.join(".git")).await? {
-        return Ok(true);
+    let git_dir = directory.join(".git");
+    if tokio::fs::try_exists(&git_dir).await? {
+        return tokio::fs::try_exists(git_dir.join(MARKER)).await;
     }
     let opened = tokio::fs::read_dir(directory).await;
     let mut entries = match opened {
@@ -230,6 +239,10 @@ async fn is_adoptable(directory: &Path) -> std::io::Result<bool> {
         Err(error) => return Err(error),
     };
     Ok(entries.next_entry().await?.is_none())
+}
+
+fn foreign() -> GitError {
+    GitError::new(Reason::new(&"the work directory is not an Aegis checkout"))
 }
 
 fn forgive_missing(error: std::io::Error) -> std::io::Result<()> {
