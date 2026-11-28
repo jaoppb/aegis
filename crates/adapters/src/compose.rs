@@ -12,6 +12,8 @@ use aegis_domain::{
 };
 use serde::Deserialize;
 
+use crate::allowlist;
+
 #[derive(Deserialize)]
 struct RawCompose {
     services: Option<BTreeMap<String, RawService>>,
@@ -225,6 +227,10 @@ fn include_path_list(path: &RawIncludePath) -> Vec<String> {
 fn read_document(text: &str) -> Result<Option<RawCompose>, ParseError> {
     let mut document: serde_norway::Value =
         serde_norway::from_str(text).map_err(|error| yaml(&error))?;
+    refuse(
+        "YAML tags are not supported: remove the tag at",
+        &allowlist::tags(&document),
+    )?;
     document
         .apply_merge()
         .map_err(|error| ParseError::Invalid(error.to_string()))?;
@@ -234,7 +240,23 @@ fn read_document(text: &str) -> Result<Option<RawCompose>, ParseError> {
                 .to_owned(),
         ));
     }
+    refuse(
+        "keys Aegis does not support (remove them or use an `x-` extension key):",
+        &allowlist::unsupported_keys(&document),
+    )?;
     serde_norway::from_value(document).map_err(|error| yaml(&error))
+}
+
+/// Fail with every path in `found`, or pass when there is none.
+fn refuse(reason: &str, found: &[String]) -> Result<(), ParseError> {
+    if found.is_empty() {
+        return Ok(());
+    }
+    let paths: Vec<String> = found.iter().map(|path| format!("`{path}`")).collect();
+    Err(ParseError::Invalid(format!(
+        "{reason} {}",
+        paths.join(", ")
+    )))
 }
 
 /// Whether a `<<` key is left anywhere, which `apply_merge` does for a merge inside a merged

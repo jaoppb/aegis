@@ -357,3 +357,95 @@ fn a_bind_needs_only_one_of_type_none_or_o_bind_to_be_checked() {
     let bare = "volumes:\n  v:\n    driver_opts: {type: none, o: bind}\n";
     assert!(compose::parse(bare).is_ok());
 }
+
+fn rejection(text: &str) -> String {
+    let error = compose::parse(text).err();
+    error.map(|error| error.to_string()).unwrap_or_default()
+}
+
+#[test]
+fn a_merge_key_inside_a_tagged_node_is_refused() {
+    let text = "x-a: &a\n  image: alpine\nservices:\n  app: !override\n    <<: *a\n    volumes: ['./data:/data']\n";
+    assert!(rejection(text).contains("`services.app`"));
+}
+
+#[test]
+fn every_yaml_tag_is_refused_with_its_path() {
+    for tag in ["!reset", "!override", "!custom"] {
+        let text = format!("services:\n  app:\n    image: x\n    ports: {tag} []\n");
+        assert!(rejection(&text).contains("`services.app.ports`"), "{tag}");
+    }
+}
+
+#[test]
+fn a_tag_inside_an_anchor_is_refused() {
+    let text = "x-a: &a !reset\n  image: x\nservices:\n  app:\n    <<: *a\n";
+    assert!(rejection(text).contains("tag"));
+}
+
+const REFUSED: &[(&str, &str)] = &[
+    (
+        "services:\n  app:\n    label_file: /etc/labels\n",
+        "services.app.label_file",
+    ),
+    (
+        "services:\n  app:\n    nonsense: 1\n",
+        "services.app.nonsense",
+    ),
+    (
+        "services:\n  app:\n    build: {context: ., ssh: [default]}\n",
+        "services.app.build.ssh",
+    ),
+    (
+        "services:\n  app:\n    build: {context: ., cache_to: ['type=local,dest=/x']}\n",
+        "services.app.build.cache_to",
+    ),
+    (
+        "services:\n  app:\n    volumes: [{type: bind, source: ./a, target: /a, flavour: x}]\n",
+        "services.app.volumes[0].flavour",
+    ),
+    (
+        "services:\n  app:\n    env_file: [{path: a.env, other: 1}]\n",
+        "services.app.env_file[0].other",
+    ),
+    (
+        "volumes:\n  v:\n    driver_opts: {}\n    mystery: 1\n",
+        "volumes.v.mystery",
+    ),
+    (
+        "secrets:\n  s:\n    file: a\n    mystery: 1\n",
+        "secrets.s.mystery",
+    ),
+    ("mystery: 1\nservices: {}\n", "mystery"),
+    (
+        "include:\n  - path: a.yaml\n    env_file: .env\n",
+        "include[0].env_file",
+    ),
+];
+
+#[test]
+fn unknown_and_host_path_keys_are_refused_at_every_level() {
+    for (text, path) in REFUSED {
+        assert!(rejection(text).contains(&format!("`{path}`")), "{path}");
+    }
+}
+
+#[test]
+fn every_unsupported_key_is_reported_at_once() {
+    let text = "services:\n  app:\n    label_file: a\n    develop: {}\n";
+    let message = rejection(text);
+    assert!(message.contains("`services.app.label_file`"));
+    assert!(message.contains("`services.app.develop`"));
+}
+
+#[test]
+fn extension_keys_are_allowed_at_every_level() {
+    let text = "x-top: 1\nservices:\n  app:\n    image: x\n    x-note: 1\n    build: {context: ., x-opt: 1}\n    volumes: [{type: volume, source: v, target: /v, x-m: 1}]\nvolumes:\n  v:\n    x-vol: 1\n";
+    assert!(compose::parse(text).is_ok());
+}
+
+#[test]
+fn plain_anchors_and_one_merge_level_are_still_accepted() {
+    let text = "x-base: &base\n  restart: always\nservices:\n  app:\n    <<: *base\n    image: a\n";
+    assert!(compose::parse(text).is_ok());
+}
