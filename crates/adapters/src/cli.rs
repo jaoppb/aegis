@@ -8,6 +8,20 @@ use aegis_application::Reason;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 
+/// The environment Compose inherits from the agent, and nothing else, so `COMPOSE_FILE`,
+/// `COMPOSE_PROJECT_NAME` and the like in the agent's environment cannot change what runs.
+pub const COMPOSE_INHERITED: [&str; 9] = [
+    "PATH",
+    "HOME",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "XDG_RUNTIME_DIR",
+    "SSL_CERT_FILE",
+];
+
 /// Clear the environment of `command` and give it back only the variables in `names` that the
 /// current process has set, so nothing else of the agent's environment can steer the child.
 pub fn inherit_only(command: &mut Command, names: &[&str]) {

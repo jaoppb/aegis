@@ -51,6 +51,9 @@ pub enum ServeError {
     /// The required ACL tag is not valid.
     #[error("invalid ACL tag: {0}")]
     Tag(#[from] ValueError),
+    /// Decrypted files left by an earlier run could not be removed.
+    #[error("cannot remove stale decrypted files: {0}")]
+    Sweep(aegis_application::StoreError),
     /// A required environment variable is not set.
     #[error("{0} is not set")]
     Missing(&'static str),

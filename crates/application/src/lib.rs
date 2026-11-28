@@ -7,6 +7,7 @@ pub mod loader;
 pub mod outcome;
 pub mod parse;
 pub mod reconcile;
+pub mod secrets;
 pub mod source;
 pub mod validate;
 
@@ -19,5 +20,6 @@ pub use loader::load_desired_state;
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
 pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};
+pub use secrets::{DecryptError, SecretDecryptor, SecretStore, Slot, StoreError};
 pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
 pub use validate::{EncryptionCheck, validate_desired_state};

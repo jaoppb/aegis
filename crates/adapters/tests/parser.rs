@@ -2,7 +2,7 @@
 
 use aegis_adapters::{compose, policy};
 use aegis_application::ParseError;
-use aegis_domain::{Access, Mount, RepoPath, StackState, ValueError};
+use aegis_domain::{Access, Mount, StackState, ValueError};
 
 fn first_mount(mount: &str) -> Result<Mount, ParseError> {
     let text = format!("services:\n  app:\n    volumes:\n      - {mount}\n");
@@ -192,7 +192,7 @@ fn file_references_are_collected() {
     let secrets: Vec<&str> = summary
         .secret_files()
         .iter()
-        .map(RepoPath::as_str)
+        .map(|file| file.path().as_str())
         .collect();
     assert_eq!(secrets, ["./key.yaml"]);
 }

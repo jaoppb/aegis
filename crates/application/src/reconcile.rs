@@ -9,7 +9,9 @@ use aegis_domain::{
     Report, ReservedStacks, Stack, StackReport, StackReports, StackState, ValueError,
 };
 
-use crate::deploy::{BuiltServices, Checkout, ComposeRunner, DeployRequest, GitError, Target};
+use crate::deploy::{
+    BuiltServices, Checkout, ComposeRunner, DeployRequest, Extras, GitError, Target,
+};
 use crate::loader::load_desired_state;
 use crate::outcome::Outcome;
 use crate::parse::StackParser;
@@ -233,11 +235,9 @@ async fn run_stack<Docker: ComposeRunner + Sync>(
 fn request_for(unit: &Unit<'_>, commit: &CommitSha) -> Result<DeployRequest, ValueError> {
     let project = ProjectName::of(unit.stack.name())?;
     let target = Target::new(project, unit.directory.clone());
-    Ok(DeployRequest::new(
-        target,
-        commit.clone(),
-        built_by(unit.stack),
-    ))
+    let sources = Extras::default().with_sources(unit.stack.compose().clone());
+    let request = DeployRequest::new(target, commit.clone(), built_by(unit.stack));
+    Ok(request.with_extras(sources))
 }
 
 fn built_by(stack: &Stack) -> BuiltServices {

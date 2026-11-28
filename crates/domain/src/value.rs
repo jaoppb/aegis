@@ -165,6 +165,16 @@ string_newtype!(
     validate_name
 );
 string_newtype!(
+    /// The name of a top-level compose secret.
+    SecretName,
+    validate_name
+);
+string_newtype!(
+    /// The name of one file a deploy places for a stack, such as `env-web-0`.
+    SlotName,
+    validate_name
+);
+string_newtype!(
     /// The name of a compose named volume.
     VolumeName,
     validate_name
@@ -201,6 +211,52 @@ string_newtype!(
     ImageRef,
     validate_non_empty
 );
+/// Decrypted text that must never reach a log, an error or a serialized form: its `Debug` and
+/// `Display` are redacted and it has no `Serialize`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    /// Wrap decrypted `text`.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The plaintext. Call it only to hand the text to a file or a process.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// `text` with the whole secret, and the value of each `NAME=value` line of it, replaced.
+    #[must_use]
+    pub fn redact(&self, text: &str) -> String {
+        let values = self
+            .0
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(_, value)| value);
+        let quoted = values.map(|value| value.trim().trim_matches(['"', '\'']));
+        let parts = std::iter::once(self.0.trim()).chain(quoted);
+        parts
+            .filter(|part| !part.is_empty())
+            .fold(text.to_owned(), |clean, part| clean.replace(part, "***"))
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Secret(***)")
+    }
+}
+
+impl fmt::Display for Secret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("***")
+    }
+}
+
 /// The text of a `compose.yaml` exactly as written in the repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeSource(String);
@@ -495,6 +551,23 @@ mod tests {
         let listed: Vec<&str> = volumes.iter().map(VolumeName::as_str).collect();
         assert_eq!(listed, ["a", "b"]);
         assert_eq!(volumes.as_slice().len(), 2);
+    }
+
+    #[test]
+    fn a_secret_never_shows_in_debug_or_display() {
+        let secret = Secret::new("DB_PASSWORD=hunter2");
+        assert!(!format!("{secret:?}").contains("hunter2"));
+        assert!(!format!("{secret}").contains("hunter2"));
+        assert_eq!(secret.expose(), "DB_PASSWORD=hunter2");
+    }
+
+    #[test]
+    fn redacting_hides_the_whole_secret_and_each_dotenv_value() {
+        let secret = Secret::new("A=\"one\"\nB=two\n");
+        let text = "failed: A=one B=two and \"one\" three";
+        let clean = secret.redact(text);
+        assert!(!clean.contains("one") && !clean.contains("two"), "{clean}");
+        assert!(clean.contains("three"));
     }
 
     #[test]
