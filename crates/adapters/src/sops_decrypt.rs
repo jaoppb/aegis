@@ -143,10 +143,14 @@ fn first_token_is_metadata(key: &str) -> bool {
     METADATA_KEYS.contains(&first)
 }
 
-/// Whether the flattened metadata key `key` (lowercase, without any `sops_` prefix) is one that
+/// Whether the flattened metadata key `key` (without any `sops_` prefix) is one that
 /// `sops` writes for age: a known metadata name as its first token, or a `key_groups` entry whose
-/// group holds only `age`.
+/// group holds only `age`. `sops` writes lowercase only and matches `__map_` and `__list_` with
+/// their case, so a key with an uppercase letter is refused rather than lowercased.
 fn flat_key_is_age_only(key: &str) -> bool {
+    if key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return false;
+    }
     let group = key.strip_prefix("key_groups__list_");
     group.map_or_else(|| first_token_is_metadata(key), key_group_is_age_only)
 }
@@ -154,9 +158,10 @@ fn flat_key_is_age_only(key: &str) -> bool {
 /// Dotenv: every `sops_<key>=` entry must be age-only metadata. Other entries are the file's data.
 fn dotenv_is_age_only(text: &str) -> bool {
     let entries = text.lines().filter_map(|line| line.split_once('='));
-    let keys = entries.map(|(key, _)| key.trim().to_ascii_lowercase());
-    let mut metadata = keys.filter_map(|key| key.strip_prefix("sops_").map(str::to_owned));
-    metadata.all(|key| flat_key_is_age_only(&key))
+    let keys = entries.map(|(key, _)| key.trim());
+    let mut metadata = keys.filter_map(|key| key.split_at_checked("sops_".len()));
+    metadata
+        .all(|(prefix, rest)| !prefix.eq_ignore_ascii_case("sops_") || flat_key_is_age_only(rest))
 }
 
 /// Whether an INI line is one physical line for every reader. The INI reader in `sops` joins a line
@@ -170,11 +175,10 @@ fn is_plain_ini_line(line: &str) -> bool {
             .any(|quote| line.contains(quote))
 }
 
-/// The name of a section header that is exactly `[name]`, which is how every INI reader takes it.
-/// A header followed by anything (`[sops] ; c`, `[sops]x`) is read differently by different
-/// readers, so it has no name here.
-fn section_name(line: &str) -> Option<&str> {
-    let inner = line.strip_prefix('[').unwrap_or(line);
+/// The name of a section header `[name]`, given the text `inner` after its `[`, which is how every
+/// INI reader takes it. A header followed by anything (`[sops] ; c`, `[sops]x`) is read differently
+/// by different readers, so it has no name here.
+fn section_name(inner: &str) -> Option<&str> {
     let name = inner.strip_suffix(']')?;
     (!name.contains(']')).then_some(name.trim())
 }
@@ -201,17 +205,16 @@ fn ini_step(section: Section, line: &str) -> Option<Section> {
     if !is_plain_ini_line(line) {
         return None;
     }
-    if line.starts_with('[') {
-        return section_name(line).map(section_named);
+    if let Some(inner) = line.strip_prefix('[') {
+        return section_name(inner).map(section_named);
     }
     let key = line.split(['=', ':']).next().unwrap_or_default().trim();
     let skipped = key.is_empty() || key.starts_with([';', '#']);
-    let fine =
-        section == Section::Other || skipped || flat_key_is_age_only(&key.to_ascii_lowercase());
+    let fine = section == Section::Other || skipped || flat_key_is_age_only(key);
     fine.then_some(section)
 }
 
-/// INI: every key of a `[sops]` section (in any case) must be age-only metadata, and no line may
+/// INI: every key of a `[sops]` section must be age-only metadata, and no line may
 /// be one that readers could split or join differently.
 fn ini_is_age_only(text: &str) -> bool {
     text.lines().try_fold(Section::Other, ini_step).is_some()

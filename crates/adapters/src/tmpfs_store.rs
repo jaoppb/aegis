@@ -143,6 +143,11 @@ async fn write_private(path: &Path, content: &Secret) -> Result<(), StoreError> 
         .map_err(|cause| io_failure("create a secret file", &cause))?;
     file.write_all(content.expose().as_bytes())
         .await
+        .map_err(|cause| io_failure("write a secret file", &cause))?;
+    // A tokio file writes on a blocking thread: without a flush the bytes may not be on the file
+    // yet when Compose reads it.
+    file.flush()
+        .await
         .map_err(|cause| io_failure("write a secret file", &cause))
 }
 
