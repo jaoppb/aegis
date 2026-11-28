@@ -106,6 +106,36 @@ fn stack_violations(context: &Context<'_>) -> Vec<Violation> {
         found.extend(build_violations(context, service));
     }
     found.extend(file_violations(context));
+    found.extend(exposure_violations(context));
+    found
+}
+
+/// The compose services Aegis injects when a stack exposes a service.
+const SIDECAR_SERVICES: [&str; 2] = ["tailscale", "caddy"];
+
+/// An exposed service the compose file lacks, and the services the sidecar would collide with.
+fn exposure_violations(context: &Context<'_>) -> Vec<Violation> {
+    let Some(expose) = context.stack.policy().expose() else {
+        return Vec::new();
+    };
+    let services = context.stack.compose().services();
+    let defined = |name: &ServiceName| services.iter().any(|service| service.name() == name);
+    let mut found = Vec::new();
+    if !defined(expose.service()) {
+        let problem = Problem::UnknownExposedService {
+            service: expose.service().clone(),
+        };
+        found.push(context.violation(expose.service().as_str(), problem));
+    }
+    let reserved = services
+        .iter()
+        .filter(|service| SIDECAR_SERVICES.contains(&service.name().as_str()));
+    found.extend(reserved.map(|service| {
+        let problem = Problem::ReservedSidecarService {
+            service: service.name().clone(),
+        };
+        context.violation(service.name().as_str(), problem)
+    }));
     found
 }
 

@@ -206,14 +206,14 @@ where
         .map_err(ServeError::Serve)
 }
 
-async fn run(role: Role, listen: ListenAddress) -> Result<(), ServeError> {
+async fn run(role: Role, listen: ListenAddress, extra: Router) -> Result<(), ServeError> {
     let listener = TcpListener::bind(listen.0)
         .await
         .map_err(|cause| ServeError::Bind {
             address: listen.0,
             cause,
         })?;
-    serve(listener, role, TailscaleWhois::new()).await
+    serve_routes(listener, Guard::new(role, TailscaleWhois::new()), extra).await
 }
 
 pub(super) fn listen_from(variable: Result<String, VarError>) -> Result<ListenAddress, ServeError> {
@@ -229,12 +229,21 @@ pub(super) fn listen_from(variable: Result<String, VarError>) -> Result<ListenAd
 /// Returns a [`ServeError`] when `AEGIS_LISTEN` is missing or invalid, the runtime cannot start,
 /// the address cannot be bound or the server fails.
 pub fn serve_from_env(role: Role) -> Result<(), ServeError> {
+    serve_from_env_with(role, Router::new())
+}
+
+/// Like [`serve_from_env`], with the `extra` routes added behind the same tag check.
+///
+/// # Errors
+///
+/// The same as [`serve_from_env`].
+pub fn serve_from_env_with(role: Role, extra: Router) -> Result<(), ServeError> {
     let listen = listen_from(std::env::var(LISTEN_VAR))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(ServeError::Runtime)?;
-    runtime.block_on(run(role, listen))
+    runtime.block_on(run(role, listen, extra))
 }
 
 #[cfg(test)]

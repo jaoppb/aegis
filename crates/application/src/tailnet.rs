@@ -121,6 +121,15 @@ pub trait KeyMinter {
     ) -> impl Future<Output = Result<AuthKey, TailnetError>> + Send;
 }
 
+impl<Minter: KeyMinter + Sync> KeyMinter for &Minter {
+    fn mint(
+        &self,
+        tags: &TailnetTags,
+    ) -> impl Future<Output = Result<AuthKey, TailnetError>> + Send {
+        (**self).mint(tags)
+    }
+}
+
 /// The Tailscale API: removes nodes from the tailnet.
 pub trait NodeRemover {
     /// Delete the device `node`.
@@ -168,6 +177,8 @@ pub enum TagError {
     Empty,
     /// The tag is one of Aegis's own role tags, which the API authorizer trusts.
     Reserved(TailnetTag),
+    /// The operator did not allow this tag for stack nodes.
+    NotAllowed(TailnetTag),
 }
 
 impl fmt::Display for TagError {
@@ -175,6 +186,7 @@ impl fmt::Display for TagError {
         match self {
             Self::Empty => formatter.write_str("a node needs at least one tag"),
             Self::Reserved(tag) => write!(formatter, "{tag} is reserved for Aegis itself"),
+            Self::NotAllowed(tag) => write!(formatter, "{tag} is not allowed for stack nodes"),
         }
     }
 }
@@ -198,6 +210,12 @@ pub enum EnrollError {
     State(Reason),
     /// Minting the key failed.
     Mint(TailnetError),
+    /// The name of the tailnet could not be discovered.
+    Tailnet(TailnetError),
+    /// The node's name is not a valid hostname.
+    Node(ValueError),
+    /// The controller could not be asked, or refused, so nothing was enrolled.
+    Controller(Reason),
 }
 
 impl fmt::Display for EnrollError {
@@ -206,6 +224,9 @@ impl fmt::Display for EnrollError {
             Self::Tags(error) => write!(formatter, "cannot tag the node: {error}"),
             Self::State(reason) => write!(formatter, "cannot read the sidecar state: {reason}"),
             Self::Mint(error) => write!(formatter, "cannot mint a key: {error}"),
+            Self::Tailnet(error) => write!(formatter, "cannot discover the tailnet: {error}"),
+            Self::Node(error) => write!(formatter, "invalid node name: {error}"),
+            Self::Controller(reason) => write!(formatter, "the controller failed: {reason}"),
         }
     }
 }

@@ -150,6 +150,16 @@ pub enum Problem {
         /// The file.
         path: RepoPath,
     },
+    /// A service the stack exposes is not in its compose file.
+    UnknownExposedService {
+        /// The service `expose` names.
+        service: ServiceName,
+    },
+    /// A stack that exposes a service defines a service Aegis injects itself.
+    ReservedSidecarService {
+        /// The service, `tailscale` or `caddy`.
+        service: ServiceName,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -199,6 +209,18 @@ fn describe_file(problem: &Problem) -> String {
         ),
         Problem::NotEncrypted { path } => format!(
             "`{path}` is not SOPS-encrypted: encrypt it with `sops --encrypt` before committing"
+        ),
+        other => describe_exposure(other),
+    }
+}
+
+fn describe_exposure(problem: &Problem) -> String {
+    match problem {
+        Problem::UnknownExposedService { service } => {
+            format!("aegis.toml exposes service `{service}`, which compose.yaml does not define")
+        }
+        Problem::ReservedSidecarService { service } => format!(
+            "service `{service}` is injected by Aegis when the stack exposes a service: rename it or remove the exposure"
         ),
         other => format!("{other:?}"),
     }
@@ -322,6 +344,8 @@ mod tests {
             },
             Problem::NotEncrypted { path: path() },
             Problem::UnvalidatedInclude { path: path() },
+            Problem::UnknownExposedService { service: service() },
+            Problem::ReservedSidecarService { service: service() },
         ]
     }
 
