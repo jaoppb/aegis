@@ -3,11 +3,12 @@
 use aegis_domain::{
     Access, Build, DeclaredPath, DesiredState, EnvFile, FileReference, FileRole, Host, Hosts, Line,
     Location, Mount, Presence, Problem, ReferenceKind, Rejection, Rejections, RepoPath, Service,
-    ServiceName, Stack, Stacks, ValueError, Violation, Violations,
+    ServiceName, Stack, Stacks, ValueError, Violation, Violations, VolumeName,
 };
 
 use crate::loader::unreadable;
 use crate::outcome::Outcome;
+use crate::sidecar::{is_sidecar_service, is_sidecar_volume};
 use crate::source::RepoSource;
 
 const COMPOSE_FILE: &str = "compose.yaml";
@@ -106,7 +107,52 @@ fn stack_violations(context: &Context<'_>) -> Vec<Violation> {
         found.extend(build_violations(context, service));
     }
     found.extend(file_violations(context));
+    found.extend(exposure_violations(context));
     found
+}
+
+/// An exposed service the compose file lacks, and the services and volumes the sidecar would
+/// collide with.
+fn exposure_violations(context: &Context<'_>) -> Vec<Violation> {
+    let Some(expose) = context.stack.policy().expose() else {
+        return Vec::new();
+    };
+    let services = context.stack.compose().services();
+    let defined = |name: &ServiceName| services.iter().any(|service| service.name() == name);
+    let mut found = Vec::new();
+    if !defined(expose.service()) {
+        let problem = Problem::UnknownExposedService {
+            service: expose.service().clone(),
+        };
+        found.push(context.violation(expose.service().as_str(), problem));
+    }
+    found.extend(reserved_services(context));
+    found.extend(reserved_volumes(context));
+    found
+}
+
+fn reserved_services(context: &Context<'_>) -> Vec<Violation> {
+    let services = context.stack.compose().services().iter();
+    let reserved = services.filter(|service| is_sidecar_service(service.name().as_str()));
+    let violation = |service: &Service| {
+        let problem = Problem::ReservedSidecarService {
+            service: service.name().clone(),
+        };
+        context.violation(service.name().as_str(), problem)
+    };
+    reserved.map(violation).collect()
+}
+
+fn reserved_volumes(context: &Context<'_>) -> Vec<Violation> {
+    let volumes = context.stack.compose().volumes().iter();
+    let reserved = volumes.filter(|volume| is_sidecar_volume(volume.as_str()));
+    let violation = |volume: &VolumeName| {
+        let problem = Problem::ReservedSidecarVolume {
+            volume: volume.clone(),
+        };
+        context.violation(volume.as_str(), problem)
+    };
+    reserved.map(violation).collect()
 }
 
 impl Context<'_> {

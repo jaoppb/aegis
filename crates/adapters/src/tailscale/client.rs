@@ -1,9 +1,9 @@
 //! The reqwest client of the Tailscale API.
 
 use aegis_application::{
-    AuthKey, DeviceId, DeviceRef, KeyMinter, NodeRemover, Reason, TailnetError,
+    AuthKey, DeviceId, DeviceRef, KeyMinter, NodeRemover, Reason, TailnetError, TailnetNames,
 };
-use aegis_domain::{HostName, TailnetTags};
+use aegis_domain::{HostName, TailnetName, TailnetTags};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 
@@ -115,6 +115,16 @@ impl KeyMinter for TailscaleApi {
         let request = self.http.post(url).bearer_auth(token).json(&body);
         let reply: KeyReply = fetch(request).await?;
         Ok(AuthKey::new(reply.into_key()))
+    }
+}
+
+impl TailnetNames for TailscaleApi {
+    async fn tailnet(&self) -> Result<TailnetName, TailnetError> {
+        let token = self.token(Scope::Devices).await?;
+        let url = self.base.join(DEVICES_PATH);
+        let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
+        list.tailnet()
+            .ok_or_else(|| unavailable(&"no device names the tailnet"))
     }
 }
 

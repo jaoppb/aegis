@@ -26,7 +26,8 @@ pub use state::{
     DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,
 };
 pub use value::{
-    ComposeSource, ContainerPath, DeclaredPath, HostName, HostPath, ImageRef, Line, Port, RepoPath,
-    Secret, SecretName, ServiceName, SlotName, StackName, TailnetTag, ValueError, VolumeName,
+    ComposeSource, ContainerPath, DeclaredPath, HostName, HostPath, ImageRef, Line, NodeLabel,
+    Port, RepoPath, Secret, SecretName, ServiceName, SlotName, StackName, TailnetName, TailnetTag,
+    ValueError, VolumeName,
 };
 pub use violation::{FileRole, Location, Problem, Rejection, Rejections, Violation, Violations};

@@ -24,22 +24,13 @@
 //! `*-state` volumes, and by deleting the `aegis-live-*` devices in the admin console. Nothing here
 //! prints the secret or a key.
 
-use std::future::{Future, ready};
 use std::process::Command;
 use std::sync::Arc;
 
 use aegis_adapters::tailscale::TailscaleApi;
-use aegis_application::{NodeRemover, Reason, SidecarState, StateVolume};
+use aegis_application::NodeRemover;
 use aegis_domain::HostName;
 use tokio::runtime::Runtime;
-
-struct Volume(StateVolume);
-
-impl SidecarState for Volume {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
-        ready(Ok(self.0))
-    }
-}
 
 /// The runtime and the API client the nodes are cleaned up with.
 #[derive(Clone)]
@@ -79,7 +70,7 @@ mod cases {
     use std::process::Command;
     use std::time::Duration;
 
-    use super::{Lab, Node, Volume};
+    use super::{Lab, Node};
     use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
     use aegis_application::{
         AuthKey, DeviceId, DeviceRef, Enrolled, Enrollment, KeyMinter, NodeRemover, StateVolume,
@@ -206,10 +197,9 @@ mod cases {
     }
 
     fn enroll(lab: &Lab, volume: StateVolume) -> Enrolled {
-        let node = HostName::new("aegis-live-state").unwrap();
-        let enrollment = Enrollment::new(Volume(volume), lab.api.clone());
+        let enrollment = Enrollment::new(lab.api.clone());
         lab.runtime
-            .block_on(enrollment.enroll(&node, &tags()))
+            .block_on(enrollment.enroll(&tags(), volume))
             .unwrap()
     }
 

@@ -34,7 +34,9 @@ Every stack runs as the project `aegis-<stack>` (so the stack name must be lower
 
 ## Secrets
 
-Each stack's SOPS-encrypted `env_file`, `secrets` and `.env` files are decrypted by the agent with its own age key onto tmpfs for the length of `docker compose up`, and removed afterwards. `sops` (3.9 or later, for `sops decrypt`) must be on the `PATH`, and the agent needs its age key: set `SOPS_AGE_KEY_FILE` (or `SOPS_AGE_KEY_CMD`, or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`), or place the key at the default path `$XDG_CONFIG_HOME/sops/age/keys.txt`. `sops` inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` and those variables. Docker Compose 2.24.4 or later is required for the generated override (the release image pins compatible versions through `flake.lock`). A decryption failure marks only that stack `failed`. See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
+Each stack's SOPS-encrypted `env_file`, `secrets` and `.env` files are decrypted by the agent with its own age key onto tmpfs for the length of `docker compose up`, and removed afterwards. `sops` (3.9 or later, for `sops decrypt`) must be on the `PATH`, and the agent needs its age key: set `SOPS_AGE_KEY_FILE` (or `SOPS_AGE_KEY_CMD`, or `SOPS_AGE_SSH_PRIVATE_KEY_FILE`), or place the key at the default path `$XDG_CONFIG_HOME/sops/age/keys.txt`. `sops` inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` and those variables. Docker Compose 2.24.4 or later is required for the generated override (the release image pins compatible versions through `flake.lock`). A decryption failure marks only that stack `failed`.
+
+A stack that exposes a service (`expose` in its `aegis.toml`) also needs the Docker daemon to run the sidecar images (`tailscale/tailscale`, `caddy`) and a throw-away container that checks the sidecar's state volume, and the agent calls the controller's `POST /v1/enroll`; see [exposure.md](exposure.md). See [sops.md](sops.md) for the tmpfs requirement, the container mount and the `.sops.yaml` rules.
 
 ## `POST /v1/reconcile`
 
