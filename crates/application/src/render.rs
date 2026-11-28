@@ -4,8 +4,8 @@
 use aegis_domain::{AegisRole, HostName, HostPath, ProjectName, RepoPath, StackName, ValueError};
 
 use crate::bootstrap::{
-    AgentEndpoint, BootstrapPlan, ControllerChoice, ControllerSetup, Existing, FileText, HostKey,
-    ImageTag,
+    AgentEndpoint, AgentUrl, BootstrapPlan, ControllerChoice, ControllerSetup, Existing, FileText,
+    HostKey, ImageTag,
 };
 use crate::sidecar::{KEY_VARIABLE, STATE_DIRECTORY, STATE_VOLUME, TAILSCALE_IMAGE};
 
@@ -15,6 +15,9 @@ const CONTROLLER_IMAGE: &str = "ghcr.io/jaoppb/aegis-controller";
 
 /// The port both daemons listen on, each inside its own sidecar's network namespace.
 pub const LISTEN: &str = "0.0.0.0:7480";
+
+/// The port of [`LISTEN`], which the agents are reached on.
+const PORT: &str = "7480";
 
 /// Where the host's age key and the volatile workspace are mounted inside the agent container.
 const KEY_IN_CONTAINER: &str = "/etc/aegis/age.txt";
@@ -211,9 +214,13 @@ impl IntoIterator for Stacks {
     }
 }
 
-/// `value` as the inside of a YAML double-quoted scalar.
+/// `value` as the inside of a YAML double-quoted scalar. A `$` is doubled so Compose never
+/// interpolates it.
 fn escaped(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "$$")
 }
 
 /// A template whose `@@NAME@@` markers are replaced, each value escaped for a YAML scalar.
@@ -293,13 +300,13 @@ fn agent_document(
 /// name, then the ones of other hosts.
 fn agents_of(plan: &BootstrapPlan, setup: &ControllerSetup) -> Result<String, ValueError> {
     let agent = node_of(plan, &StackName::new("agent")?)?;
-    let port = LISTEN.rsplit_once(':').map_or("", |(_, port)| port);
-    let local = format!("{}=http://{agent}:{port}", plan.host());
-    let others = setup.agents().into_iter().map(AgentEndpoint::entry);
-    Ok(std::iter::once(local)
+    let url = AgentUrl::new(format!("http://{agent}:{PORT}"))?;
+    let local = AgentEndpoint::new(plan.host().clone(), url);
+    let others = setup.agents().into_iter();
+    let entries = std::iter::once(&local)
         .chain(others)
-        .collect::<Vec<_>>()
-        .join(","))
+        .map(AgentEndpoint::entry);
+    Ok(entries.collect::<Vec<_>>().join(","))
 }
 
 fn controller_document(
@@ -381,4 +388,14 @@ pub fn stacks(plan: &BootstrapPlan, key: &HostKey) -> Result<Stacks, ValueError>
     }
     rendered.push(agent_stack(plan, key)?);
     Ok(Stacks(rendered))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escaped;
+
+    #[test]
+    fn a_scalar_escapes_quotes_backslashes_and_interpolation() {
+        assert_eq!(escaped(r#"a"b\c$d"#), r#"a\"b\\c$$d"#);
+    }
 }

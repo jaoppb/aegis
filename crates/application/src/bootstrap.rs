@@ -91,6 +91,12 @@ fn validate_repo_url(value: &str) -> Result<(), ValueError> {
     reject_password(value)
 }
 
+/// The authority of a URL (`user@host:port`), if it has a scheme.
+fn authority_of(value: &str) -> Option<&str> {
+    let (_, rest) = value.split_once("://")?;
+    rest.split(['/', '?', '#']).next()
+}
+
 /// The schemes whose userinfo is a login name, not a secret: `ssh://git@host`.
 const SSH_SCHEMES: [&str; 3] = ["ssh", "git+ssh", "ssh+git"];
 
@@ -102,11 +108,9 @@ fn reject_password(value: &str) -> Result<(), ValueError> {
     if value.contains("::") {
         return Err(ValueError::EmbeddedPassword);
     }
-    let Some((scheme, rest)) = value.split_once("://") else {
-        return Ok(());
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let secret = authority.rsplit_once('@').is_some_and(|(user, _)| {
+    let scheme = value.split_once("://").map_or("", |(scheme, _)| scheme);
+    let userinfo = authority_of(value).and_then(|found| found.rsplit_once('@'));
+    let secret = userinfo.is_some_and(|(user, _)| {
         let ssh = SSH_SCHEMES
             .iter()
             .any(|known| known.eq_ignore_ascii_case(scheme));
@@ -130,9 +134,9 @@ fn validate_controller_url(value: &str) -> Result<(), ValueError> {
     if let Some(found) = forbidden {
         return Err(ValueError::ForbiddenChar(found));
     }
-    let rest = value.split_once("://").map_or("", |(_, rest)| rest);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    authority
+    // The controller refuses an `@` anywhere in an agent URL, so a path or query one fails here
+    // instead of stopping the controller at start.
+    value
         .contains('@')
         .then_some(())
         .map_or(Ok(()), |()| Err(ValueError::EmbeddedPassword))

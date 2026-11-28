@@ -337,6 +337,18 @@ mod cases {
     fn an_agent_url_cannot_carry_credentials_or_break_the_list() {
         assert!(AgentEndpoints::parse_list("h=http://user:pw@h:1").is_err());
         assert!(AgentEndpoints::parse_list("h=http://token@h:1").is_err());
+        let at_signs = ["h=http://h/path@x", "h=http://h?x@y", "h=http://h#@x"];
+        let accepted = at_signs
+            .iter()
+            .filter(|list| AgentEndpoints::parse_list(list).is_ok());
+        assert_eq!(accepted.count(), 0);
+    }
+
+    #[test]
+    fn an_agent_list_needs_a_host_and_a_url_in_every_item() {
+        assert!(AgentEndpoints::parse_list("h=").is_err());
+        assert!(AgentEndpoints::parse_list("=http://h").is_err());
+        assert!(AgentEndpoints::parse_list("h=http://h:1,").is_ok());
         assert!(AgentEndpoints::parse_list("h=ftp://h").is_err());
         assert!(AgentEndpoints::parse_list("no-equals").is_err());
         assert!(AgentEndpoints::parse_list("bad/host=http://h").is_err());

@@ -16,7 +16,8 @@ The agent container fetches the repository itself on every reconcile, and the re
 key, agent socket or `known_hosts` into it (`docs/agent.md` lists what the agent needs). So `--repo` must be
 a remote the container can read without credentials, such as a public HTTPS URL. For a private repository,
 add the mounts your remote needs to `aegis/agent/compose.yaml` yourself and commit them; bootstrap does not
-do it. A URL with credentials in it (`https://token@host/...`) is refused.
+do it. With `--with-controller` the controller container fetches `--repo` too, so the same mounts go into
+`aegis/controller/compose.yaml`, or the controller stays on `fetch_error`. A URL with credentials in it (`https://token@host/...`) is refused.
 
 You also need a Tailscale OAuth client with the `auth_keys` (write) scope and both `tag:aegis-agent` and
 `tag:aegis-controller` selected as its tags, so it can mint keys for them (`docs/tailscale-acl.md` has the
@@ -100,7 +101,7 @@ or an error.
 
 The `--repo` URL must not carry credentials (bootstrap refuses `https://token@host` and
 `https://user:password@host`): they would show in the process list and be written to the checkout's git config.
-Use a public remote, or an SSH key or credential helper together with the agent mounts described in
+Use a public remote, or an SSH key or credential helper together with the agent (and controller) mounts described in
 "Before you run it". The
 images are pinned by tag; `--image-tag` takes the tag you trust, and the agent holds the Docker socket, so
 a re-pushed tag runs on the host.
@@ -117,5 +118,4 @@ the variables the controller requires to start (`docs/controller.md`): `AEGIS_TS
 `AEGIS_TS_CLIENT_SECRET` (the encrypted `controller.env`), `AEGIS_ENROLL_TAGS` (from `--enroll-tags`),
 `AEGIS_REPO_URL` (from `--repo`), `AEGIS_WORKDIR` (a disposable checkout inside the container, empty on
 every new container) and `AEGIS_LISTEN`, plus `AEGIS_AGENTS` so it tells the agents to reconcile. The
-branch (`main`) and the poll interval (60 seconds) keep the controller's defaults. The controller fetches
-`--repo` itself, so the same limit as for the agent applies: no SSH material is mounted into it.
+branch (`main`) and the poll interval (60 seconds) keep the controller's defaults.
