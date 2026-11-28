@@ -12,7 +12,8 @@
 //! - Docker: the nodes are throwaway `tailscale/tailscale` containers (`AEGIS_TS_IMAGE` overrides
 //!   the pinned image);
 //! - for the personal-device test, `AEGIS_TS_PERSONAL_HOSTNAME`: the hostname of one of YOUR OWN
-//!   UNTAGGED devices, which is on this machine's tailnet view. The test refuses to run when that
+//!   UNTAGGED devices, which is on this machine's tailnet view (a full domain name is cut at the
+//!   first dot). The test refuses to run when that
 //!   device is tagged or not found, because it asks the adapter to delete it by hostname and the
 //!   adapter must refuse.
 //!
@@ -91,7 +92,6 @@ mod cases {
 
     const POLLS: usize = 30;
     const PAUSE: Duration = Duration::from_secs(2);
-    const SETTLE: Duration = Duration::from_secs(20);
     const IMAGE: &str = "tailscale/tailscale:v1.104.7";
 
     fn variable(name: &str) -> String {
@@ -169,12 +169,20 @@ mod cases {
         (0..POLLS).any(|_| backend_state(name).as_deref() == Some("Running") || pause())
     }
 
-    /// The daemon of `name` answers but, after a grace period, has not logged in: the key it was
-    /// given did not work.
-    fn answers_but_never_logs_in(name: &str) -> bool {
-        let daemon_up = (0..POLLS).any(|_| status_json(name).is_some() || pause());
-        std::thread::sleep(SETTLE);
-        daemon_up && backend_state(name).as_deref() == Some("NeedsLogin")
+    /// What the container `name` printed, standard output and standard error together.
+    fn log_text(name: &str) -> String {
+        let output = Command::new("docker")
+            .args(["logs", name])
+            .output()
+            .unwrap();
+        let both = [output.stdout, output.stderr].concat();
+        String::from_utf8_lossy(&both).into_owned()
+    }
+
+    /// Whether the node `name` was refused its auth key: Tailscale answers a key that was already
+    /// used with `invalid key`, and the node exits.
+    fn key_was_refused(name: &str) -> bool {
+        (0..POLLS).any(|_| log_text(name).contains("invalid key") || pause())
     }
 
     fn node_id(name: &str) -> String {
@@ -220,7 +228,7 @@ mod cases {
         assert!(joins(&first.name), "the node never joined the tailnet");
         let second = start(&lab, "second", &key);
         assert!(
-            answers_but_never_logs_in(&second.name),
+            key_was_refused(&second.name),
             "a single-use key must not log a second node in"
         );
         assert_eq!(
@@ -281,7 +289,8 @@ mod cases {
     #[ignore = "talks to the real tailnet: needs OAuth credentials and AEGIS_TS_PERSONAL_HOSTNAME"]
     fn an_untagged_personal_device_is_never_deleted() {
         let lab = lab();
-        let hostname = variable("AEGIS_TS_PERSONAL_HOSTNAME");
+        let given = variable("AEGIS_TS_PERSONAL_HOSTNAME");
+        let hostname = given.split('.').next().unwrap_or_default().to_owned();
         let tagged = is_tagged(&hostname);
         assert_eq!(
             tagged,
