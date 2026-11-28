@@ -109,10 +109,32 @@ fn entry_value(entry: &str) -> String {
     value.to_owned()
 }
 
-/// Whether an additional build context is a path in the checkout, not an image, URL or service.
-fn is_path_context(value: &str) -> bool {
-    let reference = value.contains("://") || value.starts_with("service:");
-    !reference && !value.starts_with("git@") && !value.starts_with("github.com/")
+/// Contexts that are references, not paths in the checkout.
+const REFERENCE_PREFIXES: &[&str] = &[
+    "service:",
+    "docker-image://",
+    "git@",
+    "github.com/",
+    "https://",
+    "http://",
+    "git://",
+];
+
+/// An additional build context: `Some` path in the checkout, `None` for a known reference, and
+/// a refusal for any other scheme (`oci-layout://` is a host directory), so the unknown fails closed.
+fn additional_context(value: String) -> Result<Option<String>, ParseError> {
+    if REFERENCE_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+    {
+        return Ok(None);
+    }
+    if value.contains("://") {
+        return Err(ParseError::Invalid(format!(
+            "build: additional context `{value}` has a scheme Aegis does not support"
+        )));
+    }
+    Ok(Some(value))
 }
 
 #[derive(Deserialize)]
@@ -262,7 +284,7 @@ fn volumes(raw: Option<BTreeMap<String, Option<RawVolume>>>) -> Result<Volumes, 
     declared
         .into_iter()
         .map(|(name, volume)| {
-            reject_bind_device(&name, volume.as_ref())?;
+            reject_unsafe_driver_options(&name, volume.as_ref())?;
             VolumeName::new(name).map_err(|error| in_scope("volumes", &error))
         })
         .collect()
@@ -278,10 +300,10 @@ fn is_absolute_path(device: &serde_norway::Value) -> bool {
     device.as_str().is_some_and(|path| path.starts_with('/'))
 }
 
-/// A named volume that binds a device that is not an absolute host path is a bind mount of a path
-/// the repository or the home directory decides, so the mount rules cannot see it. A number is
-/// not an absolute path either.
-fn reject_bind_device(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
+/// Refuse the driver options the rules cannot check: an interpolated one, and a bind of a device
+/// that is not an absolute host path (a bind mount of a path the repository or the home directory
+/// decides, which the mount rules cannot see). A number is not an absolute path either.
+fn reject_unsafe_driver_options(name: &str, raw: Option<&RawVolume>) -> Result<(), ParseError> {
     let options = raw.and_then(|volume| volume.driver_opts.as_ref());
     let Some(options) = options else {
         return Ok(());
@@ -352,19 +374,6 @@ fn reject_remote(context: &str) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// An `oci-layout://` context is a directory `BuildKit` reads from the host, so it is a path outside the rules.
-fn reject_oci_layout(contexts: &[String]) -> Result<(), ParseError> {
-    if contexts
-        .iter()
-        .any(|value| value.starts_with("oci-layout://"))
-    {
-        return Err(ParseError::Invalid(
-            "`oci-layout://` build contexts are not supported".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 fn detailed_build(
     context: Option<String>,
     dockerfile: Option<String>,
@@ -376,8 +385,8 @@ fn detailed_build(
     let extra = additional
         .map(RawAdditionalContexts::values)
         .unwrap_or_default();
-    reject_oci_layout(&extra)?;
-    let extra = extra.into_iter().filter(|value| is_path_context(value));
+    let extra = extra.into_iter().map(additional_context);
+    let extra = extra.collect::<Result<Vec<_>, _>>()?.into_iter().flatten();
     let extra = extra
         .map(DeclaredPath::new)
         .collect::<Result<AdditionalContexts, _>>()

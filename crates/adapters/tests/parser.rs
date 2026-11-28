@@ -372,7 +372,7 @@ fn a_merge_key_inside_a_tagged_node_is_refused() {
 #[test]
 fn a_tagged_merge_key_is_refused() {
     let text = "x-a: &a\n  volumes: ['./data:/data']\nservices:\n  app:\n    image: x\n    !custom <<: *a\n";
-    assert!(rejection(text).contains("tag"));
+    assert!(rejection(text).contains("`services.app.<<`"));
 }
 
 #[test]
@@ -426,6 +426,43 @@ const REFUSED: &[(&str, &str)] = &[
     (
         "include:\n  - path: a.yaml\n    env_file: .env\n",
         "include[0].env_file",
+    ),
+    (
+        "services:\n  app:\n    provider: {type: x}\n",
+        "services.app.provider",
+    ),
+    (
+        "services:\n  app:\n    build: {context: ., cache_from: ['type=local,src=/x']}\n",
+        "services.app.build.cache_from",
+    ),
+    (
+        "services:\n  app:\n    secrets: [{source: s, bogus: 1}]\n",
+        "services.app.secrets[0].bogus",
+    ),
+    (
+        "services:\n  app:\n    configs: [{source: s, bogus: 1}]\n",
+        "services.app.configs[0].bogus",
+    ),
+    (
+        "services:\n  app:\n    build: {context: ., secrets: [{source: s, bogus: 1}]}\n",
+        "services.app.build.secrets[0].bogus",
+    ),
+    (
+        "services:\n  app:\n    networks: {n: {bogus: 1}}\n",
+        "services.app.networks.n.bogus",
+    ),
+    ("networks:\n  n:\n    bogus: 1\n", "networks.n.bogus"),
+    (
+        "services:\n  app:\n    volumes: [{type: bind, source: ./a, target: /a, bind: {bogus: 1}}]\n",
+        "services.app.volumes[0].bind.bogus",
+    ),
+    (
+        "services:\n  app:\n    volumes: [{type: volume, source: v, target: /a, volume: {bogus: 1}}]\n",
+        "services.app.volumes[0].volume.bogus",
+    ),
+    (
+        "services:\n  app:\n    volumes: [{type: tmpfs, target: /a, tmpfs: {bogus: 1}}]\n",
+        "services.app.volumes[0].tmpfs.bogus",
     ),
 ];
 
@@ -500,4 +537,42 @@ fn devices_and_volumes_from_are_refused() {
         let text = format!("services:\n  app:\n    {key}\n");
         assert!(rejection(&text).contains("services.app."), "{key}");
     }
+}
+
+#[test]
+fn a_chained_merge_names_the_left_over_key() {
+    let text = "x-b: &b\n  volumes: ['./data:/data']\nx-a: &a\n  <<: *b\n  image: alpine\nservices:\n  app:\n    <<: *a\n";
+    assert!(rejection(text).contains("`services.app.<<`"));
+}
+
+#[test]
+fn valid_nested_compose_keys_are_accepted() {
+    let text = "services:
+  app:
+    image: x
+    secrets: [{source: s, target: t, uid: '1', gid: '1', mode: 288}]
+    configs: [{source: c, target: /c}]
+    networks:
+      n: {aliases: [a], ipv4_address: 10.0.0.2, priority: 1}
+    volumes:
+      - {type: bind, source: ./a, target: /a, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: v, target: /v, volume: {nocopy: true}}
+      - {type: tmpfs, target: /t, tmpfs: {size: 100}}
+networks:
+  n: {driver: bridge, internal: true, ipam: {config: [{subnet: 10.0.0.0/24}]}}
+volumes:
+  v: {driver: local, labels: {a: b}}
+secrets:
+  s: {file: ./s.env}
+configs:
+  c: {content: hi}
+";
+    assert!(compose::parse(text).is_ok());
+}
+
+#[test]
+fn driver_options_without_a_dollar_are_accepted() {
+    let text =
+        "volumes:\n  v:\n    driver_opts: {type: nfs, o: 'addr=10.0.0.1,rw', device: ':/export'}\n";
+    assert!(compose::parse(text).is_ok());
 }
