@@ -1,10 +1,10 @@
-//! The agent's side of the API: `POST /v1/reconcile` and the wiring of a full agent from its
+//! The agent's side of the API: `POST /v1/reconciliations` and the wiring of a full agent from its
 //! environment.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aegis_api::version_1::{RECONCILE_PATH, ReconcileRequest, Role, StatusReport};
+use aegis_api::version_1::{RECONCILIATIONS_PATH, ReconcileRequest, Role, StatusReport};
 use aegis_application::{
     OrphanSweep, Purge, Reconcile, ReconcilePorts, Reconciler, Remover, Repository, SecretStore,
     WhoIs,
@@ -60,7 +60,7 @@ struct Agent<Run> {
     turn: Mutex<()>,
 }
 
-/// The `POST /v1/reconcile` route: converge the host to the commit in the body, report to
+/// The `POST /v1/reconciliations` route: converge the host to the commit in the body, report to
 /// `controller` and answer with the same report. One reconcile runs at a time; the others wait.
 pub fn reconcile_routes<Run>(reconciler: Run, controller: ApiClient) -> Router
 where
@@ -72,7 +72,7 @@ where
         turn: Mutex::new(()),
     };
     Router::new()
-        .route(RECONCILE_PATH, post(reconcile::<Run>))
+        .route(RECONCILIATIONS_PATH, post(reconcile::<Run>))
         .with_state(Arc::new(agent))
 }
 

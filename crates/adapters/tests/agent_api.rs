@@ -1,4 +1,4 @@
-//! `POST /v1/reconcile` on a real socket: admission, validation of the body, the answer and the
+//! `POST /v1/reconciliations` on a real socket: admission, validation of the body, the answer and the
 //! report sent to the controller.
 
 use std::future::{Future, ready};
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{ApiClient, ClientError, reconcile_routes, serve_agent};
-use aegis_api::version_1::{ReconcileRequest, STATUS_PATH, StackState, StatusReport};
+use aegis_api::version_1::{HOST_STATUS_PATH, ReconcileRequest, StackState, StatusReport};
 use aegis_application::{
     GitError, PeerAddress, Reason, Reconcile, ReconcileError, WhoIs, WhoIsError,
 };
@@ -15,7 +15,7 @@ use aegis_domain::{
     StackReport, TailnetTag, TailnetTags,
 };
 use axum::extract::State;
-use axum::routing::post;
+use axum::routing::put;
 use axum::{Json, Router};
 use reqwest::StatusCode;
 use tokio::net::TcpListener;
@@ -78,7 +78,7 @@ async fn controller() -> (BaseUrl, Arc<Mutex<Vec<StatusReport>>>) {
         ready(StatusCode::ACCEPTED)
     };
     let app = Router::new()
-        .route(STATUS_PATH, post(handler))
+        .route(HOST_STATUS_PATH, put(handler))
         .with_state(received.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = BaseUrl::new(format!("http://{}", listener.local_addr().unwrap()));

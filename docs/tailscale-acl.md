@@ -5,13 +5,13 @@ The controller and the agents talk over the tailnet, and the tailnet is the peri
 | Server | Accepts requests from | Listens on |
 |--------|-----------------------|------------|
 | Agent | nodes tagged `tag:aegis-controller` | `AEGIS_LISTEN` |
-| Controller | nodes tagged `tag:aegis-agent` for every route except the sync routes, each but `GET /v1/health` bound to the host the node serves (its node name must be `<host>` or `<host>-aegis-agent` for a host of `AEGIS_AGENTS`, see [controller.md](controller.md)); an operator's untagged node for `GET /v1/status` and `GET /v1/health`; operators alone for the sync routes | `AEGIS_LISTEN` |
+| Controller | nodes tagged `tag:aegis-agent` for every route except the sync routes, each but `GET /v1/health` bound to the host the node serves (its node name must be `<host>` or `<host>-aegis-agent` for a host of `AEGIS_AGENTS`, see [controller.md](controller.md)); an operator's untagged node for `GET /v1/fleet` and `GET /v1/health`; operators alone for the sync routes | `AEGIS_LISTEN` |
 
 An untagged node, a node with another tag (including an agent calling another agent), an address that is not a tailnet node, or a failed whois lookup is refused, except an operator's untagged node on the controller routes open to operators (see Operators). The first three get `403`; a failed lookup gets `503`. The API is served under `/v1`.
 
 ## Operators
 
-A person who runs `aegis status`, `diff` or `sync` ([cli.md](cli.md)) does it from a personal device, which stays untagged: tagging it would turn it into a shared device. The controller instead resolves the caller's login (`UserProfile.LoginName` of `tailscale whois --json`) and accepts an untagged node whose owner is listed in the controller's `AEGIS_OPERATORS`. A tagged node never counts as an operator, whatever login it reports. Operators reach only `GET /v1/status`, `GET /v1/health` and the sync routes; every other route stays for `tag:aegis-agent`, and the sync routes are for operators alone (an agent gets `403`). Logins are ASCII and compare without regard to case. Without `AEGIS_OPERATORS` no operator is admitted.
+A person who runs `aegis status`, `diff` or `sync` ([cli.md](cli.md)) does it from a personal device, which stays untagged: tagging it would turn it into a shared device. The controller instead resolves the caller's login (`UserProfile.LoginName` of `tailscale whois --json`) and accepts an untagged node whose owner is listed in the controller's `AEGIS_OPERATORS`. A tagged node never counts as an operator, whatever login it reports. Operators reach only `GET /v1/fleet`, `GET /v1/health` and the sync routes; every other route stays for `tag:aegis-agent`, and the sync routes are for operators alone (an agent gets `403`). Logins are ASCII and compare without regard to case. Without `AEGIS_OPERATORS` no operator is admitted.
 
 The ACL has to let the device reach the controller as well. Add a rule for the operators' own devices to the snippet below, for example `{"action": "accept", "src": ["ada@example.com"], "dst": ["tag:aegis-controller:7480"]}`.
 

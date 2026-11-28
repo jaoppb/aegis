@@ -1,4 +1,4 @@
-//! The answer of `GET /v1/status`, served by the controller: the commit every host should be at,
+//! The answer of `GET /v1/fleet`, served by the controller: the commit every host should be at,
 //! what is wrong with the newest commit, and what each host reported.
 
 use serde::{Deserialize, Serialize};
@@ -253,7 +253,7 @@ struct Trouble {
     refusals: Vec<Refused>,
 }
 
-/// The body of `GET /v1/status`.
+/// The body of `GET /v1/fleet`.
 ///
 /// Absent values are `null`, never left out. `target` is the last good commit and stays in force
 /// while `invalid` names a newer commit whose tree cannot be read, or `fetch_error` says the remote

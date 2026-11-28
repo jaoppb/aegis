@@ -1,4 +1,4 @@
-//! The controller's side of the API: `POST /v1/status` and `GET /v1/status`, and the loop that
+//! The controller's side of the API: `PUT /v1/hosts/{host}/status` and `GET /v1/fleet`, and the loop that
 //! polls the repository and tells the agents to converge.
 //!
 //! The controller keeps no state on disk. Its view is derived: a restart looks at the repository
@@ -16,16 +16,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use aegis_api::version_1::{
-    Agent, Confirmation, ControllerStatus, HostStatus, InvalidCommit, MAX_REPLY_BYTES,
-    ReconcileRequest, STATUS_PATH, StatusReport, TargetStatus,
+    Agent, Confirmation, ControllerStatus, FLEET_PATH, HOST_STATUS_PATH, HostStatus, InvalidCommit,
+    MAX_REPLY_BYTES, ReconcileRequest, StatusReport, TargetStatus,
 };
 use aegis_application::{
     Caller, Fleet, Goal, Invalid, MintLimits, Notice, Observation, Order, Poller, Upstream,
 };
 use aegis_domain::{CommitSha, HostName, HostNames, RepoPath};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, put};
 use axum::{Extension, Json, Router};
 
 use super::Routes;
@@ -204,11 +204,33 @@ struct Verified {
     report: StatusReport,
 }
 
-/// Verify a report the agent of `host` pushed, then record it. An agent reports for its own host
-/// alone.
+/// The host a request is for: the host in the path of the route, which must be the host the
+/// calling agent serves (`403` for a caller that serves none, or serves another host).
+struct OwnHost(HostName);
+
+impl FromRequestParts<Arc<Shared>> for OwnHost {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        shared: &Arc<Shared>,
+    ) -> Result<Self, StatusCode> {
+        let caller = parts.extensions.get::<Caller>();
+        let served = shared.host_of(caller.ok_or(StatusCode::FORBIDDEN)?)?;
+        let Path(named) = Path::<String>::from_request_parts(parts, shared)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        (named == served.as_str())
+            .then_some(Self(served))
+            .ok_or(StatusCode::FORBIDDEN)
+    }
+}
+
+/// Verify a report the agent of `host` pushed, then record it. The report names the host of its
+/// path.
 fn accept(shared: &Shared, host: &HostName, report: StatusReport) -> Result<(), StatusCode> {
-    let own = report.host() == host.as_str();
-    own.then_some(()).ok_or(StatusCode::FORBIDDEN)?;
+    let agreed = report.host() == host.as_str();
+    agreed.then_some(()).ok_or(StatusCode::BAD_REQUEST)?;
     let verified = shared.verify(report)?;
     shared.book().record(verified);
     Ok(())
@@ -315,12 +337,10 @@ fn converge(shared: &Arc<Shared>, order: &Order) {
 
 async fn receive(
     State(shared): State<Arc<Shared>>,
-    Extension(caller): Extension<Caller>,
+    OwnHost(host): OwnHost,
     Json(report): Json<StatusReport>,
 ) -> StatusCode {
-    let accepted = shared
-        .host_of(&caller)
-        .and_then(|host| accept(&shared, &host, report));
+    let accepted = accept(&shared, &host, report);
     accepted.map_or_else(|status| status, |()| StatusCode::NO_CONTENT)
 }
 
@@ -392,32 +412,35 @@ impl Hub {
         Binding::new(Arc::clone(&self.shared))
     }
 
-    /// `POST /v1/status` and `GET /v1/status`, to be served behind the tag check (which answers
-    /// `403` or `503`). `POST` answers `204`, `400` for a malformed commit and `403` for a
-    /// caller that is no mapped agent or a report for another host; `GET` answers a [`ControllerStatus`], the whole fleet for an operator and
+    /// `PUT /v1/hosts/{host}/status` and `GET /v1/fleet`, to be served behind the tag check (which
+    /// answers `403` or `503`). `PUT` answers `204`, `400` for a malformed commit or a body that
+    /// names another host than the path, and `403` for a caller that is no mapped agent or a path
+    /// for another host; `GET` answers a [`ControllerStatus`], the whole fleet for an operator and
     /// the caller's own host for an agent.
     pub fn routes(&self) -> Router {
         self.read_routes().merge(self.report_routes())
     }
 
-    /// `GET /v1/status` alone: the status an operator reads, answering a [`ControllerStatus`].
+    /// `GET /v1/fleet` alone: the status an operator reads, answering a [`ControllerStatus`].
     pub fn read_routes(&self) -> Router {
         Router::new()
-            .route(STATUS_PATH, get(snapshot))
+            .route(FLEET_PATH, get(snapshot))
             .with_state(Arc::clone(&self.shared))
     }
 
-    /// `POST /v1/status` alone: the reports of agents, answering `204`, `400` for a malformed
-    /// commit and `403` for a caller that is no mapped agent or a report for another host. A body over [`MAX_REPLY_BYTES`] is refused.
+    /// `PUT /v1/hosts/{host}/status` alone: the reports of agents, answering `204`, `400` for a
+    /// malformed commit or a body that names another host than the path, and `403` for a caller
+    /// that is no mapped agent or a path for another host. A body over [`MAX_REPLY_BYTES`] is
+    /// refused.
     pub fn report_routes(&self) -> Router {
         Router::new()
-            .route(STATUS_PATH, post(receive))
+            .route(HOST_STATUS_PATH, put(receive))
             .layer(DefaultBodyLimit::max(MAX_REPLY_BYTES))
             .with_state(Arc::clone(&self.shared))
     }
 
     /// Every route of a controller, grouped by who may call it: the `agents` routes (and the
-    /// reports of agents) are for the tagged peer alone, `GET /v1/status` is for an agent or an
+    /// reports of agents) are for the tagged peer alone, `GET /v1/fleet` is for an agent or an
     /// operator, and the sync routes, which look at the repository with `poller`, are for an
     /// operator alone.
     pub fn grouped<Up>(&self, agents: Router, poller: Arc<Poller<Up>>) -> Routes

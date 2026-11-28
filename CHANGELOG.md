@@ -31,6 +31,7 @@ Every pull request that changes consumer-visible behaviour, the release flow or 
 
 ### Changed
 
+- The controller and agent HTTP API is resource-oriented: no path has a verb and the method states the action. `POST /v1/enroll` is `POST /v1/enrollments`, `POST /v1/reconcile` is `POST /v1/reconciliations`, an agent's `POST /v1/status` is `PUT /v1/hosts/{host}/status` (`403` when the path names another host than the caller's, `400` when the body does, `204` on success) and `GET /v1/status` is `GET /v1/fleet`; the sync, node and health routes keep their paths. The old paths answer `404` and every caller-role, host-binding and mint-limit rule is unchanged, so upgrade the controller and the agents together. `AGENTS.md` gains the rule and `docs/controller.md` lists every route with its statuses (#76, #80)
 - Release tags are protected: the `tags-create` and `tags-immutable` rulesets on `refs/tags/v*` let only the release GitHub App create them and let nobody update or delete them, `release.yml` is only called by `tag-release.yml`, `tag-release.yml` pushes the tag with that App's token, and `just ruleset-check` and `just ruleset-apply` handle every file in `.github/rulesets/` (#49, #52)
 
 [Unreleased]: https://github.com/jaoppb/aegis/commits/main

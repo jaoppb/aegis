@@ -3,20 +3,34 @@
 use serde::{Deserialize, Serialize};
 
 /// The path of the reconcile endpoint, served by agents.
-pub const RECONCILE_PATH: &str = "/v1/reconcile";
+pub const RECONCILIATIONS_PATH: &str = "/v1/reconciliations";
 
-/// The path of the status endpoint, served by the controller: agents `POST` their reports to it
-/// and `GET` answers with a [`ControllerStatus`](super::ControllerStatus).
-pub const STATUS_PATH: &str = "/v1/status";
+/// The path of the fleet resource, served by the controller: `GET` answers with a
+/// [`ControllerStatus`](super::ControllerStatus), the whole fleet for an operator and the caller's
+/// own host for an agent.
+pub const FLEET_PATH: &str = "/v1/fleet";
+
+/// The path of the status of one host, served by the controller.
+///
+/// The agent of `{host}` `PUT`s its [`StatusReport`] there. Statuses: `204` the report was recorded, `400` the commit or the host
+/// of the body is malformed or is not the host of the path, `403` the caller is no agent of the
+/// host in the path, `404` the controller has no agent for the host.
+pub const HOST_STATUS_PATH: &str = "/v1/hosts/{host}/status";
+
+/// The path of the status of `host`, a directory name under `hosts/`.
+#[must_use]
+pub fn host_status_path(host: &str) -> String {
+    format!("/v1/hosts/{host}/status")
+}
 
 /// The most bytes the controller takes from an agent in one message: 1 MiB.
 ///
-/// It applies to the answer of `POST /v1/reconcile` and to the body of an agent's
-/// `POST /v1/status`. A larger answer is abandoned without being kept, and shows in the status of
+/// It applies to the answer of `POST /v1/reconciliations` and to the body of an agent's
+/// `PUT /v1/hosts/{host}/status`. A larger answer is abandoned without being kept, and shows in the status of
 /// the host as a failure.
 pub const MAX_REPLY_BYTES: usize = 1_048_576;
 
-/// The body of `POST /v1/reconcile`: converge the host to one commit of the repository. The
+/// The body of `POST /v1/reconciliations`: converge the host to one commit of the repository. The
 /// commit is 7 to 64 lower-case hex digits; anything else is answered `400`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconcileRequest {
@@ -119,7 +133,7 @@ impl StackStatus {
     }
 }
 
-/// The body of `POST /v1/status` and of the reconcile answer: what one host did with one commit.
+/// The body of `PUT /v1/hosts/{host}/status` and of the reconcile answer: what one host did with one commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
     host: String,
@@ -164,6 +178,14 @@ impl StatusReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_of_a_host_lives_under_that_host() {
+        assert_eq!(
+            host_status_path("jao-server"),
+            "/v1/hosts/jao-server/status"
+        );
+    }
 
     #[test]
     fn a_reconcile_request_has_a_stable_wire_shape() {

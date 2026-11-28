@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use aegis::exit::Exit;
 use aegis::run;
 use aegis_api::version_1::{
-    Agent, Confirmation, ControllerStatus, HostStatus, HostSync, STATUS_PATH, SYNCS_PATH,
+    Agent, Confirmation, ControllerStatus, FLEET_PATH, HostStatus, HostSync, SYNCS_PATH,
     StackState, StackStatus, StatusReport, SyncResponse, TargetStatus,
 };
 use axum::http::StatusCode;
@@ -63,7 +63,7 @@ fn controller_with(state: StackState) -> String {
         StatusReport::new("h", "abc1234", vec![stack(state)]),
     )]);
     let routes = Router::new()
-        .route(STATUS_PATH, get(move || async move { Json(status) }))
+        .route(FLEET_PATH, get(move || async move { Json(status) }))
         .route(SYNCS_PATH, post(move || async move { Json(sync) }));
     serve(routes)
 }
@@ -142,7 +142,7 @@ fn status_exits_one_when_a_stack_failed() {
 
 #[test]
 fn status_exits_two_when_the_controller_refuses_the_caller_and_says_why() {
-    let routes = Router::new().route(STATUS_PATH, get(|| async { StatusCode::FORBIDDEN }));
+    let routes = Router::new().route(FLEET_PATH, get(|| async { StatusCode::FORBIDDEN }));
     let url = serve(routes);
     let output = run(&words(&format!("status --controller {url}")));
     assert_eq!(output.exit(), Exit::Failed);

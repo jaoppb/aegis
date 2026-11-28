@@ -15,7 +15,7 @@ use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{AgentAddress, ApiClient, ClientError, Hub, enroll_routes, node_routes};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
 use aegis_api::version_1::{
-    ControllerStatus, MAX_REPLY_BYTES, ReconcileRequest, RefusalReason, STATUS_PATH, StatusReport,
+    ControllerStatus, MAX_REPLY_BYTES, ReconcileRequest, RefusalReason, StatusReport,
 };
 use aegis_application::{
     Allowance, AuthKey, Caller, EnrollError, Enrolled, EnrollmentRequest, Grant, MintLimits,
@@ -252,6 +252,12 @@ async fn status_at(url: &str) -> ControllerStatus {
 }
 
 #[cfg(test)]
+async fn put_json(url: &str, path: &str, body: &Value) -> reqwest::Response {
+    let call = reqwest::Client::new().put(format!("{url}{path}"));
+    call.json(body).send().await.unwrap()
+}
+
+#[cfg(test)]
 async fn post_json(url: &str, path: &str, body: &Value) -> reqwest::Response {
     let call = reqwest::Client::new().post(format!("{url}{path}"));
     call.json(body).send().await.unwrap()
@@ -270,7 +276,7 @@ fn populated(wish: &Value) -> Value {
 
 #[cfg(test)]
 async fn enroll_at(url: &str, body: &Value) -> reqwest::Response {
-    post_json(url, "/v1/enroll", body).await
+    post_json(url, "/v1/enrollments", body).await
 }
 
 #[cfg(test)]
@@ -284,10 +290,12 @@ fn an_agent_cannot_post_a_status_report_for_another_host() {
         let world = world("report").await;
         let own = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
         let other = json!({ "host": "g", "commit": "abc1234", "stacks": [] });
-        let own_answer = post_json(&world.agent, STATUS_PATH, &own).await;
-        let other_answer = post_json(&world.agent, STATUS_PATH, &other).await;
+        let own_answer = put_json(&world.agent, "/v1/hosts/h/status", &own).await;
+        let other_answer = put_json(&world.agent, "/v1/hosts/g/status", &other).await;
+        let crossed = put_json(&world.agent, "/v1/hosts/h/status", &other).await;
         assert_eq!(own_answer.status(), StatusCode::NO_CONTENT);
         assert_eq!(other_answer.status(), StatusCode::FORBIDDEN);
+        assert_eq!(crossed.status(), StatusCode::BAD_REQUEST);
         let seen = status_at(&world.operator).await;
         let host = |name: &str| seen.hosts().iter().find(|found| found.host() == name);
         assert!(host("g").unwrap().report().is_none());
@@ -299,8 +307,8 @@ fn a_caller_that_is_no_mapped_agent_gets_nothing_from_the_host_bound_routes() {
     runtime().block_on(async {
         let report = json!({ "host": "stranger", "commit": "abc1234", "stacks": [] });
         let world = world("stranger").await;
-        let posted = post_json(&world.stranger, STATUS_PATH, &report).await;
-        let read = reqwest::get(format!("{}{STATUS_PATH}", world.stranger)).await;
+        let posted = put_json(&world.stranger, "/v1/hosts/stranger/status", &report).await;
+        let read = reqwest::get(format!("{}/v1/fleet", world.stranger)).await;
         let enrolled = enroll_at(&world.stranger, &vaultwarden()).await;
         let deleted = delete_node(&world.stranger, "vault").await;
         let answers = [
@@ -463,7 +471,7 @@ fn a_status_report_beyond_the_cap_is_refused() {
         let world = world("oversized-report").await;
         let filler = "x".repeat(MAX_REPLY_BYTES);
         let big = json!({ "host": "h", "commit": "abc1234", "stacks": [], "padding": filler });
-        let answer = post_json(&world.agent, STATUS_PATH, &big).await;
+        let answer = put_json(&world.agent, "/v1/hosts/h/status", &big).await;
         assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
     });
 }
@@ -487,7 +495,7 @@ async fn answer_endlessly(listener: TcpListener, head: &'static str, piece: usiz
     flood(socket, format!("{piece:x}\r\n{}\r\n", "x".repeat(piece))).await;
 }
 
-/// An agent that answers `POST /v1/reconcile` with `head` and then chunks of `piece` bytes.
+/// An agent that answers `POST /v1/reconciliations` with `head` and then chunks of `piece` bytes.
 #[cfg(test)]
 async fn endless_agent(head: &'static str, piece: usize) -> BaseUrl {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -534,7 +542,7 @@ fn an_agent_answer_within_the_cap_is_read() {
         let report = StatusReport::new("h", "abc1234", Vec::new());
         let kept = report.clone();
         let answer = axum::routing::post(move || ready(axum::response::Json(kept.clone())));
-        let base = serve_app(Router::new().route("/v1/reconcile", answer)).await;
+        let base = serve_app(Router::new().route("/v1/reconciliations", answer)).await;
         let client = ApiClient::new(base).unwrap();
         let read = client.reconcile(&ReconcileRequest::new("abc1234")).await;
         assert_eq!(read.unwrap(), report);
@@ -621,7 +629,7 @@ fn an_operator_cannot_report_enrol_or_delete_through_the_agent_routes() {
     runtime().block_on(async {
         let world = world("operator").await;
         let report = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
-        let posted = post_json(&world.operator, STATUS_PATH, &report).await;
+        let posted = put_json(&world.operator, "/v1/hosts/h/status", &report).await;
         let enrolled = enroll_at(&world.operator, &vaultwarden()).await;
         let deleted = delete_node(&world.operator, "vault").await;
         let answers = [posted.status(), enrolled.status(), deleted.status()];
@@ -656,5 +664,27 @@ fn an_agent_sees_only_the_rejected_stacks_of_its_own_host() {
             rejected_directories(&status_at(&world.operator).await).len(),
             3
         );
+    });
+}
+
+#[cfg(test)]
+async fn old_status(url: &str, path: &str, method: reqwest::Method) -> StatusCode {
+    let body = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
+    let call = reqwest::Client::new().request(method, format!("{url}{path}"));
+    call.json(&body).send().await.unwrap().status()
+}
+
+#[test]
+fn the_verb_paths_of_the_old_api_are_gone_and_the_new_ones_take_only_their_method() {
+    runtime().block_on(async {
+        let world = world("renamed").await;
+        let post = reqwest::Method::POST;
+        let enroll = old_status(&world.agent, "/v1/enroll", post.clone()).await;
+        let status = old_status(&world.agent, "/v1/status", post.clone()).await;
+        let wrong = old_status(&world.agent, "/v1/hosts/h/status", post).await;
+        let missing = StatusCode::NOT_FOUND;
+        let answers = [enroll, status, wrong];
+        assert_eq!(answers, [missing, missing, StatusCode::METHOD_NOT_ALLOWED]);
+        assert_eq!(world.minted.load(Ordering::SeqCst), 0);
     });
 }
