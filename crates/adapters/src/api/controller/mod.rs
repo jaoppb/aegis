@@ -1,5 +1,5 @@
-//! The controller's side of the API: `PUT /v1/hosts/{host}/status` and `GET /v1/fleet`, and the loop that
-//! polls the repository and tells the agents to converge.
+//! The controller's side of the API: `PUT /v1/hosts/{host}/status` and `GET /v1/fleet`, and the
+//! loop that polls the repository and tells the agents to converge.
 //!
 //! The controller keeps no state on disk. Its view is derived: a restart looks at the repository
 //! again and tells every agent again, and a reconcile is idempotent.

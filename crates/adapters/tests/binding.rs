@@ -23,7 +23,7 @@ use aegis_application::{
 };
 use aegis_domain::{HostName, PeerIdentity, TailnetName, TailnetTag, TailnetTags};
 use axum::{Extension, Router};
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -284,21 +284,31 @@ fn vaultwarden() -> Value {
     wish("vault", "vaultwarden", &["tag:app"])
 }
 
+#[cfg(test)]
+async fn has_report(url: &str, name: &str) -> bool {
+    let seen = status_at(url).await;
+    let found = seen.hosts().iter().find(|found| found.host() == name);
+    found.unwrap().report().is_some()
+}
+
 #[test]
-fn an_agent_cannot_post_a_status_report_for_another_host() {
+fn an_agent_cannot_put_a_status_report_for_another_host() {
     runtime().block_on(async {
         let world = world("report").await;
         let own = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
         let other = json!({ "host": "g", "commit": "abc1234", "stacks": [] });
-        let own_answer = put_json(&world.agent, "/v1/hosts/h/status", &own).await;
-        let other_answer = put_json(&world.agent, "/v1/hosts/g/status", &other).await;
         let crossed = put_json(&world.agent, "/v1/hosts/h/status", &other).await;
-        assert_eq!(own_answer.status(), StatusCode::NO_CONTENT);
-        assert_eq!(other_answer.status(), StatusCode::FORBIDDEN);
+        let elsewhere = put_json(&world.agent, "/v1/hosts/g/status", &other).await;
         assert_eq!(crossed.status(), StatusCode::BAD_REQUEST);
-        let seen = status_at(&world.operator).await;
-        let host = |name: &str| seen.hosts().iter().find(|found| found.host() == name);
-        assert!(host("g").unwrap().report().is_none());
+        assert_eq!(elsewhere.status(), StatusCode::FORBIDDEN);
+        assert!(
+            !has_report(&world.operator, "h").await,
+            "a crossed report was kept"
+        );
+        assert!(!has_report(&world.operator, "g").await);
+        let own_answer = put_json(&world.agent, "/v1/hosts/h/status", &own).await;
+        assert_eq!(own_answer.status(), StatusCode::NO_CONTENT);
+        assert!(has_report(&world.operator, "h").await);
     });
 }
 
@@ -668,7 +678,7 @@ fn an_agent_sees_only_the_rejected_stacks_of_its_own_host() {
 }
 
 #[cfg(test)]
-async fn old_status(url: &str, path: &str, method: reqwest::Method) -> StatusCode {
+async fn status_of(url: &str, path: &str, method: Method) -> StatusCode {
     let body = json!({ "host": "h", "commit": "abc1234", "stacks": [] });
     let call = reqwest::Client::new().request(method, format!("{url}{path}"));
     call.json(&body).send().await.unwrap().status()
@@ -678,13 +688,20 @@ async fn old_status(url: &str, path: &str, method: reqwest::Method) -> StatusCod
 fn the_verb_paths_of_the_old_api_are_gone_and_the_new_ones_take_only_their_method() {
     runtime().block_on(async {
         let world = world("renamed").await;
-        let post = reqwest::Method::POST;
-        let enroll = old_status(&world.agent, "/v1/enroll", post.clone()).await;
-        let status = old_status(&world.agent, "/v1/status", post.clone()).await;
-        let wrong = old_status(&world.agent, "/v1/hosts/h/status", post).await;
-        let missing = StatusCode::NOT_FOUND;
-        let answers = [enroll, status, wrong];
-        assert_eq!(answers, [missing, missing, StatusCode::METHOD_NOT_ALLOWED]);
+        let (post, get, put) = (Method::POST, Method::GET, Method::PUT);
+        let old = [
+            status_of(&world.agent, "/v1/enroll", post.clone()).await,
+            status_of(&world.agent, "/v1/status", post.clone()).await,
+            status_of(&world.operator, "/v1/status", get.clone()).await,
+            status_of(&world.agent, "/v1/status", get.clone()).await,
+        ];
+        assert_eq!(old, [StatusCode::NOT_FOUND; 4]);
+        let wrong = [
+            status_of(&world.agent, "/v1/hosts/h/status", post).await,
+            status_of(&world.agent, "/v1/hosts/h/status", get).await,
+            status_of(&world.operator, "/v1/fleet", put).await,
+        ];
+        assert_eq!(wrong, [StatusCode::METHOD_NOT_ALLOWED; 3]);
         assert_eq!(world.minted.load(Ordering::SeqCst), 0);
     });
 }

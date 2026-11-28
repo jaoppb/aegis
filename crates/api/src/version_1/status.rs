@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use super::reconcile::{StackStatus, StatusReport};
 
+/// The path of the fleet resource, served by the controller: `GET` answers with a
+/// [`ControllerStatus`](super::ControllerStatus), the whole fleet for an operator and the caller's
+/// own host for an agent.
+pub const FLEET_PATH: &str = "/v1/fleet";
+
 /// A commit whose tree could not be read at all, so the last good commit stays in force.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvalidCommit {

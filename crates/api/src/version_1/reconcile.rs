@@ -5,16 +5,11 @@ use serde::{Deserialize, Serialize};
 /// The path of the reconcile endpoint, served by agents.
 pub const RECONCILIATIONS_PATH: &str = "/v1/reconciliations";
 
-/// The path of the fleet resource, served by the controller: `GET` answers with a
-/// [`ControllerStatus`](super::ControllerStatus), the whole fleet for an operator and the caller's
-/// own host for an agent.
-pub const FLEET_PATH: &str = "/v1/fleet";
-
 /// The path of the status of one host, served by the controller.
 ///
-/// The agent of `{host}` `PUT`s its [`StatusReport`] there. Statuses: `204` the report was recorded, `400` the commit or the host
-/// of the body is malformed or is not the host of the path, `403` the caller is no agent of the
-/// host in the path, `404` the controller has no agent for the host.
+/// The agent of `{host}` `PUT`s its [`StatusReport`] there. Statuses: `204` the report was
+/// recorded, `400` the commit or the host of the body is malformed or is not the host of the path,
+/// `403` the caller is no agent of the host in the path.
 pub const HOST_STATUS_PATH: &str = "/v1/hosts/{host}/status";
 
 /// The path of the status of `host`, a directory name under `hosts/`.
@@ -26,8 +21,8 @@ pub fn host_status_path(host: &str) -> String {
 /// The most bytes the controller takes from an agent in one message: 1 MiB.
 ///
 /// It applies to the answer of `POST /v1/reconciliations` and to the body of an agent's
-/// `PUT /v1/hosts/{host}/status`. A larger answer is abandoned without being kept, and shows in the status of
-/// the host as a failure.
+/// `PUT /v1/hosts/{host}/status`. A larger answer is abandoned without being kept, and shows in
+/// the status of the host as a failure.
 pub const MAX_REPLY_BYTES: usize = 1_048_576;
 
 /// The body of `POST /v1/reconciliations`: converge the host to one commit of the repository. The
@@ -133,7 +128,8 @@ impl StackStatus {
     }
 }
 
-/// The body of `PUT /v1/hosts/{host}/status` and of the reconcile answer: what one host did with one commit.
+/// The body of `PUT /v1/hosts/{host}/status` and of the reconcile answer: what one host did with
+/// one commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
     host: String,

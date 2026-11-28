@@ -233,8 +233,9 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
 /// It listens on `AEGIS_LISTEN`, follows the `AEGIS_REPO_BRANCH` (default `main`) of the
 /// repository at `AEGIS_REPO_URL` in the disposable checkout `AEGIS_WORKDIR`, looks every
 /// `AEGIS_POLL_SECS` (default 60, at least 5) and tells the agents of `AEGIS_AGENTS`
-/// (`host=url`, comma-separated) to converge. It also serves `POST /v1/enrollments`, which needs the
-/// Tailscale variables of `AEGIS_TS_CLIENT_ID`, `AEGIS_TS_CLIENT_SECRET` and `AEGIS_ENROLL_TAGS`. Git authenticates with what it inherits: a deploy
+/// (`host=url`, comma-separated) to converge. It also serves `POST /v1/enrollments`, which needs
+/// the Tailscale variables of `AEGIS_TS_CLIENT_ID`, `AEGIS_TS_CLIENT_SECRET` and
+/// `AEGIS_ENROLL_TAGS`. Git authenticates with what it inherits: a deploy
 /// key through the SSH agent or a credential helper; a URL that carries credentials is refused.
 ///
 /// # Errors

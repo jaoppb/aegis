@@ -1,5 +1,5 @@
-//! `POST /v1/enrollments`: the controller's side, which answers an agent's enrolment request, and the
-//! client an agent uses to ask it.
+//! `POST /v1/enrollments`: the controller's side, which answers an agent's enrolment request, and
+//! the client an agent uses to ask it.
 
 use std::sync::Arc;
 
@@ -194,8 +194,8 @@ pub(super) struct EnrollDesks {
 }
 
 impl EnrollDesks {
-    /// The `POST /v1/enrollments` and `DELETE /v1/nodes/{hostname}` routes, which check each request
-    /// with `binding`.
+    /// The `POST /v1/enrollments` and `DELETE /v1/nodes/{hostname}` routes, which check each
+    /// request with `binding`.
     pub(super) fn routes(self, binding: &Binding) -> Router {
         let enroll = enroll_routes(self.enroller, binding.clone());
         enroll.merge(super::node_routes(self.removing, binding.clone()))

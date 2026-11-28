@@ -10,9 +10,9 @@ The API is resource-oriented: resources are plural nouns, no path has a verb, an
 |-------|--------|----------|
 | `GET /v1/health` | agent, operator | `200` |
 | `GET /v1/fleet` | agent (its own host), operator | `200` |
-| `PUT /v1/hosts/{host}/status` | the agent of `{host}` | `204`, `400`, `403`, `404`, `413` |
+| `PUT /v1/hosts/{host}/status` | the agent of `{host}` | `204`, `400`, `403`, `413`, `415`, `422` |
 | `POST /v1/enrollments` | agent | `200`, `400`, `403`, `429`, `502`, `503` |
-| `DELETE /v1/nodes/{hostname}` | agent | `204`, `400`, `403`, `404`, `409`, `502` |
+| `DELETE /v1/nodes/{hostname}` | agent | `204`, `400`, `403`, `404`, `409`, `502`, `503` |
 | `POST /v1/syncs` | operator | `200`, `400`, `409`, `502` |
 | `POST /v1/hosts/{host}/syncs` | operator | `200`, `400`, `404`, `409`, `502` |
 
@@ -52,15 +52,15 @@ An agent is the node it joined the tailnet as, and the controller binds each req
 
 ## `/v1/fleet` and `/v1/hosts/{host}/status`
 
-`POST` is callable only by a node tagged `tag:aegis-agent` (see [tailscale-acl.md](tailscale-acl.md)) that is the agent of a host, and `GET` by such a node or by an operator. An agent reports for its own host alone and reads only its own host; an operator reads the whole fleet.
+`PUT /v1/hosts/{host}/status` is callable only by a node tagged `tag:aegis-agent` (see [tailscale-acl.md](tailscale-acl.md)) that is the agent of a host, and `GET /v1/fleet` by such a node or by an operator. An agent reports for its own host alone and reads only its own host; an operator reads the whole fleet.
 
-`PUT /v1/hosts/{host}/status` replaces the status report of one host with the report of its agent (see [agent.md](agent.md)); agents send it after each reconcile. It answers `204`, `403` when the path names a host other than the caller's, `400` when the commit in the body is malformed or the body names another host than the path, and `404` when the controller has no agent for the host. The body is limited to 1 MiB.
+`PUT /v1/hosts/{host}/status` replaces the status report of one host with the report of its agent (see [agent.md](agent.md)); agents send it after each reconcile. It answers `204`, `403` when the path names a host other than the caller's, and `400` when the commit in the body is malformed or the body names another host than the path. The body is limited to 1 MiB.
 
 | Status | Meaning |
 |--------|---------|
 | `204` | The report was kept. It confirms the host only when it is for the target commit. |
-| `400` | The commit is malformed. |
-| `403` | The caller is not tagged `tag:aegis-agent`, is no agent of a host of `AEGIS_AGENTS`, or reports for another host. |
+| `400` | The commit in the body is malformed, or the body names another host than the path. |
+| `403` | The caller is not tagged `tag:aegis-agent`, is no agent of a host of `AEGIS_AGENTS`, or the path names another host than the caller's. |
 | `413` | The body is larger than 1 MiB. |
 | `503` | The whois lookup failed. |
 
