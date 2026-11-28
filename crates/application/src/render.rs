@@ -93,11 +93,10 @@ const VOLUMES: &str = r#"volumes:
   socket: {}
 "#;
 
-/// Which stack a file belongs to, the node it joins the tailnet as, and in which role.
+/// Which stack a file belongs to, its Compose project, and the role of its node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     name: StackName,
-    node: HostName,
     project: ProjectName,
     role: AegisRole,
 }
@@ -171,12 +170,6 @@ impl RenderedStack {
     #[must_use]
     pub const fn name(&self) -> &StackName {
         &self.identity.name
-    }
-
-    /// The tailnet node the stack joins as.
-    #[must_use]
-    pub const fn node(&self) -> &HostName {
-        &self.identity.node
     }
 
     /// The Compose project of the stack, which names its sidecar's state volume.
@@ -317,7 +310,6 @@ fn agent_stack(plan: &BootstrapPlan, key: &HostKey) -> Result<RenderedStack, Val
     let identity = Identity {
         project: ProjectName::of(&name)?,
         name,
-        node,
         role: AegisRole::Agent,
     };
     Ok(RenderedStack {
@@ -341,7 +333,6 @@ fn controller_stack(
     let identity = Identity {
         project: ProjectName::of(&name)?,
         name,
-        node,
         role: AegisRole::Controller,
     };
     Ok(RenderedStack {

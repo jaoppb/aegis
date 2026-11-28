@@ -154,8 +154,10 @@ impl SidecarEnroller for ControllerDesk {
     }
 }
 
-const CLIENT_ID_VAR: &str = "AEGIS_TS_CLIENT_ID";
-const CLIENT_SECRET_VAR: &str = "AEGIS_TS_CLIENT_SECRET";
+/// The variable that holds the id of the Tailscale OAuth client.
+pub const CLIENT_ID_VAR: &str = "AEGIS_TS_CLIENT_ID";
+/// The variable that holds the secret of the Tailscale OAuth client.
+pub const CLIENT_SECRET_VAR: &str = "AEGIS_TS_CLIENT_SECRET";
 const TAGS_VAR: &str = "AEGIS_ENROLL_TAGS";
 
 /// The variables a controller refuses to start without, besides `AEGIS_LISTEN`.
@@ -167,12 +169,7 @@ fn required(name: &'static str) -> Result<String, ServeError> {
 
 /// The ACL tags of `AEGIS_ENROLL_TAGS`, comma-separated: the only tags a stack's node may carry.
 fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
-    let names = variable.split(',').map(str::trim);
-    let present: Vec<String> = names
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .collect();
-    tags_of(&present).map_err(|error| ServeError::Invalid {
+    TailnetTags::parse_list(variable).map_err(|error| ServeError::Invalid {
         variable: TAGS_VAR,
         cause: error.to_string(),
     })

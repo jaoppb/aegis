@@ -7,8 +7,8 @@ use std::fmt;
 use std::future::Future;
 
 use aegis_domain::{
-    AegisRole, HostName, HostPath, ProjectName, RepoPath, Secret, StackName, TailnetTag,
-    TailnetTags, ValueError,
+    AegisRole, HostName, HostPath, ProjectName, RepoPath, Secret, StackName, TailnetTags,
+    ValueError,
 };
 
 use crate::enroll::StateProbe;
@@ -289,8 +289,7 @@ impl ControllerSetup {
     /// The value of `AEGIS_ENROLL_TAGS`: the allowed tags, comma-separated.
     #[must_use]
     pub fn enroll_tags(&self) -> String {
-        let names: Vec<&str> = self.tags.iter().map(TailnetTag::as_str).collect();
-        names.join(",")
+        self.tags.join()
     }
 }
 

@@ -13,7 +13,7 @@ use aegis_application::{
     ControllerSetup, ControllerUrl, Enrollment, HostSide, ImageTag, Reason, RepoUrl, Sources,
     TailnetError,
 };
-use aegis_domain::{AegisRole, HostName, HostPath, TailnetTag, TailnetTags, ValueError};
+use aegis_domain::{AegisRole, HostName, HostPath, TailnetTags, ValueError};
 
 use crate::args::{Flags, UsageError};
 
@@ -70,14 +70,7 @@ fn sources(flags: &Flags) -> Result<Sources, UsageError> {
 /// may be an Aegis role tag.
 fn enroll_tags(flags: &Flags) -> Result<TailnetTags, UsageError> {
     let listed = flags.required("--enroll-tags")?;
-    let names = listed
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    let tags: Result<Vec<TailnetTag>, UsageError> = names
-        .map(|name| parsed("--enroll-tags", TailnetTag::new(name)))
-        .collect();
-    let tags = tags?;
+    let tags = parsed("--enroll-tags", TailnetTags::parse_list(listed))?;
     let role = tags.iter().find(|tag| AegisRole::is_role_tag(tag));
     if let Some(reserved) = role {
         return Err(UsageError::ReservedTag(reserved.to_string()));
@@ -85,7 +78,7 @@ fn enroll_tags(flags: &Flags) -> Result<TailnetTags, UsageError> {
     if tags.is_empty() {
         return Err(UsageError::Required("--enroll-tags"));
     }
-    Ok(TailnetTags::new(tags))
+    Ok(tags)
 }
 
 fn choice(flags: &Flags, oauth: &OAuthEnvironment) -> Result<ControllerChoice, UsageError> {
@@ -230,5 +223,12 @@ mod tests {
     #[test]
     fn enroll_tags_are_not_needed_without_the_controller() {
         assert!(plan(&flags(REQUIRED), &oauth()).is_ok());
+    }
+
+    #[test]
+    fn blank_enroll_tags_count_as_none() {
+        let line = format!("{REQUIRED} --with-controller --enroll-tags ,");
+        let error = plan(&flags(&line), &oauth()).unwrap_err();
+        assert_eq!(error, UsageError::Required("--enroll-tags"));
     }
 }

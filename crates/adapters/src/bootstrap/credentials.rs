@@ -3,10 +3,8 @@
 
 use aegis_domain::Secret;
 
+use crate::api::{CLIENT_ID_VAR, CLIENT_SECRET_VAR};
 use crate::tailscale::{ClientId, ClientSecret, OAuthCredentials};
-
-const CLIENT_ID_VAR: &str = "AEGIS_TS_CLIENT_ID";
-const CLIENT_SECRET_VAR: &str = "AEGIS_TS_CLIENT_SECRET";
 
 /// The OAuth credentials are missing or cannot be written to a dotenv file.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

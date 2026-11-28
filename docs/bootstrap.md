@@ -20,7 +20,11 @@ do it. A URL with credentials in it (`https://token@host/...`) is refused.
 
 You also need a Tailscale OAuth client with the `auth_keys` (write) scope and both `tag:aegis-agent` and
 `tag:aegis-controller` selected as its tags, so it can mint keys for them (`docs/tailscale-acl.md` has the
-ACL snippet and how the tags are owned). Every bootstrap needs it in the environment, including an
+ACL snippet and how the tags are owned). With `--with-controller` the same client becomes the controller's:
+it also needs the `devices:core` scope (the controller reads the tailnet's name and deletes nodes) and
+every tag you pass to `--enroll-tags` selected on it and declared in `tagOwners`, or the controller's first
+enrolment fails (`docs/exposure.md` has the controller settings). An agent-only bootstrap needs only
+`auth_keys` and the two role tags. Every bootstrap needs it in the environment, including an
 agent-only one, so it spreads that client's credentials across the hosts you bootstrap.
 
 The OAuth client id and secret are read from the environment, never from arguments, so they stay out of
