@@ -506,7 +506,8 @@ fn a_stack_directory_that_is_itself_a_link_is_confined_to_its_real_path() {
             .unwrap();
         let files = [("db.env", Ok("A=1\n"))];
         let compose = decorated_in(&checkout, &TmpfsStore::at(root.join("store")), &files);
-        assert!(compose.converge(&with_env("db.env")).await.is_ok());
+        compose.converge(&with_env("db.env")).await.unwrap();
+        assert_eq!(compose.seen()[0].workspace["env-app-0"], "A=1\n");
         clean_up(&root).await;
     });
 }
@@ -527,6 +528,30 @@ fn something_that_is_not_a_regular_file_is_refused() {
             .unwrap_err()
             .to_string();
         assert!(message.contains("regular file"), "{message}");
+        assert!(compose.seen().is_empty());
+        clean_up(&root).await;
+    });
+}
+
+#[test]
+fn a_path_that_cannot_be_resolved_is_refused_not_passed_on() {
+    runtime().block_on(async {
+        let root = root("loop");
+        let (checkout, stack) = checkout_with_stacks(&root).await;
+        tokio::fs::symlink("b.env", stack.join("a.env"))
+            .await
+            .unwrap();
+        tokio::fs::symlink("a.env", stack.join("b.env"))
+            .await
+            .unwrap();
+        let files = [("a.env", Ok("A=1\n"))];
+        let compose = decorated_in(&checkout, &TmpfsStore::at(root.join("store")), &files);
+        let message = compose
+            .converge(&with_env("a.env"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("cannot resolve"), "{message}");
         assert!(compose.seen().is_empty());
         clean_up(&root).await;
     });

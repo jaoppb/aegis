@@ -46,8 +46,18 @@ impl Sandbox {
 
     async fn encrypted(&self, name: &str) -> HostPath {
         let path = self.root.join(name);
-        tokio::fs::write(&path, "sealed").await.unwrap();
+        let text = sealed_text(&path);
+        tokio::fs::write(&path, text).await.unwrap();
         HostPath::new(path.display().to_string()).unwrap()
+    }
+}
+
+/// Metadata that passes the age-only check, in the format the file name asks for.
+#[cfg(test)]
+fn sealed_text(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("yaml") => "a: ENC[x]\nsops:\n  age: []\n  mac: m\n  version: 3.13.3\n",
+        _ => "A=ENC[x]\nsops_mac=m\n",
     }
 }
 
@@ -196,6 +206,30 @@ fn the_check_cannot_be_hidden_by_case_documents_merge_keys_duplicates_or_key_gro
             "A=1\nsops_key_groups__list_0__map_hc_vault__list_0__map_vault_address=x\n",
         )
         .await;
+    });
+}
+
+#[test]
+fn escapes_aliases_explicit_keys_and_unicode_folding_cannot_hide_a_group() {
+    runtime().block_on(async {
+        assert_refused("a.yaml", "sops:\n  \"\\x6bms\": [{arn: x}]\n").await;
+        assert_refused("b.json", r#"{"sops": {"k\u006dms": [{"arn": "x"}]}}"#).await;
+        assert_refused("c.json", "{\"sops\": {\"\u{212a}ms\": [{\"arn\": \"x\"}]}}").await;
+        assert_refused("d.json", "{\"sops\": {\"km\u{17f}\": [{\"arn\": \"x\"}]}}").await;
+        assert_refused("e.yaml", "x: &k kms\nsops:\n  *k : [{arn: x}]\n").await;
+        assert_refused("f.yaml", "sops:\n  ? kms # c\n  : - arn: x\n").await;
+        assert_refused("g.json", r#"{"SOPS": {"age": []}}"#).await;
+        assert_refused("h.json", "{\"\u{17f}ops\": {\"kms\": [{\"arn\": \"x\"}]}}").await;
+        assert_refused("i.yaml", "a: 1\n").await;
+    });
+}
+
+#[test]
+fn a_flattened_group_name_or_a_non_ascii_key_refuses_a_dotenv_or_ini_file() {
+    runtime().block_on(async {
+        assert_refused("a.env", "APP_KMS__ARN=x\nsops_mac=m\n").await;
+        assert_refused("b.env", "K\u{212a}MS=1\nsops_mac=m\n").await;
+        assert_refused("c.ini", "[sops]\nKMS__list_0__map_arn = x\n").await;
     });
 }
 

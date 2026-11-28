@@ -246,6 +246,18 @@ mod tests {
     }
 
     #[test]
+    fn the_checkout_must_be_an_absolute_path() {
+        assert!(matches!(
+            absolute_checkout("relative/repo"),
+            Err(ServeError::Invalid { .. })
+        ));
+        assert_eq!(
+            absolute_checkout("/var/lib/aegis/repo").unwrap(),
+            PathBuf::from("/var/lib/aegis/repo")
+        );
+    }
+
+    #[test]
     fn a_bad_reserved_name_is_refused() {
         let result = reserved_from(Some("../etc"));
         assert!(matches!(result, Err(ServeError::Invalid { .. })));
