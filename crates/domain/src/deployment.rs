@@ -119,6 +119,12 @@ impl Detail {
     }
 }
 
+collection!(
+    /// The reserved `aegis/` stacks a host opts in to deploy.
+    ReservedStacks,
+    StackName
+);
+
 /// What a reconcile did with one stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Deployment {

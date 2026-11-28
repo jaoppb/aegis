@@ -5,8 +5,8 @@ use std::fmt;
 use std::future::Future;
 
 use aegis_domain::{
-    CommitSha, Deployment, Detail, Host, HostName, Origin, Rejection, RepoPath, Report, Stack,
-    StackReport, StackReports, StackState,
+    CommitSha, Deployment, Detail, Host, HostName, Origin, Rejection, RepoPath, Report,
+    ReservedStacks, Stack, StackReport, StackReports, StackState,
 };
 
 use crate::deploy::{BuiltServices, Checkout, ComposeRunner, DeployRequest, GitError, Target};
@@ -107,13 +107,32 @@ pub trait Reconcile {
 pub struct Reconciler<Git, Docker> {
     host: HostName,
     ports: Ports<Git, Docker>,
+    reserved: ReservedStacks,
 }
 
 impl<Git, Docker> Reconciler<Git, Docker> {
     /// A reconciler for `host` working through `ports`.
     #[must_use]
     pub const fn new(host: HostName, ports: Ports<Git, Docker>) -> Self {
-        Self { host, ports }
+        Self {
+            host,
+            ports,
+            reserved: ReservedStacks::new(Vec::new()),
+        }
+    }
+
+    /// The same reconciler that also deploys the `reserved` stacks of the `aegis/` directory. A
+    /// host deploys none of them unless it opts in.
+    #[must_use]
+    pub fn with_reserved(self, reserved: ReservedStacks) -> Self {
+        Self { reserved, ..self }
+    }
+
+    const fn scope(&self) -> Scope<'_> {
+        Scope {
+            host: &self.host,
+            reserved: &self.reserved,
+        }
     }
 }
 
@@ -126,9 +145,9 @@ where
         let git = self.ports.git.sync(&commit);
         git.await.map_err(ReconcileError::Checkout)?;
         let outcome = self.ports.repository.load();
-        let units = units(&outcome, &self.host);
+        let units = units(&outcome, &self.scope());
         let mut stacks = deploy_all(&self.ports.compose, &units, &commit).await;
-        stacks.extend(invalid(&outcome, &self.host));
+        stacks.extend(invalid(&outcome, &self.scope()));
         let origin = Origin::new(self.host.clone(), commit);
         Ok(Report::new(origin, stacks.into_iter().collect()))
     }
@@ -140,11 +159,31 @@ struct Unit<'stack> {
     stack: &'stack Stack,
 }
 
-fn units<'outcome>(outcome: &'outcome Outcome, host: &HostName) -> Vec<Unit<'outcome>> {
+/// Which stacks a host deploys: its own, and the reserved ones it opted in to.
+struct Scope<'scope> {
+    host: &'scope HostName,
+    reserved: &'scope ReservedStacks,
+}
+
+impl Scope<'_> {
+    fn wants_reserved(&self, stack: &Stack) -> bool {
+        self.reserved.iter().any(|name| name == stack.name())
+    }
+}
+
+fn units<'outcome>(outcome: &'outcome Outcome, scope: &Scope<'_>) -> Vec<Unit<'outcome>> {
     let hosts = outcome.state().hosts().iter();
-    let own = hosts.filter(|candidate| candidate.name() == host);
-    let stacks = own.flat_map(unit_stacks);
-    stacks
+    let own = hosts.filter(|candidate| candidate.name() == scope.host);
+    let hosted = own.flat_map(unit_stacks);
+    let reserved = outcome.state().reserved().iter();
+    let opted = reserved.filter(|stack| scope.wants_reserved(stack));
+    let parent = RepoPath::reserved_root();
+    let kept = opted.map(move |stack| Unit {
+        directory: parent.listed(stack.name().as_str()),
+        stack,
+    });
+    hosted
+        .chain(kept)
         .filter(|unit| unit.stack.policy().state() == StackState::Active)
         .collect()
 }
@@ -209,11 +248,11 @@ fn built_by(stack: &Stack) -> BuiltServices {
 }
 
 /// The rejected stacks of `host`, reported as invalid.
-fn invalid(outcome: &Outcome, host: &HostName) -> StackReports {
+fn invalid(outcome: &Outcome, scope: &Scope<'_>) -> StackReports {
     let own = outcome
         .rejected()
         .iter()
-        .filter(|rejection| belongs(rejection, host));
+        .filter(|rejection| belongs(rejection, scope));
     own.map(|rejection| {
         let violations = rejection.violations().clone();
         StackReport::new(
@@ -224,9 +263,13 @@ fn invalid(outcome: &Outcome, host: &HostName) -> StackReports {
     .collect()
 }
 
-/// Whether `rejection` is about the host directory or one of its stacks.
-fn belongs(rejection: &Rejection, host: &HostName) -> bool {
+/// Whether `rejection` is about the host directory, one of its stacks or an opted-in reserved
+/// stack.
+fn belongs(rejection: &Rejection, scope: &Scope<'_>) -> bool {
     let directory = rejection.directory().as_str();
-    let own = format!("hosts/{host}");
-    directory == own || directory.starts_with(&format!("{own}/"))
+    let own = format!("hosts/{}", scope.host);
+    let reserved = scope.reserved.iter().map(|name| format!("aegis/{name}"));
+    directory == own
+        || directory.starts_with(&format!("{own}/"))
+        || reserved.into_iter().any(|path| path == directory)
 }

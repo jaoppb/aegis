@@ -9,7 +9,9 @@ use aegis_application::{
     Checkout, ComposeError, ComposeRunner, DeployRequest, GitError, Ports, Reason, Reconcile,
     ReconcileError, Reconciler, Repository,
 };
-use aegis_domain::{CommitSha, Deployment, HostName, Report, ServiceName, StackReport};
+use aegis_domain::{
+    CommitSha, Deployment, HostName, Report, ReservedStacks, ServiceName, StackName, StackReport,
+};
 
 #[cfg(test)]
 #[derive(Clone, Default)]
@@ -75,11 +77,22 @@ impl Checkout for FakeGit {
 }
 
 #[cfg(test)]
-fn reconciler(git: &FakeGit, compose: &FakeCompose) -> Reconciler<FakeGit, FakeCompose> {
+fn reconciler_with(
+    git: &FakeGit,
+    compose: &FakeCompose,
+    reserved: &[&str],
+) -> Reconciler<FakeGit, FakeCompose> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/reconcile");
     let repository = Repository::new(FsRepo::new(root), SerdeStackParser, SopsCheck);
     let ports = Ports::new(git.clone(), compose.clone(), repository);
+    let names = reserved.iter().map(|name| StackName::new(*name).unwrap());
     Reconciler::new(HostName::new("host").unwrap(), ports)
+        .with_reserved(ReservedStacks::new(names.collect()))
+}
+
+#[cfg(test)]
+fn reconciler(git: &FakeGit, compose: &FakeCompose) -> Reconciler<FakeGit, FakeCompose> {
+    reconciler_with(git, compose, &[])
 }
 
 #[cfg(test)]
@@ -207,4 +220,26 @@ fn a_checkout_failure_deploys_nothing() {
     let result = reconcile(&git, &compose);
     assert!(matches!(result, Err(ReconcileError::Checkout(_))));
     assert!(compose.requests().is_empty());
+}
+
+#[test]
+fn a_host_deploys_a_reserved_stack_only_when_it_opts_in() {
+    let compose = FakeCompose::default();
+    let reconciler = reconciler_with(&FakeGit::default(), &compose, &["controller"]);
+    let report = runtime().block_on(reconciler.reconcile(commit())).unwrap();
+    assert!(compose.projects().contains(&"aegis-controller".to_owned()));
+    assert_eq!(stack(&report, "aegis/controller"), &Deployment::Running);
+}
+
+#[test]
+fn reserved_stacks_are_not_deployed_by_default() {
+    let compose = FakeCompose::default();
+    let report = reconcile(&FakeGit::default(), &compose).unwrap();
+    assert!(!compose.projects().contains(&"aegis-controller".to_owned()));
+    assert!(
+        !report
+            .stacks()
+            .iter()
+            .any(|found| found.directory().as_str().starts_with("aegis/"))
+    );
 }

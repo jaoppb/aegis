@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use aegis_api::version_1::{RECONCILE_PATH, ReconcileRequest, Role, StatusReport};
 use aegis_application::{Ports, Reconcile, Reconciler, Repository, WhoIs};
-use aegis_domain::{CommitSha, HostName};
+use aegis_domain::{CommitSha, HostName, ReservedStacks, StackName};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -22,6 +22,7 @@ use crate::{DockerCompose, FsRepo, GitCheckout, SerdeStackParser, SopsCheck, Tai
 const HOST_VAR: &str = "AEGIS_HOST";
 const CHECKOUT_VAR: &str = "AEGIS_CHECKOUT";
 const CONTROLLER_VAR: &str = "AEGIS_CONTROLLER";
+const RESERVED_VAR: &str = "AEGIS_RESERVED";
 
 /// What a reconcile handler needs: the reconciler, where to report, and a lock that lets one
 /// reconcile at a time touch the checkout.
@@ -66,9 +67,15 @@ where
 /// The agent's settings, read from its environment.
 struct Settings {
     listen: ListenAddress,
-    host: HostName,
+    hosting: Hosting,
     checkout: PathBuf,
     controller: BaseUrl,
+}
+
+/// Which stacks the agent deploys: its host's, and the reserved ones it opted in to.
+struct Hosting {
+    host: HostName,
+    reserved: ReservedStacks,
 }
 
 fn required(name: &'static str) -> Result<String, ServeError> {
@@ -82,13 +89,26 @@ fn invalid(variable: &'static str, cause: &impl std::fmt::Display) -> ServeError
     }
 }
 
+/// The comma-separated stack names of `AEGIS_RESERVED`; unset or empty means none.
+fn reserved_from(variable: Option<&str>) -> Result<ReservedStacks, ServeError> {
+    let names = variable.unwrap_or_default().split(',').map(str::trim);
+    let present = names.filter(|name| !name.is_empty());
+    present
+        .map(|name| StackName::new(name).map_err(|error| invalid(RESERVED_VAR, &error)))
+        .collect::<Result<Vec<_>, _>>()
+        .map(ReservedStacks::new)
+}
+
 impl Settings {
     fn from_env() -> Result<Self, ServeError> {
         let listen = listen_from(std::env::var(LISTEN_VAR))?;
         let host = HostName::new(required(HOST_VAR)?).map_err(|error| invalid(HOST_VAR, &error))?;
         Ok(Self {
             listen,
-            host,
+            hosting: Hosting {
+                host,
+                reserved: reserved_from(std::env::var(RESERVED_VAR).ok().as_deref())?,
+            },
             checkout: PathBuf::from(required(CHECKOUT_VAR)?),
             controller: BaseUrl::new(required(CONTROLLER_VAR)?),
         })
@@ -98,7 +118,8 @@ impl Settings {
         let repository = Repository::new(FsRepo::new(&self.checkout), SerdeStackParser, SopsCheck);
         let git = GitCheckout::new(&self.checkout);
         let ports = Ports::new(git, DockerCompose::new(&self.checkout), repository);
-        Reconciler::new(self.host.clone(), ports)
+        Reconciler::new(self.hosting.host.clone(), ports)
+            .with_reserved(self.hosting.reserved.clone())
     }
 }
 
@@ -132,7 +153,8 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
 /// Run an agent on its own runtime until it fails.
 ///
 /// It listens on `AEGIS_LISTEN`, deploys the stacks of `AEGIS_HOST` from the git checkout at
-/// `AEGIS_CHECKOUT`, and reports to the controller at `AEGIS_CONTROLLER`.
+/// `AEGIS_CHECKOUT`, and reports to the controller at `AEGIS_CONTROLLER`. The reserved `aegis/`
+/// stacks named in `AEGIS_RESERVED` (comma-separated, optional) are deployed too.
 ///
 /// # Errors
 ///
@@ -145,4 +167,28 @@ pub fn serve_agent_from_env() -> Result<(), ServeError> {
         .build()
         .map_err(ServeError::Runtime)?;
     runtime.block_on(run(settings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_stacks_are_a_comma_separated_list() {
+        let reserved = reserved_from(Some("controller, agent,")).unwrap();
+        let names: Vec<&str> = reserved.iter().map(StackName::as_str).collect();
+        assert_eq!(names, ["controller", "agent"]);
+    }
+
+    #[test]
+    fn no_reserved_stacks_is_the_default() {
+        assert!(reserved_from(None).unwrap().is_empty());
+        assert!(reserved_from(Some("")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bad_reserved_name_is_refused() {
+        let result = reserved_from(Some("../etc"));
+        assert!(matches!(result, Err(ServeError::Invalid { .. })));
+    }
 }
