@@ -4,14 +4,18 @@
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+#[path = "world/mod.rs"]
+pub mod world;
+
 use aegis_adapters::BaseUrl;
 use aegis_adapters::api::{ApiClient, ControllerDesk, enroll_routes, serve_controller};
 use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
 use aegis_application::{
-    EnrollError, Enrolled, Enroller, EnrollmentRequest, PeerAddress, SidecarEnroller, StateVolume,
-    WhoIs, WhoIsError,
+    EnrollError, Enrolled, Enroller, EnrollmentRequest, MintLimits, PeerAddress, SidecarEnroller,
+    SidecarIdentity, StateVolume, WhoIs, WhoIsError,
 };
-use aegis_domain::{NodeLabel, PeerIdentity, TailnetTag, TailnetTags};
+use aegis_domain::{HostName, NodeLabel, PeerIdentity, StackName, TailnetTag, TailnetTags};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -22,7 +26,20 @@ use tokio::net::TcpListener;
 
 const AGENT: &str = "tag:aegis-agent";
 
-/// Resolves every peer to one fixed tag, or to none.
+#[cfg(test)]
+/// A stack `vault` of the host `h` that exposes `vaultwarden` with the tag `tag:app`.
+const VAULT: [(&str, &str); 2] = [
+    (
+        "hosts/h/vault/compose.yaml",
+        "services:\n  vaultwarden:\n    image: vaultwarden/server:1\n",
+    ),
+    (
+        "hosts/h/vault/aegis.toml",
+        "tailnet_tags = [\"tag:app\"]\n\n[expose]\nservice = \"vaultwarden\"\nport = 80\n",
+    ),
+];
+
+/// Resolves every peer to one fixed tag, or to none, and to the node `h`.
 #[cfg(test)]
 struct Peer(Option<&'static str>);
 
@@ -33,7 +50,8 @@ impl WhoIs for Peer {
         _peer: &PeerAddress,
     ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
         let tags = self.0.map(|name| TailnetTag::new(name).unwrap());
-        ready(Ok(PeerIdentity::new(tags.into_iter().collect())))
+        let identity = PeerIdentity::new(tags.into_iter().collect());
+        ready(Ok(identity.with_node(HostName::new("h").unwrap())))
     }
 }
 
@@ -129,20 +147,23 @@ async fn controller(peer: Option<&'static str>, failing: Failing) -> Served {
     let credentials = OAuthCredentials::new(ClientId::new("id"), ClientSecret::new("secret"));
     let api = TailscaleApi::with_base(fake_tailscale(upstream).await, credentials).unwrap();
     let enroller = Enroller::new(api.clone(), api, tags(&["tag:app"]));
+    let hub = world::loaded_hub("enroll", &VAULT, MintLimits::standard()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let root = format!("http://{}", listener.local_addr().unwrap());
     let base = BaseUrl::new(root.clone());
     tokio::spawn(serve_controller(
         listener,
         Peer(peer),
-        enroll_routes(enroller),
+        enroll_routes(enroller, hub.binding()),
     ));
     Served { base, root, log }
 }
 
 #[cfg(test)]
 fn request(state: StateVolume, wanted: &[&str]) -> EnrollmentRequest {
-    EnrollmentRequest::new(NodeLabel::new("vaultwarden").unwrap(), tags(wanted), state)
+    let node = NodeLabel::new("vaultwarden").unwrap();
+    let identity = SidecarIdentity::new(StackName::new("vault").unwrap(), node);
+    EnrollmentRequest::new(identity, tags(wanted), state)
 }
 
 #[cfg(test)]
@@ -179,7 +200,8 @@ async fn post_status(
 }
 
 #[cfg(test)]
-const VALID: &str = r#"{"hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}"#;
+const VALID: &str =
+    r#"{"stack":"vault","hostname":"vaultwarden","tags":["tag:app"],"state":"empty"}"#;
 
 #[test]
 fn a_new_node_is_enrolled_with_a_key_and_the_tailnet_name() {
@@ -224,7 +246,7 @@ fn a_tag_the_controller_does_not_allow_is_refused_and_mints_nothing() {
         let (status, log) = post_status(
             Some(AGENT),
             Failing::Nothing,
-            r#"{"hostname":"v","tags":["tag:admin"],"state":"empty"}"#,
+            r#"{"stack":"vault","hostname":"vaultwarden","tags":["tag:admin"],"state":"empty"}"#,
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -233,15 +255,16 @@ fn a_tag_the_controller_does_not_allow_is_refused_and_mints_nothing() {
 }
 
 #[test]
-fn a_node_without_a_tag_or_with_a_bad_name_is_a_bad_request() {
+fn a_bad_hostname_tag_or_stack_name_is_a_bad_request() {
     runtime().block_on(async {
-        let none = r#"{"hostname":"v","tags":[],"state":"empty"}"#;
-        let (empty, _) = post_status(Some(AGENT), Failing::Nothing, none).await;
-        let bad_host = r#"{"hostname":"Not_A_Host","tags":["tag:app"],"state":"empty"}"#;
+        let bad_host =
+            r#"{"stack":"vault","hostname":"Not_A_Host","tags":["tag:app"],"state":"empty"}"#;
         let (host, _) = post_status(Some(AGENT), Failing::Nothing, bad_host).await;
-        let bad_tag = r#"{"hostname":"v","tags":["app"],"state":"empty"}"#;
+        let bad_tag = r#"{"stack":"vault","hostname":"v","tags":["app"],"state":"empty"}"#;
         let (tag, _) = post_status(Some(AGENT), Failing::Nothing, bad_tag).await;
-        assert_eq!([empty, host, tag], [StatusCode::BAD_REQUEST; 3]);
+        let bad_stack = r#"{"stack":"Not A Stack","hostname":"v","tags":[],"state":"empty"}"#;
+        let (stack, _) = post_status(Some(AGENT), Failing::Nothing, bad_stack).await;
+        assert_eq!([host, tag, stack], [StatusCode::BAD_REQUEST; 3]);
     });
 }
 

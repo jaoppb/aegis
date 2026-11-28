@@ -10,12 +10,12 @@ use aegis_application::{Notice, Poller, Upstream};
 use aegis_domain::{CommitSha, HostName, StackName};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use tokio::task::JoinHandle;
 
 use super::{Asked, Shared, Verified, ask, look};
+use crate::api::refusal::Refusal;
 
 /// What a sync handler works with: the controller's state and the poller that fetches.
 struct Syncing<Up> {
@@ -41,27 +41,6 @@ where
         .route(SYNCS_PATH, post(sync_all::<Up>))
         .route(HOST_SYNCS_PATH, post(sync_host::<Up>))
         .with_state(Syncing { shared, poller })
-}
-
-/// A refused sync: a status and a short plain-text reason that holds no secrets.
-struct Refusal {
-    status: StatusCode,
-    reason: String,
-}
-
-impl Refusal {
-    fn new(status: StatusCode, reason: &impl std::fmt::Display) -> Self {
-        Self {
-            status,
-            reason: reason.to_string(),
-        }
-    }
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        (self.status, self.reason).into_response()
-    }
 }
 
 /// The stack a request limits the sync to, when it names one.

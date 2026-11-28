@@ -15,13 +15,13 @@ use aegis_api::version_1::{
     ReconcileRequest, STATUS_PATH, SidecarVolume, StackState, StackStatus, StatusReport,
 };
 use aegis_application::{
-    EnrollError, EnrollmentRequest, Grant, PeerAddress, Poller, Reason, Repository,
+    Caller, EnrollError, EnrollmentRequest, Grant, PeerAddress, Poller, Reason, Repository,
     SidecarEnroller, WhoIs, WhoIsError,
 };
-use aegis_domain::{HostName, PeerIdentity, TailnetTag};
+use aegis_domain::{HostName, PeerIdentity, TailnetTag, TailnetTags};
 use axum::extract::State;
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use reqwest::StatusCode;
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -53,6 +53,7 @@ struct World {
     calls: Arc<Mutex<Vec<String>>>,
     hub: Hub,
     url: String,
+    operator_url: String,
 }
 
 #[cfg(test)]
@@ -76,8 +77,9 @@ impl World {
         git(&self.origin(), &["rev-parse", "HEAD"]).await
     }
 
+    /// The status as an operator reads it: the whole fleet.
     async fn status(&self) -> ControllerStatus {
-        let client = ApiClient::new(BaseUrl::new(&self.url)).unwrap();
+        let client = ApiClient::new(BaseUrl::new(&self.operator_url)).unwrap();
         client.controller_status().await.unwrap()
     }
 
@@ -222,13 +224,23 @@ async fn world_over(name: &str, calls: Arc<Mutex<Vec<String>>>, agent: BaseUrl) 
     git(&root.join("origin"), &["init", "-q", "-b", "trunk"]).await;
     let address = AgentAddress::new(HostName::new("h").unwrap(), agent);
     let hub = Hub::new(&[address]).unwrap();
-    let url = serve(hub.routes()).await;
+    let url = serve(hub.routes().layer(Extension(agent_of("h")))).await;
+    let operator_url = serve(hub.routes().layer(Extension(Caller::Operator))).await;
     World {
         root,
         calls,
         hub,
         url,
+        operator_url,
     }
+}
+
+/// The caller the guard resolves, for the agent whose node is named `node` on the tailnet.
+#[cfg(test)]
+fn agent_of(node: &str) -> Caller {
+    let tag = TailnetTag::new("tag:aegis-agent").unwrap();
+    let identity = PeerIdentity::new(TailnetTags::new(vec![tag]));
+    Caller::Agent(identity.with_node(HostName::new(node).unwrap()))
 }
 
 /// Serve `routes` on a free local port and say where.
@@ -358,14 +370,14 @@ async fn post_report(world: &World, report: &StatusReport) -> StatusCode {
 }
 
 #[test]
-fn a_status_report_is_accepted_only_from_a_known_host_with_a_valid_commit() {
+fn a_status_report_is_accepted_only_for_the_callers_host_with_a_valid_commit() {
     runtime().block_on(async {
         let world = world("intake").await;
         let commit = world.commit(&GOOD).await;
         world.hub.tick(&world.poller()).await;
         world.confirmed("h").await;
         let stranger = StatusReport::new("stranger", commit.as_str(), Vec::new());
-        assert_eq!(post_report(&world, &stranger).await, StatusCode::NOT_FOUND);
+        assert_eq!(post_report(&world, &stranger).await, StatusCode::FORBIDDEN);
         let garbled = StatusReport::new("h", "not a commit", Vec::new());
         assert_eq!(post_report(&world, &garbled).await, StatusCode::BAD_REQUEST);
         let genuine = StatusReport::new("h", commit.as_str(), Vec::new());
@@ -531,7 +543,7 @@ fn refused_reports_are_not_kept() {
         world.hub.tick(&world.poller()).await;
         world.failing("h").await;
         let stranger = StatusReport::new("stranger", commit.as_str(), Vec::new());
-        assert_eq!(post_report(&world, &stranger).await, StatusCode::NOT_FOUND);
+        assert_eq!(post_report(&world, &stranger).await, StatusCode::FORBIDDEN);
         let garbled = StatusReport::new("h", "not a commit", Vec::new());
         assert_eq!(post_report(&world, &garbled).await, StatusCode::BAD_REQUEST);
         let status = world.status().await;
@@ -572,7 +584,7 @@ fn an_unreachable_agent_is_reported_by_status_without_its_address() {
     });
 }
 
-/// Resolves every peer to one fixed tag, or to none.
+/// Resolves every peer to one fixed tag, or to none, and to the node `h`.
 #[cfg(test)]
 struct Peer(Option<&'static str>);
 
@@ -583,7 +595,8 @@ impl WhoIs for Peer {
         _peer: &PeerAddress,
     ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
         let tags = self.0.map(|name| TailnetTag::new(name).unwrap());
-        ready(Ok(PeerIdentity::new(tags.into_iter().collect())))
+        let identity = PeerIdentity::new(tags.into_iter().collect());
+        ready(Ok(identity.with_node(HostName::new("h").unwrap())))
     }
 }
 
@@ -604,8 +617,12 @@ impl SidecarEnroller for Closed {
 /// A controller serving the status and enrolment routes behind the guard, for `caller`.
 #[cfg(test)]
 async fn guarded(caller: Option<&'static str>) -> String {
-    let hub = Hub::new(&[]).unwrap();
-    let routes = hub.routes().merge(enroll_routes(Closed));
+    let address = AgentAddress::new(
+        HostName::new("h").unwrap(),
+        BaseUrl::new("http://127.0.0.1:1"),
+    );
+    let hub = Hub::new(&[address]).unwrap();
+    let routes = hub.routes().merge(enroll_routes(Closed, hub.binding()));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(serve_controller(listener, Peer(caller), routes));
@@ -634,7 +651,8 @@ const fn reply<Answer>(result: &Result<Answer, ClientError>) -> Reply {
 #[cfg(test)]
 async fn replies_of(url: &str) -> (Reply, Reply) {
     let client = ApiClient::new(BaseUrl::new(url)).unwrap();
-    let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let wire = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let request = wire.for_stack("web");
     let status = reply(&client.controller_status().await);
     (status, reply(&client.enroll(&request).await))
 }
@@ -644,7 +662,7 @@ fn one_router_serves_status_and_enrolment_to_agents_only() {
     runtime().block_on(async {
         let (status, enroll) = replies_of(&guarded(Some("tag:aegis-agent")).await).await;
         assert_eq!(status, Reply::Answered);
-        assert_eq!(enroll, Reply::Refused(StatusCode::BAD_GATEWAY));
+        assert_eq!(enroll, Reply::Refused(StatusCode::SERVICE_UNAVAILABLE));
         let (status, enroll) = replies_of(&guarded(None).await).await;
         assert_eq!(status, Reply::Refused(StatusCode::FORBIDDEN));
         assert_eq!(enroll, Reply::Refused(StatusCode::FORBIDDEN));

@@ -4,7 +4,7 @@ use std::process::Output;
 use std::time::Duration;
 
 use aegis_application::{PeerAddress, Reason, WhoIs, WhoIsError};
-use aegis_domain::{Login, PeerIdentity, TailnetTag, TailnetTags};
+use aegis_domain::{HostName, Login, PeerIdentity, TailnetTag, TailnetTags};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -91,23 +91,38 @@ struct User {
 
 #[derive(Deserialize)]
 struct Node {
+    #[serde(rename = "Name")]
+    name: Option<String>,
     #[serde(rename = "Tags")]
     tags: Option<Vec<String>>,
+}
+
+/// The first label of a `MagicDNS` name such as `jao-server.tail1234.ts.net.`, when it is a valid
+/// host name.
+fn node_name(name: Option<&str>) -> Option<HostName> {
+    let label = name?.split('.').next()?;
+    HostName::new(label).ok()
 }
 
 /// Read the identity out of the JSON `tailscale whois --json` printed. A node without tags (a
 /// user-owned node) is an identity with no tags and the login of its owner; a tag that is not a
 /// valid ACL tag can never match a required one, so it is dropped. A node that lists any tag at
-/// all belongs to the tailnet, not to a person, so its login is ignored.
+/// all belongs to the tailnet, not to a person, so its login is ignored. The first label of the
+/// node's name, when valid, is the name it has on the tailnet.
 fn parse_identity(json: &[u8]) -> Result<PeerIdentity, WhoIsError> {
     let reply: Reply = serde_json::from_slice(json).map_err(|failure| unavailable(&failure))?;
     let node = reply
         .node
         .ok_or_else(|| unavailable(&"the reply has no node"))?;
+    let name = node_name(node.name.as_deref());
     let tags = node.tags.unwrap_or_default();
     let owned_by_person = tags.is_empty();
     let valid = tags.into_iter().filter_map(|tag| TailnetTag::new(tag).ok());
     let identity = PeerIdentity::new(valid.collect::<TailnetTags>());
+    let identity = match name {
+        Some(host) => identity.with_node(host),
+        None => identity,
+    };
     let login = reply.user.and_then(|user| user.login);
     let owner = login.and_then(|name| Login::new(&name).ok());
     Ok(match owner {
@@ -233,5 +248,20 @@ mod tests {
         let peer = PeerAddress::new("100.64.0.1:1");
         let result = block_on(whois.identify(&peer));
         assert!(matches!(result, Err(WhoIsError::Unavailable(_))));
+    }
+
+    #[test]
+    fn the_first_label_of_the_node_name_is_its_name_on_the_tailnet() {
+        let json = br#"{"Node":{"Name":"jao-server.tail1.ts.net.","Tags":["tag:aegis-agent"]}}"#;
+        let peer = parse_identity(json).unwrap();
+        assert_eq!(peer.node().unwrap().as_str(), "jao-server");
+    }
+
+    #[test]
+    fn a_node_without_a_valid_name_has_none() {
+        let json = br#"{"Node":{"Name":"..ts.net.","Tags":["tag:aegis-agent"]}}"#;
+        assert!(parse_identity(json).unwrap().node().is_none());
+        let json = br#"{"Node":{"Tags":["tag:aegis-agent"]}}"#;
+        assert!(parse_identity(json).unwrap().node().is_none());
     }
 }

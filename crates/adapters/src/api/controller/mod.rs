@@ -4,7 +4,11 @@
 //! The controller keeps no state on disk. Its view is derived: a restart looks at the repository
 //! again and tells every agent again, and a reconcile is idempotent.
 
+mod binding;
 mod sync;
+mod vigil;
+
+pub use binding::Binding;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
@@ -12,20 +16,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use aegis_api::version_1::{
-    Agent, Confirmation, ControllerStatus, HostStatus, InvalidCommit, ReconcileRequest,
-    STATUS_PATH, StatusReport, TargetStatus,
+    Agent, Confirmation, ControllerStatus, HostStatus, InvalidCommit, MAX_REPLY_BYTES,
+    ReconcileRequest, STATUS_PATH, StatusReport, TargetStatus,
 };
-use aegis_application::{Fleet, Goal, Invalid, Notice, Observation, Order, Poller, Upstream};
+use aegis_application::{
+    Caller, Fleet, Goal, Invalid, MintLimits, Notice, Observation, Order, Poller, Upstream,
+};
 use aegis_domain::{CommitSha, HostName, HostNames};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 
 use super::Routes;
 use super::wire::rejection_status;
 use super::{ApiClient, ClientError};
 use crate::http::BaseUrl;
+use vigil::Vigil;
 
 /// Where the agent of one host listens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,11 +95,25 @@ struct Shared {
     agents: BTreeMap<HostName, ApiClient>,
     /// Held while the repository is fetched, so a poll and a sync never fetch at the same time.
     fetching: tokio::sync::Mutex<()>,
+    /// The keys minted and the requests refused.
+    vigil: Mutex<Vigil>,
 }
 
 impl Shared {
     fn book(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn vigil(&self) -> MutexGuard<'_, Vigil> {
+        self.vigil.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The host an agent serves: the host its node name stands for (see [`Caller::hosts`]) that
+    /// the controller has an agent for. An operator serves none.
+    fn host_of(&self, caller: &Caller) -> Result<HostName, StatusCode> {
+        let mut hosts = caller.hosts().into_iter();
+        let served = hosts.find(|host| self.agents.contains_key(host));
+        served.ok_or(StatusCode::FORBIDDEN)
     }
 
     fn mapped(&self) -> HostNames {
@@ -112,15 +133,28 @@ impl Shared {
         })
     }
 
+    /// The whole fleet, as an operator sees it.
     fn snapshot(&self) -> ControllerStatus {
         let book = self.book();
         let target = book.fleet.goal().map(target_status);
         let status = ControllerStatus::new(target, self.host_statuses(&book));
+        let status = status.with_refusals(self.vigil().refused(None));
         match book.fleet.notice() {
             Notice::Clear => status,
             Notice::Unloadable(found) => status.with_invalid(invalid_commit(found)),
             Notice::Unreachable(reason) => status.with_fetch_error(reason.to_string()),
         }
+    }
+
+    /// What an agent sees: the target with the rejected stacks of its own host, its own status and
+    /// its own refusals, and nothing about the other hosts.
+    fn snapshot_for(&self, host: &HostName) -> ControllerStatus {
+        let refused = self.vigil().refused(Some(host));
+        let book = self.book();
+        let target = book.fleet.goal().map(|goal| own_target(goal, host));
+        let own = vec![self.host_status(&book, host)];
+        drop(book);
+        ControllerStatus::new(target, own).with_refusals(refused)
     }
 
     fn host_statuses(&self, book: &Book) -> Vec<HostStatus> {
@@ -163,8 +197,11 @@ struct Verified {
     report: StatusReport,
 }
 
-/// Verify a report an agent pushed, then record it.
-fn accept(shared: &Shared, report: StatusReport) -> Result<(), StatusCode> {
+/// Verify a report the agent of `host` pushed, then record it. An agent reports for its own host
+/// alone.
+fn accept(shared: &Shared, host: &HostName, report: StatusReport) -> Result<(), StatusCode> {
+    let own = report.host() == host.as_str();
+    own.then_some(()).ok_or(StatusCode::FORBIDDEN)?;
     let verified = shared.verify(report)?;
     shared.book().record(verified);
     Ok(())
@@ -192,6 +229,8 @@ fn describe(error: &ClientError) -> String {
         ClientError::Transport(cause) if cause.is_connect() => {
             "the agent is unreachable".to_owned()
         }
+        ClientError::TooLarge => "the agent reply is too large".to_owned(),
+        ClientError::Undecodable => "the agent reply cannot be read".to_owned(),
         ClientError::Transport(_) => "the call to the agent failed".to_owned(),
     }
 }
@@ -209,6 +248,14 @@ fn declared_hosts(goal: &Goal) -> impl Iterator<Item = HostName> + '_ {
 fn target_status(goal: &Goal) -> TargetStatus {
     let rejected = goal.outcome().rejected().iter().map(rejection_status);
     TargetStatus::new(goal.commit().as_str(), rejected.collect())
+}
+
+/// The target as the agent of `host` sees it: only the stacks rejected under `hosts/<host>/`.
+fn own_target(goal: &Goal, host: &HostName) -> TargetStatus {
+    let prefix = format!("hosts/{}/", host.as_str());
+    let rejected = goal.outcome().rejected().iter().map(rejection_status);
+    let own = rejected.filter(|stack| stack.directory().starts_with(&prefix));
+    TargetStatus::new(goal.commit().as_str(), own.collect())
 }
 
 /// What came of asking the agent of a host to reconcile.
@@ -261,13 +308,25 @@ fn converge(shared: &Arc<Shared>, order: &Order) {
 
 async fn receive(
     State(shared): State<Arc<Shared>>,
+    Extension(caller): Extension<Caller>,
     Json(report): Json<StatusReport>,
 ) -> StatusCode {
-    accept(&shared, report).map_or_else(|status| status, |()| StatusCode::NO_CONTENT)
+    let accepted = shared
+        .host_of(&caller)
+        .and_then(|host| accept(&shared, &host, report));
+    accepted.map_or_else(|status| status, |()| StatusCode::NO_CONTENT)
 }
 
-async fn snapshot(State(shared): State<Arc<Shared>>) -> Json<ControllerStatus> {
-    Json(shared.snapshot())
+/// The whole status for an operator, and the agent's own part for an agent.
+async fn snapshot(
+    State(shared): State<Arc<Shared>>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<ControllerStatus>, StatusCode> {
+    if caller == Caller::Operator {
+        return Ok(Json(shared.snapshot()));
+    }
+    let host = shared.host_of(&caller)?;
+    Ok(Json(shared.snapshot_for(&host)))
 }
 
 /// The controller: what it knows of the repository and the fleet, and the way it tells agents.
@@ -288,6 +347,15 @@ impl Hub {
     ///
     /// Returns a [`ClientError`] when an HTTP client cannot be built.
     pub fn new(addresses: &[AgentAddress]) -> Result<Self, ClientError> {
+        Self::limited(addresses, MintLimits::standard())
+    }
+
+    /// A controller that can reach the agents at `addresses` and mints keys within `limits`.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Hub::new`].
+    pub fn limited(addresses: &[AgentAddress], limits: MintLimits) -> Result<Self, ClientError> {
         let ready = addresses.iter().map(client_for);
         let ready = ready.collect::<Result<Vec<_>, _>>()?;
         let clients: Clients = ready.into_iter().collect();
@@ -301,15 +369,25 @@ impl Hub {
             book: Mutex::new(book),
             agents: clients.0,
             fetching: tokio::sync::Mutex::new(()),
+            vigil: Mutex::new(Vigil::new(limits)),
         };
         Ok(Self {
             shared: Arc::new(shared),
         })
     }
 
+    /// How the routes of the sidecar enrolment and of the node deletion bind a request to the
+    /// agent that makes it.
+    #[must_use]
+    pub fn binding(&self) -> Binding {
+        Binding::new(Arc::clone(&self.shared))
+    }
+
     /// `POST /v1/status` and `GET /v1/status`, to be served behind the tag check (which answers
-    /// `403` or `503`). `POST` answers `204`, `400` for a malformed host or commit and `404` for a
-    /// host that has no agent address; `GET` answers a [`ControllerStatus`].
+    /// `403` or `503`). `POST` answers `204`, `400` for a malformed host or commit, `403` for a
+    /// caller that is no mapped agent or a report for another host, and `404` for a host that has
+    /// no agent address; `GET` answers a [`ControllerStatus`], the whole fleet for an operator and
+    /// the caller's own host for an agent.
     pub fn routes(&self) -> Router {
         self.read_routes().merge(self.report_routes())
     }
@@ -322,10 +400,12 @@ impl Hub {
     }
 
     /// `POST /v1/status` alone: the reports of agents, answering `204`, `400` for a malformed
-    /// host or commit and `404` for a host that has no agent address.
+    /// host or commit, `403` for a report for another host than the caller's and `404` for a host
+    /// that has no agent address. A body over [`MAX_REPLY_BYTES`] is refused.
     pub fn report_routes(&self) -> Router {
         Router::new()
             .route(STATUS_PATH, post(receive))
+            .layer(DefaultBodyLimit::max(MAX_REPLY_BYTES))
             .with_state(Arc::clone(&self.shared))
     }
 

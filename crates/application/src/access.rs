@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 
-use aegis_domain::{AegisRole, Logins, PeerIdentity, TailnetTag, ValueError};
+use aegis_domain::{AegisRole, HostName, HostNames, Logins, PeerIdentity, TailnetTag, ValueError};
 
 use crate::source::Reason;
 
@@ -90,6 +90,41 @@ pub enum Admit {
     Either,
 }
 
+/// Who a request that was let through comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    /// A node that carries the server's required tag, with the identity the lookup gave.
+    Agent(PeerIdentity),
+    /// An operator: a person's untagged node.
+    Operator,
+}
+
+/// The suffix `aegis bootstrap` gives the tailnet node of the agent of a host: `<host>-aegis-agent`.
+const AGENT_NODE_SUFFIX: &str = "-aegis-agent";
+
+impl Caller {
+    /// The name the caller has on the tailnet, when it is an agent with a valid one.
+    #[must_use]
+    pub const fn node(&self) -> Option<&HostName> {
+        match self {
+            Self::Agent(identity) => identity.node(),
+            Self::Operator => None,
+        }
+    }
+
+    /// The hosts an agent with this node name may be the agent of: the host named like the node,
+    /// or the host the node is the bootstrap agent node of (`<host>-aegis-agent`). An operator
+    /// serves none.
+    #[must_use]
+    pub fn hosts(&self) -> HostNames {
+        let node = self.node();
+        let named = node.cloned();
+        let stripped = node.and_then(|name| name.as_str().strip_suffix(AGENT_NODE_SUFFIX));
+        let bootstrapped = stripped.and_then(|host| HostName::new(host).ok());
+        named.into_iter().chain(bootstrapped).collect()
+    }
+}
+
 /// Lets a peer through when it carries one required ACL tag or, on the routes that say so, when it
 /// is an operator.
 #[derive(Debug)]
@@ -171,6 +206,14 @@ impl<Lookup: WhoIs + Sync> Authorizer<Lookup> {
             Admit::Either => self.is_tagged(identity) || operator,
         };
         allowed.then_some(()).ok_or(AccessError::Denied)
+    }
+
+    /// Who `identity` is, once [`Authorizer::admits`] let it through: an agent when it carries the
+    /// required tag, otherwise an operator.
+    #[must_use]
+    pub fn caller_of(&self, identity: &PeerIdentity) -> Caller {
+        let agent = self.is_tagged(identity).then_some(());
+        agent.map_or(Caller::Operator, |()| Caller::Agent(identity.clone()))
     }
 
     fn is_tagged(&self, identity: &PeerIdentity) -> bool {

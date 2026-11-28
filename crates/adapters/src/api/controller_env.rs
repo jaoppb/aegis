@@ -1,17 +1,17 @@
 //! Wires a full controller from its environment.
 
+use std::num::NonZeroU32;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use aegis_application::{Poller, Repository};
+use aegis_application::{Allowance, MintLimits, Poller, Repository};
 use aegis_domain::{HostName, Logins};
-use axum::Router;
 use tokio::net::TcpListener;
 
 use super::agent::{invalid, required};
 use super::controller::{AgentAddress, Hub};
-use super::enroll::enroll_routes_from_env;
+use super::enroll::{EnrollDesks, enroll_desks_from_env};
 use super::server::{
     LISTEN_VAR, ListenAddress, Operated, ServeError, listen_from, serve_controller_for,
 };
@@ -25,6 +25,13 @@ const WORKDIR_VAR: &str = "AEGIS_WORKDIR";
 const POLL_VAR: &str = "AEGIS_POLL_SECS";
 const AGENTS_VAR: &str = "AEGIS_AGENTS";
 const OPERATORS_VAR: &str = "AEGIS_OPERATORS";
+const MINT_PER_STACK_VAR: &str = "AEGIS_MINT_PER_STACK";
+const MINT_PER_HOST_VAR: &str = "AEGIS_MINT_PER_HOST";
+const MINT_TOTAL_VAR: &str = "AEGIS_MINT_TOTAL";
+const MINT_WINDOW_VAR: &str = "AEGIS_MINT_WINDOW_SECS";
+
+/// The fewest seconds of the mint window, so the limits cannot be made meaningless.
+const MIN_MINT_WINDOW_SECS: u64 = 60;
 
 /// The variables of the controller's own settings that it refuses to start without, besides
 /// `AEGIS_LISTEN` and the enrolment variables of [`super::CONTROLLER_REQUIRED`].
@@ -47,17 +54,73 @@ struct Settings {
     watch: Watch,
 }
 
-/// Where the controller listens and the `POST /v1/enroll` route it serves beside the status.
+/// Where the controller listens and the Tailscale side of the `POST /v1/enroll` and
+/// `DELETE /v1/nodes/{hostname}` routes it serves beside the status.
 struct Serving {
     listen: ListenAddress,
-    enroll: Router,
+    enroll: EnrollDesks,
 }
 
-/// How often to look, which agents to tell and which people may operate the controller.
+/// How often to look, which agents to tell, which people may operate the controller and how many
+/// keys it mints.
 struct Watch {
     interval: Duration,
     agents: Vec<AgentAddress>,
     operators: Logins,
+    limits: MintLimits,
+}
+
+/// A count of keys from `variable`, or `standard` when it is unset; zero and anything that is no
+/// whole number are refused.
+fn allowance_from(
+    name: &'static str,
+    variable: Option<&str>,
+    standard: Allowance,
+) -> Result<Allowance, ServeError> {
+    let Some(text) = variable else {
+        return Ok(standard);
+    };
+    let count: NonZeroU32 = text.trim().parse().map_err(|error| invalid(name, &error))?;
+    Ok(Allowance::new(count))
+}
+
+/// The key limits of the environment: `AEGIS_MINT_PER_STACK`, `AEGIS_MINT_PER_HOST`,
+/// `AEGIS_MINT_TOTAL` and `AEGIS_MINT_WINDOW_SECS`, each defaulting to the standard limits.
+fn limits_from_env() -> Result<MintLimits, ServeError> {
+    let standard = MintLimits::standard();
+    let read = |name: &'static str| std::env::var(name).ok();
+    let per_stack = allowance_from(
+        MINT_PER_STACK_VAR,
+        read(MINT_PER_STACK_VAR).as_deref(),
+        standard.per_stack(),
+    )?;
+    let per_host = allowance_from(
+        MINT_PER_HOST_VAR,
+        read(MINT_PER_HOST_VAR).as_deref(),
+        standard.per_host(),
+    )?;
+    let total = allowance_from(
+        MINT_TOTAL_VAR,
+        read(MINT_TOTAL_VAR).as_deref(),
+        standard.total(),
+    )?;
+    let window = window_from(read(MINT_WINDOW_VAR).as_deref(), standard.window())?;
+    Ok(MintLimits::new(per_stack, per_host, total).over(window))
+}
+
+/// `AEGIS_MINT_WINDOW_SECS`, or `standard`; shorter than the minimum is refused.
+fn window_from(variable: Option<&str>, standard: Duration) -> Result<Duration, ServeError> {
+    let Some(text) = variable else {
+        return Ok(standard);
+    };
+    let seconds: u64 = text
+        .trim()
+        .parse()
+        .map_err(|error| invalid(MINT_WINDOW_VAR, &error))?;
+    if seconds < MIN_MINT_WINDOW_SECS {
+        return Err(invalid(MINT_WINDOW_VAR, &"must be at least 60 seconds"));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 /// The logins of `AEGIS_OPERATORS`, comma-separated; unset or empty means nobody, so no operator
@@ -123,10 +186,11 @@ impl Settings {
             interval: interval_from(std::env::var(POLL_VAR).ok().as_deref())?,
             agents: agents_from(std::env::var(AGENTS_VAR).ok().as_deref())?,
             operators: operators_from(std::env::var(OPERATORS_VAR).ok().as_deref())?,
+            limits: limits_from_env()?,
         };
         let serving = Serving {
             listen,
-            enroll: enroll_routes_from_env()?,
+            enroll: enroll_desks_from_env()?,
         };
         Ok(Self {
             serving,
@@ -148,9 +212,10 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
     let listener = TcpListener::bind(address)
         .await
         .map_err(|cause| ServeError::Bind { address, cause })?;
-    let hub = Hub::new(&settings.watch.agents)?;
+    let hub = Hub::limited(&settings.watch.agents, settings.watch.limits)?;
     let poller = settings.poller();
-    let routes = hub.grouped(settings.serving.enroll, Arc::clone(&poller));
+    let enroll = settings.serving.enroll.routes(&hub.binding());
+    let routes = hub.grouped(enroll, Arc::clone(&poller));
     let operators = settings.watch.operators.clone();
     let served = serve_controller_for(
         listener,
@@ -169,7 +234,7 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
 /// repository at `AEGIS_REPO_URL` in the disposable checkout `AEGIS_WORKDIR`, looks every
 /// `AEGIS_POLL_SECS` (default 60, at least 5) and tells the agents of `AEGIS_AGENTS`
 /// (`host=url`, comma-separated) to converge. It also serves `POST /v1/enroll`, which needs the
-/// Tailscale variables of [`enroll_routes_from_env`]. Git authenticates with what it inherits: a deploy
+/// Tailscale variables of `AEGIS_TS_CLIENT_ID`, `AEGIS_TS_CLIENT_SECRET` and `AEGIS_ENROLL_TAGS`. Git authenticates with what it inherits: a deploy
 /// key through the SSH agent or a credential helper; a URL that carries credentials is refused.
 ///
 /// # Errors
@@ -252,5 +317,26 @@ mod tests {
         assert!(workdir_from("/var/../etc").is_err());
         assert!(workdir_from("/var/lib/..").is_err());
         assert!(workdir_from("/var/lib/aegis/work").is_ok());
+    }
+
+    #[test]
+    fn a_mint_allowance_defaults_and_refuses_zero_and_words() {
+        let standard = MintLimits::standard().total();
+        let unset = allowance_from(MINT_TOTAL_VAR, None, standard).unwrap();
+        assert_eq!(unset, standard);
+        let set = allowance_from(MINT_TOTAL_VAR, Some(" 7 "), standard).unwrap();
+        assert_ne!(set, standard);
+        assert!(allowance_from(MINT_TOTAL_VAR, Some("0"), standard).is_err());
+        assert!(allowance_from(MINT_TOTAL_VAR, Some("many"), standard).is_err());
+    }
+
+    #[test]
+    fn the_mint_window_has_a_floor() {
+        let standard = Duration::from_hours(1);
+        assert_eq!(window_from(None, standard).unwrap(), standard);
+        let minute = window_from(Some("60"), standard).unwrap();
+        assert_eq!(minute, Duration::from_mins(1));
+        assert!(window_from(Some("59"), standard).is_err());
+        assert!(window_from(Some("soon"), standard).is_err());
     }
 }

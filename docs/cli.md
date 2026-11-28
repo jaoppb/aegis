@@ -34,7 +34,7 @@ An `orphaned` or `purged` stack is the expected outcome of removing a stack ([ag
 
 `status`, `diff` and `sync` call the controller at `--controller <url>`, or at `AEGIS_CONTROLLER` when the flag is absent, such as `http://100.64.0.2:7480`. There is no configuration file.
 
-The controller recognises you by your Tailscale identity, not by a tag: a personal device that is tagged becomes a shared device, so an operator's laptop stays untagged. The controller lists the logins it accepts in `AEGIS_OPERATORS` ([controller.md](controller.md)), and only an untagged node of one of those people is an operator. An operator can read `GET /v1/status`, call `GET /v1/health` and the sync routes; it cannot report as an agent or enrol a sidecar. The ACL must also let your device reach the controller ([tailscale-acl.md](tailscale-acl.md)). A controller without `AEGIS_OPERATORS` admits no operator, and the command exits `2` with `403`.
+The controller recognises you by your Tailscale identity, not by a tag: a personal device that is tagged becomes a shared device, so an operator's laptop stays untagged. The controller lists the logins it accepts in `AEGIS_OPERATORS` ([controller.md](controller.md)), and only an untagged node of one of those people is an operator. An operator reads the whole fleet with `GET /v1/status` (an agent reads only its own host), and can call `GET /v1/health` and the sync routes; it cannot report as an agent or enrol a sidecar. The ACL must also let your device reach the controller ([tailscale-acl.md](tailscale-acl.md)). A controller without `AEGIS_OPERATORS` admits no operator, and the command exits `2` with `403`.
 
 ## `aegis validate [path]`
 
@@ -59,7 +59,7 @@ jao-server  agent mapped  confirmed
     volume aegis-old_data
 ```
 
-Rejected stacks of the target, an unreadable newest commit and a failed fetch are listed above the hosts. Each host line says whether the controller has an agent address for it and whether it confirmed the target commit (`confirmed`, `pending` or `failing: <reason>`).
+Rejected stacks of the target, an unreadable newest commit and a failed fetch are listed above the hosts, followed by the requests for a node the controller refused (`refused jao-server vault: too many keys, 2 time(s), last 40s ago`), which are shown and never make `status` exit `1`. Each host line says whether the controller has an agent address for it and whether it confirmed the target commit (`confirmed`, `pending` or `failing: <reason>`).
 
 ## `aegis diff [path]`
 

@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aegis_adapters::api::{
-    AgentAddress, ApiClient, ClientError, Hub, Operated, enroll_routes, serve_controller_for,
+    AgentAddress, ApiClient, Binding, ClientError, Hub, Operated, enroll_routes,
+    serve_controller_for,
 };
 use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
@@ -58,7 +59,8 @@ enum Caller {
 fn identity_of(caller: Caller) -> PeerIdentity {
     match caller {
         Caller::Tagged(name) => {
-            PeerIdentity::new(std::iter::once(TailnetTag::new(name).unwrap()).collect())
+            let tags = std::iter::once(TailnetTag::new(name).unwrap()).collect();
+            PeerIdentity::new(tags).with_node(HostName::new("h").unwrap())
         }
         Caller::Person(login) => PeerIdentity::default().with_login(Login::new(login).unwrap()),
     }
@@ -207,9 +209,9 @@ async fn scratch_origin(name: &str) -> PathBuf {
 /// The agent-only routes of a controller beside the status reports: enrolment, and a stand-in for
 /// the deletion of a node.
 #[cfg(test)]
-fn agent_routes() -> Router {
+fn agent_routes(binding: Binding) -> Router {
     let node = delete(|| async { StatusCode::NO_CONTENT });
-    enroll_routes(Closed).merge(Router::new().route(NODE_PATH, node))
+    enroll_routes(Closed, binding).merge(Router::new().route(NODE_PATH, node))
 }
 
 #[cfg(test)]
@@ -255,7 +257,7 @@ async fn world_with(setup: &Setup<'_>, agents: &[Behaviour]) -> World {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let logins = Logins::parse_list(setup.operators).unwrap();
     let callers = Operated::new(Peer(setup.caller), logins);
-    let routes = hub.grouped(agent_routes(), poller(&root));
+    let routes = hub.grouped(agent_routes(hub.binding()), poller(&root));
     tokio::spawn(serve_controller_for(listener, callers, routes));
     let client = ApiClient::new(BaseUrl::new(url)).unwrap();
     World {
@@ -401,7 +403,8 @@ async fn operator_routes(world: &World) -> [Option<StatusCode>; 3] {
 async fn agent_only_routes(world: &World) -> [Option<StatusCode>; 3] {
     let report = StatusReport::new("h", "abc1234", Vec::new());
     let posted = refused(&world.client.report_status(&report).await);
-    let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let wire = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let request = wire.for_stack("web");
     let enroll = refused(&world.client.enroll(&request).await);
     let label = NodeLabel::new("x").unwrap();
     let node = refused(&world.client.delete_node(&label).await);

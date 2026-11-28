@@ -1,0 +1,114 @@
+//! What the controller remembers of the requests for nodes: how many keys it minted, and which
+//! requests it refused. Both live in memory and are forgotten when the controller restarts.
+
+use std::time::Instant;
+
+use aegis_api::version_1::{Counted, RefusalReason, Refused};
+use aegis_application::{MintLimiter, MintLimits};
+use aegis_domain::{HostName, StackName};
+
+/// The most kinds of refusal the status lists; when more arrive, the one seen longest ago is
+/// forgotten.
+const MAX_ENTRIES: usize = 50;
+
+/// Who asked for what was refused: the host of the agent and, when the request named a valid
+/// one, the stack.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Who<'asker> {
+    host: &'asker HostName,
+    stack: Option<&'asker StackName>,
+}
+
+impl<'asker> Who<'asker> {
+    pub(super) const fn new(host: &'asker HostName, stack: Option<&'asker StackName>) -> Self {
+        Self { host, stack }
+    }
+}
+
+/// A kind of refusal: who asked, for which stack, and why it was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Kind {
+    host: HostName,
+    stack: Option<StackName>,
+    reason: RefusalReason,
+}
+
+#[derive(Debug)]
+struct Entry {
+    kind: Kind,
+    count: u32,
+    last: Instant,
+}
+
+impl Entry {
+    fn refused(&self, now: Instant) -> Refused {
+        let ago = now.saturating_duration_since(self.last).as_secs();
+        let times = Counted::new(self.count, ago);
+        let refused = Refused::new(self.kind.host.as_str(), self.kind.reason, times);
+        match &self.kind.stack {
+            Some(stack) => refused.for_stack(stack.as_str()),
+            None => refused,
+        }
+    }
+}
+
+/// The refusals the status lists, the kinds seen most recently last.
+#[derive(Debug, Default)]
+struct Refusals(Vec<Entry>);
+
+impl Refusals {
+    fn note(&mut self, kind: Kind, now: Instant) {
+        let position = self.0.iter().position(|entry| entry.kind == kind);
+        let mut entry = match position {
+            Some(index) => self.0.remove(index),
+            None => Entry {
+                kind,
+                count: 0,
+                last: now,
+            },
+        };
+        entry.count = entry.count.saturating_add(1);
+        entry.last = now;
+        self.0.push(entry);
+        let excess = self.0.len().saturating_sub(MAX_ENTRIES);
+        drop(self.0.drain(..excess));
+    }
+}
+
+/// The key counter and the refusals of the controller.
+#[derive(Debug)]
+pub(super) struct Vigil {
+    limiter: MintLimiter,
+    refusals: Refusals,
+}
+
+impl Vigil {
+    pub(super) fn new(limits: MintLimits) -> Self {
+        Self {
+            limiter: MintLimiter::new(limits),
+            refusals: Refusals::default(),
+        }
+    }
+
+    pub(super) const fn limiter(&mut self) -> &mut MintLimiter {
+        &mut self.limiter
+    }
+
+    /// Remember that the request of `who` was refused for `reason`.
+    pub(super) fn refuse(&mut self, who: Who<'_>, reason: RefusalReason) {
+        let kind = Kind {
+            host: who.host.clone(),
+            stack: who.stack.cloned(),
+            reason,
+        };
+        self.refusals.note(kind, Instant::now());
+    }
+
+    /// The refusals of every host, or only those of `host`.
+    pub(super) fn refused(&self, host: Option<&HostName>) -> Vec<Refused> {
+        let now = Instant::now();
+        let wanted = |entry: &&Entry| host.is_none_or(|only| *only == entry.kind.host);
+        let kept = self.refusals.0.iter().filter(wanted);
+        kept.map(|entry| entry.refused(now)).collect()
+    }
+}

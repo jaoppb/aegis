@@ -5,48 +5,41 @@ use std::sync::Arc;
 
 use aegis_api::version_1::{ENROLL_PATH, EnrollRequest, EnrollResponse, SidecarVolume};
 use aegis_application::{
-    EnrollError, Enrolled, Enroller, EnrollmentRequest, Grant, SidecarEnroller, StateVolume,
-    TagError,
+    Caller, EnrollError, Enrolled, Enroller, EnrollmentRequest, Grant, SidecarEnroller,
+    SidecarIdentity, StateVolume, TagError,
 };
-use aegis_domain::{NodeLabel, TailnetTag, TailnetTags, ValueError};
+use aegis_domain::{NodeLabel, StackName, TailnetTag, TailnetTags, ValueError};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 
-use super::ClientError;
+use super::refusal::Refusal;
 use super::server::ServeError;
-use crate::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
+use super::{Binding, ClientError};
+use crate::tailscale::{ClientId, ClientSecret, OAuthCredentials, StackNodes, TailscaleApi};
 
-/// The `POST /v1/enroll` route: answer an agent's request with `enroller`. It is meant to be
-/// served behind the tag check of the controller.
-pub fn enroll_routes<Desk>(enroller: Desk) -> Router
+/// What the enrolment handler works with: who answers, and how a request is bound to its caller.
+struct Gated<Enrol> {
+    enroller: Enrol,
+    binding: Binding,
+}
+
+/// The `POST /v1/enroll` route: answer an agent's request with `enroller`.
+///
+/// `binding` first checks the request against the caller's host and the desired state. The route
+/// is meant to be served behind the tag check of the controller.
+pub fn enroll_routes<Enrol>(enroller: Enrol, binding: Binding) -> Router
 where
-    Desk: SidecarEnroller + Send + Sync + 'static,
+    Enrol: SidecarEnroller + Send + Sync + 'static,
 {
     Router::new()
-        .route(ENROLL_PATH, post(enroll::<Desk>))
-        .with_state(Arc::new(enroller))
-}
-
-/// A refused enrolment: a status and a short plain-text reason that holds no secrets.
-struct Refusal {
-    status: StatusCode,
-    reason: String,
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        (self.status, self.reason).into_response()
-    }
+        .route(ENROLL_PATH, post(enroll::<Enrol>))
+        .with_state(Arc::new(Gated { enroller, binding }))
 }
 
 fn refuse(status: StatusCode, reason: &impl std::fmt::Display) -> Refusal {
-    Refusal {
-        status,
-        reason: reason.to_string(),
-    }
+    Refusal::new(status, reason)
 }
 
 const fn status_of(error: &EnrollError) -> StatusCode {
@@ -80,9 +73,11 @@ fn tags_of(names: &[String]) -> Result<TailnetTags, ValueError> {
 
 fn request_of(request: &EnrollRequest) -> Result<EnrollmentRequest, ValueError> {
     let node = NodeLabel::new(request.hostname())?;
+    let stack = StackName::new(request.stack())?;
     let tags = tags_of(request.tags())?;
+    let identity = SidecarIdentity::new(stack, node);
     Ok(EnrollmentRequest::new(
-        node,
+        identity,
         tags,
         volume_of(request.state()),
     ))
@@ -96,15 +91,19 @@ fn response_of(grant: &Grant) -> EnrollResponse {
     EnrollResponse::new(grant.tailnet().as_str(), key)
 }
 
-async fn enroll<Desk>(
-    State(desk): State<Arc<Desk>>,
+async fn enroll<Enrol>(
+    State(gated): State<Arc<Gated<Enrol>>>,
+    Extension(caller): Extension<Caller>,
     Json(request): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, Refusal>
 where
-    Desk: SidecarEnroller + Send + Sync + 'static,
+    Enrol: SidecarEnroller + Send + Sync + 'static,
 {
+    let host = gated.binding.host_of(&caller)?;
     let request = request_of(&request).map_err(|error| refuse(StatusCode::BAD_REQUEST, &error))?;
-    let grant = desk
+    gated.binding.admit_enrollment(&host, &request)?;
+    let grant = gated
+        .enroller
         .enroll(&request)
         .await
         .map_err(|error| refuse(status_of(&error), &error))?;
@@ -125,12 +124,17 @@ impl ControllerDesk {
     }
 }
 
-fn controller_failure(error: &ClientError) -> EnrollError {
-    let reason = match error {
+fn reason_of(error: &ClientError) -> aegis_application::Reason {
+    match error {
         ClientError::Rejected(status) => aegis_application::Reason::new(status),
-        ClientError::Transport(_) => aegis_application::Reason::new(&"the call failed"),
-    };
-    EnrollError::Controller(reason)
+        ClientError::Transport(_) | ClientError::TooLarge | ClientError::Undecodable => {
+            aegis_application::Reason::new(&"the call failed")
+        }
+    }
+}
+
+fn controller_failure(error: &ClientError) -> EnrollError {
+    EnrollError::Controller(reason_of(error))
 }
 
 fn grant_of(response: &EnrollResponse) -> Result<Grant, EnrollError> {
@@ -148,7 +152,9 @@ fn grant_of(response: &EnrollResponse) -> Result<Grant, EnrollError> {
 impl SidecarEnroller for ControllerDesk {
     async fn enroll(&self, request: &EnrollmentRequest) -> Result<Grant, EnrollError> {
         let tags = request.tags().iter().map(ToString::to_string).collect();
-        let wire = EnrollRequest::new(request.node().as_str(), tags, wire_volume(request.state()));
+        let node = request.node().as_str();
+        let wire = EnrollRequest::new(node, tags, wire_volume(request.state()))
+            .for_stack(request.stack().as_str());
         let answer = self.client.enroll(&wire).await;
         grant_of(&answer.map_err(|error| controller_failure(&error))?)
     }
@@ -157,10 +163,7 @@ impl SidecarEnroller for ControllerDesk {
 impl aegis_application::NodeDeleter for ControllerDesk {
     async fn delete_node(&self, node: &NodeLabel) -> Result<(), aegis_application::Reason> {
         let deleted = self.client.delete_node(node).await;
-        deleted.map_err(|error| match error {
-            ClientError::Rejected(status) => aegis_application::Reason::new(&status),
-            ClientError::Transport(_) => aegis_application::Reason::new(&"the call failed"),
-        })
+        deleted.map_err(|error| reason_of(&error))
     }
 }
 
@@ -185,8 +188,23 @@ fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
     })
 }
 
-/// The `POST /v1/enroll` and `DELETE /v1/nodes/{hostname}` routes of a controller, configured from its environment.
-///
+/// The Tailscale side of a controller: what mints the keys and what deletes the nodes, configured
+/// from its environment, and not yet bound to a [`Binding`].
+#[derive(Debug)]
+pub(super) struct EnrollDesks {
+    enroller: Enroller<TailscaleApi, TailscaleApi>,
+    removing: StackNodes,
+}
+
+impl EnrollDesks {
+    /// The `POST /v1/enroll` and `DELETE /v1/nodes/{hostname}` routes, which check each request
+    /// with `binding`.
+    pub(super) fn routes(self, binding: &Binding) -> Router {
+        let enroll = enroll_routes(self.enroller, binding.clone());
+        enroll.merge(super::node_routes(self.removing, binding.clone()))
+    }
+}
+
 /// The Tailscale OAuth client is in `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET` (decrypted
 /// by the deployment that runs the controller), and the tags a stack's node may carry are in
 /// `AEGIS_ENROLL_TAGS`.
@@ -195,7 +213,7 @@ fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
 ///
 /// Returns a [`ServeError`] when a variable is missing or invalid, or the Tailscale client cannot
 /// be built.
-pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
+pub(super) fn enroll_desks_from_env() -> Result<EnrollDesks, ServeError> {
     let credentials = OAuthCredentials::new(
         ClientId::new(required(CLIENT_ID_VAR)?),
         ClientSecret::new(required(CLIENT_SECRET_VAR)?),
@@ -206,6 +224,6 @@ pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
         cause: error.to_string(),
     })?;
     let removing = api.clone().for_stack_nodes(allowed.clone());
-    let enroll = enroll_routes(Enroller::new(api.clone(), api, allowed));
-    Ok(enroll.merge(super::node_routes(removing)))
+    let enroller = Enroller::new(api.clone(), api, allowed);
+    Ok(EnrollDesks { enroller, removing })
 }

@@ -9,6 +9,13 @@ pub const RECONCILE_PATH: &str = "/v1/reconcile";
 /// and `GET` answers with a [`ControllerStatus`](super::ControllerStatus).
 pub const STATUS_PATH: &str = "/v1/status";
 
+/// The most bytes the controller takes from an agent in one message: 1 MiB.
+///
+/// It applies to the answer of `POST /v1/reconcile` and to the body of an agent's
+/// `POST /v1/status`. A larger answer is abandoned without being kept, and shows in the status of
+/// the host as a failure.
+pub const MAX_REPLY_BYTES: usize = 1_048_576;
+
 /// The body of `POST /v1/reconcile`: converge the host to one commit of the repository. The
 /// commit is 7 to 64 lower-case hex digits; anything else is answered `400`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

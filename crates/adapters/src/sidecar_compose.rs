@@ -8,10 +8,10 @@
 
 use aegis_application::{
     ComposeError, ComposeRunner, DeployRequest, Enrolled, EnrollmentRequest, Exposure, ExtraFiles,
-    Grant, KEY_VARIABLE, KeyUse, Reason, SecretStore, SidecarEnroller, SidecarSpec, Slot,
-    StateProbe,
+    Grant, KEY_VARIABLE, KeyUse, Reason, SecretStore, SidecarEnroller, SidecarIdentity,
+    SidecarSpec, Slot, StateProbe,
 };
-use aegis_domain::{HostPath, ProjectName, Secret, SlotName};
+use aegis_domain::{HostPath, ProjectName, Secret, SlotName, StackName};
 
 /// The ports a sidecar deploy works through.
 #[derive(Debug)]
@@ -74,7 +74,10 @@ where
         let node = exposure
             .node()
             .map_err(|error| failure("cannot name the sidecar node", &error))?;
-        let asked = EnrollmentRequest::new(node, exposure.tags().clone(), state);
+        let stack = StackName::new(request.target().project().stack_name())
+            .map_err(|error| failure("cannot name the stack", &error))?;
+        let identity = SidecarIdentity::new(stack, node);
+        let asked = EnrollmentRequest::new(identity, exposure.tags().clone(), state);
         let granted = self.desk.enroll(&asked).await;
         granted.map_err(|error| failure("cannot enrol the sidecar", &error))
     }

@@ -44,6 +44,9 @@ fn describe(error: &ClientError) -> String {
             "cannot reach the controller: is this machine on the tailnet?".to_owned()
         }
         ClientError::Transport(_) => "the call to the controller failed".to_owned(),
+        ClientError::TooLarge | ClientError::Undecodable => {
+            "the controller answered something this client cannot read".to_owned()
+        }
     }
 }
 

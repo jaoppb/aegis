@@ -1,14 +1,15 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{
-    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health, NODE_GONE,
-    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, SYNCS_PATH, StatusReport, SyncRequest,
-    SyncResponse, host_syncs_path, node_path,
+    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health,
+    MAX_REPLY_BYTES, NODE_GONE, RECONCILE_PATH, ReconcileRequest, STATUS_PATH, SYNCS_PATH,
+    StatusReport, SyncRequest, SyncResponse, host_syncs_path, node_path,
 };
 use std::time::Duration;
 
 use reqwest::{Response, StatusCode};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use aegis_domain::{HostName, NodeLabel};
 
@@ -31,6 +32,12 @@ pub enum ClientError {
     /// The server refused the request, for example because the caller lacks the ACL tag.
     #[error("the server answered {0}")]
     Rejected(StatusCode),
+    /// The answer is larger than the client reads, so it was dropped unread.
+    #[error("the answer is larger than {MAX_REPLY_BYTES} bytes")]
+    TooLarge,
+    /// The answer is not the JSON that was expected.
+    #[error("the answer cannot be read")]
+    Undecodable,
 }
 
 /// Calls a controller or an agent. Authentication is the caller's tailnet identity, so the client
@@ -73,15 +80,17 @@ impl ApiClient {
         Ok(accepted(response)?.json().await?)
     }
 
-    /// Tell an agent to converge its host to `request`'s commit, and read what it did.
+    /// Tell an agent to converge its host to `request`'s commit, and read what it did. The answer
+    /// is read up to [`MAX_REPLY_BYTES`], and no more is kept.
     ///
     /// # Errors
     ///
-    /// The same as [`ApiClient::health`].
+    /// The same as [`ApiClient::health`], and [`ClientError::TooLarge`] for an answer beyond the
+    /// cap.
     pub async fn reconcile(&self, request: &ReconcileRequest) -> Result<StatusReport, ClientError> {
         let call = self.http.post(self.base.join(RECONCILE_PATH)).json(request);
         let response = accepted(call.timeout(RECONCILE_TIMEOUT).send().await?)?;
-        Ok(response.json().await?)
+        capped_json(response).await
     }
 
     /// Ask the controller to sync `host`, or every host when `host` is `None`, now, and wait for
@@ -147,6 +156,31 @@ impl ApiClient {
         let call = self.http.post(self.base.join(path)).json(body);
         accepted(call.send().await?)
     }
+}
+
+/// The JSON of `response`, read up to [`MAX_REPLY_BYTES`]: a body that announces more, or turns out
+/// to hold more while it streams, is abandoned without being buffered whole.
+async fn capped_json<Body: DeserializeOwned>(mut response: Response) -> Result<Body, ClientError> {
+    let announced = response.content_length().unwrap_or(0);
+    let cap = u64::try_from(MAX_REPLY_BYTES).unwrap_or(u64::MAX);
+    if announced > cap {
+        return Err(ClientError::TooLarge);
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        keep(&mut body, &chunk)?;
+    }
+    serde_json::from_slice(&body).map_err(|_| ClientError::Undecodable)
+}
+
+/// Add `chunk` to `body`, unless that makes it larger than [`MAX_REPLY_BYTES`].
+fn keep(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), ClientError> {
+    let size = body.len().saturating_add(chunk.len());
+    (size <= MAX_REPLY_BYTES)
+        .then_some(())
+        .ok_or(ClientError::TooLarge)?;
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// A `404` answer about a node: success when the controller says the node is not there.

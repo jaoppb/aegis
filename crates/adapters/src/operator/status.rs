@@ -1,6 +1,8 @@
 //! `aegis status`: what the controller wants and what each host reported.
 
-use aegis_api::version_1::{Agent, Confirmation, ControllerStatus, HostStatus, StackStatus};
+use aegis_api::version_1::{
+    Agent, Confirmation, ControllerStatus, HostStatus, RefusalReason, Refused, StackStatus,
+};
 
 use super::page::{Page, Rendered};
 use super::stacks::report_lines;
@@ -15,6 +17,7 @@ pub fn status(status: &ControllerStatus) -> Rendered {
     let mut page = Page::default();
     target(&mut page, status);
     problems(&mut page, status);
+    refusals(&mut page, status);
     for host in status.hosts() {
         host_lines(&mut page, host);
     }
@@ -47,6 +50,31 @@ fn problems(page: &mut Page, status: &ControllerStatus) {
     }
 }
 
+/// The requests for a node the controller refused: shown, never a finding, because a refusal says
+/// the controller held a line, not that the fleet is off.
+fn refusals(page: &mut Page, status: &ControllerStatus) {
+    for refused in status.refusals() {
+        page.line(refusal_line(refused));
+    }
+}
+
+fn refusal_line(refused: &Refused) -> String {
+    let reason = match refused.reason() {
+        RefusalReason::RateLimited => "too many keys",
+        RefusalReason::NotPlaced => "not placed on the host by the desired state",
+        RefusalReason::WrongTags => "tags are not the stack's",
+        RefusalReason::NotPurged => "stack is not purged",
+    };
+    let stack = refused.stack().unwrap_or("-");
+    let times = refused.times();
+    format!(
+        "refused {} {stack}: {reason}, {} time(s), last {}s ago",
+        refused.host(),
+        times.count(),
+        times.seconds_ago()
+    )
+}
+
 fn host_lines(page: &mut Page, host: &HostStatus) {
     let agent = match host.agent() {
         Agent::Mapped => "agent mapped",
@@ -71,7 +99,7 @@ fn confirmation(host: &HostStatus) -> String {
 
 #[cfg(test)]
 mod tests {
-    use aegis_api::version_1::{InvalidCommit, StackState, StatusReport, TargetStatus};
+    use aegis_api::version_1::{Counted, InvalidCommit, StackState, StatusReport, TargetStatus};
 
     use super::*;
     use crate::operator::page::Finding;
@@ -158,6 +186,19 @@ mod tests {
         );
         let offline = status(&base().with_fetch_error("offline"));
         assert_eq!(offline.finding(), Finding::Found);
+    }
+
+    #[test]
+    fn a_refusal_is_listed_and_is_not_a_finding() {
+        let times = Counted::new(2, 30);
+        let refused = Refused::new("h", RefusalReason::RateLimited, times).for_stack("vault");
+        let shown = status(&healthy().with_refusals(vec![refused]));
+        assert!(
+            shown
+                .text()
+                .contains("refused h vault: too many keys, 2 time(s), last 30s ago")
+        );
+        assert_eq!(shown.finding(), Finding::Clean);
     }
 
     #[test]
