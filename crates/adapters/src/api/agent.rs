@@ -15,9 +15,9 @@ use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+use super::ApiClient;
 use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
 use super::wire::status_report;
-use super::ApiClient;
 use crate::http::BaseUrl;
 use crate::{
     DecryptingCompose, DockerCompose, FsRepo, GitCheckout, SecretPorts, SerdeStackParser,
