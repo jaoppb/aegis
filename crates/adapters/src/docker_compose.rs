@@ -20,7 +20,7 @@ const COMPOSE_FILE: &str = "compose.yaml";
 
 /// The environment Compose inherits from the agent, and nothing else, so `COMPOSE_FILE`,
 /// `COMPOSE_PROJECT_NAME` and the like in the agent's environment cannot change what runs.
-const INHERITED: [&str; 8] = [
+const INHERITED: [&str; 9] = [
     "PATH",
     "HOME",
     "DOCKER_HOST",
@@ -29,6 +29,7 @@ const INHERITED: [&str; 8] = [
     "DOCKER_CERT_PATH",
     "DOCKER_TLS_VERIFY",
     "XDG_RUNTIME_DIR",
+    "SSL_CERT_FILE",
 ];
 
 /// Runs `docker compose` against the local Docker daemon, rootless or rootful: the socket comes
@@ -61,19 +62,12 @@ impl DockerCompose {
     fn command(&self, request: &DeployRequest) -> Command {
         let directory = self.checkout.join(request.target().directory().as_str());
         let mut command = Command::new(&self.program);
-        command.current_dir(directory).env_clear();
-        inherit(&mut command);
+        command.current_dir(directory);
+        cli::inherit_only(&mut command, &INHERITED);
         command.envs(request.extras().environment().variables());
         command.args(arguments(request));
         command
     }
-}
-
-fn inherit(command: &mut Command) {
-    let set = INHERITED
-        .iter()
-        .filter_map(|name| std::env::var_os(name).map(|value| (*name, value)));
-    command.envs(set);
 }
 
 /// The arguments: `compose -p <project> -f compose.yaml [-f <extra>]... [-f -] up -d --build`.

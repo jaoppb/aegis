@@ -85,12 +85,12 @@
           tag = workspaceVersion;
           contents = [ binary pkgs.cacert ] ++ runtimeClis pkgs;
           # sops and compose write temporary files.
-          extraCommands = "mkdir -m 1777 tmp";
+          extraCommands = "mkdir -m 1777 tmp; mkdir -p -m 0700 var/lib/aegis/home";
           config = {
             Entrypoint = [ "/bin/${name}" ];
             Env = [
               "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-              "HOME=/tmp"
+              "HOME=/var/lib/aegis/home"
             ];
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/jaoppb/aegis";

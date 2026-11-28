@@ -19,11 +19,11 @@ AEGIS_LISTEN=100.64.0.7:7480 AEGIS_HOST=jao-server AEGIS_CHECKOUT=/var/lib/aegis
   AEGIS_CONTROLLER=http://100.64.0.2:7480 aegis-agent
 ```
 
-The checkout must already exist: the agent runs `git fetch origin` and `git checkout --detach <commit>` in it, so the user the agent runs as needs read access to the remote (an SSH agent socket in `SSH_AUTH_SOCK` or a credential helper reachable from `HOME`) and write access to the directory. git never prompts. In a container, the checkout path is a mounted volume owned by the agent's user, or git refuses it as a "dubious ownership" repository.
+The checkout must already exist: the agent runs `git fetch origin` and `git checkout --detach <commit>` in it, so the user the agent runs as needs read access to the remote (an SSH agent socket in `SSH_AUTH_SOCK` or a credential helper reachable from `HOME`) and write access to the directory. git never prompts, so SSH host keys must already be trusted: mount a `HOME` (in the image, `/var/lib/aegis/home`) holding `.ssh/known_hosts`, or use an HTTPS remote with a credential helper. git inherits only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `SSH_AUTH_SOCK`, `SSL_CERT_FILE` and `GIT_SSL_CAINFO`. In a container, the checkout path is a mounted volume owned by the agent's user, or git refuses it as a "dubious ownership" repository.
 
 ## Docker
 
-The agent runs `docker compose` against the local daemon. The socket comes from `DOCKER_HOST` (also `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); no other variable of the agent reaches Compose, so `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME` in its environment have no effect.
+The agent runs `docker compose` against the local daemon. The socket comes from `DOCKER_HOST` (also `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); apart from `PATH`, `HOME` and `SSL_CERT_FILE`, no other variable of the agent reaches Compose, so `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME` in its environment have no effect.
 
 - Rootful: `DOCKER_HOST=unix:///var/run/docker.sock`.
 - Rootless: `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`.
@@ -50,7 +50,7 @@ The answer is the status report: the host, the commit and one entry per stack wi
 | Status | Meaning |
 |--------|---------|
 | `200` | The reconcile ran; each stack's state is in the body. One failing stack does not stop the others. |
-| `400` | The commit is not 7 to 64 lower-case hex digits. |
+| `400` | The commit is not 7 to 64 lower-case hex digits. A body that is not JSON with a `commit` string gets the framework's `415` or `422`. |
 | `403` | The caller is not tagged `tag:aegis-controller`. |
 | `502` | The checkout could not be moved to the commit; nothing was deployed. The body names the failure. |
 | `503` | The whois lookup failed. |

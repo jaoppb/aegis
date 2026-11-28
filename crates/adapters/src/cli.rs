@@ -8,6 +8,16 @@ use aegis_application::Reason;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 
+/// Clear the environment of `command` and give it back only the variables in `names` that the
+/// current process has set, so nothing else of the agent's environment can steer the child.
+pub fn inherit_only(command: &mut Command, names: &[&str]) {
+    command.env_clear();
+    let set = names
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (*name, value)));
+    command.envs(set);
+}
+
 /// Run `command` to completion within `limit`, feeding `input` on its stdin. The child is killed
 /// when the call is dropped or times out.
 ///

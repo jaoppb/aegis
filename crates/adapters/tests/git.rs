@@ -12,6 +12,7 @@ async fn git(directory: &Path, arguments: &[&str]) -> String {
     let output = Command::new("git")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
         .args([
             "-c",
             "commit.gpgsign=false",
@@ -56,6 +57,14 @@ impl Pair {
         let target = pair.checkout.to_str().unwrap();
         git(&pair.root, &["clone", "-q", source, target]).await;
         pair
+    }
+
+    fn at(root: PathBuf) -> Self {
+        Self {
+            origin: root.join("origin"),
+            checkout: root.join("checkout"),
+            root,
+        }
     }
 
     async fn commit(&self, text: &str) -> String {
@@ -108,5 +117,32 @@ fn an_unknown_commit_is_an_error_that_does_not_echo_git_output() {
         let failure = pair.sync(&"0".repeat(40)).await.unwrap_err();
         assert!(failure.contains("git exited with"));
         assert!(!failure.contains(pair.origin.to_str().unwrap()));
+    });
+}
+
+/// Runs only inside the child process of the next test, where the parent set `GIT_DIR`.
+#[test]
+fn redirected_git_child() {
+    let Ok(root) = std::env::var("AEGIS_CHILD_PAIR") else {
+        return;
+    };
+    runtime().block_on(async {
+        let pair = Pair::at(root.into());
+        let head = pair.head().await;
+        pair.sync(&head).await.unwrap();
+    });
+}
+
+#[test]
+fn a_redirecting_git_variable_of_the_agent_does_not_reach_git() {
+    runtime().block_on(async {
+        let pair = Pair::new("redirect").await;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "redirected_git_child"])
+            .env("AEGIS_CHILD_PAIR", &pair.root)
+            .env("GIT_DIR", "/nonexistent/aegis-git-dir")
+            .status()
+            .unwrap();
+        assert!(status.success());
     });
 }
