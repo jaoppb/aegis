@@ -81,7 +81,7 @@ Generate implementation code from a structured SPDD prompt (a REASONS Canvas). F
 
 7. **Batch validation**
 
-   After ALL the code is generated, run `just check` (`fmt-check`, `lint` (clippy with warnings as errors), `workflows-check`, `arch-check` and `test` (cargo nextest)).
+   After ALL the code is generated, run `just check` (the recipes listed in AGENTS.md §3).
 
    a. Fix failures by changing the code to fit the rule, never by adding exceptions.
 
