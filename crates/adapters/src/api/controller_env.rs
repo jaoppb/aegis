@@ -3,14 +3,15 @@
 use std::path::{Component, PathBuf};
 use std::time::Duration;
 
-use aegis_api::version_1::Role;
 use aegis_application::{Poller, Repository};
 use aegis_domain::HostName;
+use axum::Router;
 use tokio::net::TcpListener;
 
 use super::agent::{invalid, required};
 use super::controller::{AgentAddress, Hub};
-use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
+use super::enroll::enroll_routes_from_env;
+use super::server::{LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_controller};
 use crate::git::Remote;
 use crate::http::BaseUrl;
 use crate::{FsRepo, GitFollower, SerdeStackParser, SopsCheck, TailscaleWhois};
@@ -32,10 +33,16 @@ const MIN_POLL_SECS: u64 = 5;
 
 /// The controller's settings, read from its environment.
 struct Settings {
-    listen: ListenAddress,
+    serving: Serving,
     remote: Remote,
     workdir: PathBuf,
     watch: Watch,
+}
+
+/// Where the controller listens and the `POST /v1/enroll` route it serves beside the status.
+struct Serving {
+    listen: ListenAddress,
+    enroll: Router,
 }
 
 /// How often to look and which agents to tell.
@@ -101,8 +108,12 @@ impl Settings {
             interval: interval_from(std::env::var(POLL_VAR).ok().as_deref())?,
             agents: agents_from(std::env::var(AGENTS_VAR).ok().as_deref())?,
         };
-        Ok(Self {
+        let serving = Serving {
             listen,
+            enroll: enroll_routes_from_env()?,
+        };
+        Ok(Self {
+            serving,
             remote,
             workdir: workdir_from(&required(WORKDIR_VAR)?)?,
             watch,
@@ -117,15 +128,14 @@ impl Settings {
 }
 
 async fn run(settings: Settings) -> Result<(), ServeError> {
-    let address = settings.listen.socket();
+    let address = settings.serving.listen.socket();
     let listener = TcpListener::bind(address)
         .await
         .map_err(|cause| ServeError::Bind { address, cause })?;
     let hub = Hub::new(&settings.watch.agents)?;
     let poller = settings.poller();
-    let routes = hub.routes();
-    let guard = Guard::new(Role::Controller, TailscaleWhois::new());
-    let served = serve_routes(listener, guard, routes);
+    let routes = hub.routes().merge(settings.serving.enroll);
+    let served = serve_controller(listener, TailscaleWhois::new(), routes);
     tokio::select! {
         done = served => done,
         never = hub.run(&poller, settings.watch.interval) => match never {},
@@ -137,7 +147,8 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
 /// It listens on `AEGIS_LISTEN`, follows the `AEGIS_REPO_BRANCH` (default `main`) of the
 /// repository at `AEGIS_REPO_URL` in the disposable checkout `AEGIS_WORKDIR`, looks every
 /// `AEGIS_POLL_SECS` (default 60, at least 5) and tells the agents of `AEGIS_AGENTS`
-/// (`host=url`, comma-separated) to converge. Git authenticates with what it inherits: a deploy
+/// (`host=url`, comma-separated) to converge. It also serves `POST /v1/enroll`, which needs the
+/// Tailscale variables of [`enroll_routes_from_env`]. Git authenticates with what it inherits: a deploy
 /// key through the SSH agent or a credential helper; a URL that carries credentials is refused.
 ///
 /// # Errors

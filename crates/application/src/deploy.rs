@@ -6,6 +6,7 @@ use std::future::Future;
 
 use aegis_domain::{CommitSha, ComposeSummary, HostPath, ProjectName, RepoPath, ServiceName};
 
+use crate::sidecar::Exposure;
 use crate::source::Reason;
 
 /// Where a stack is deployed from: its Compose project and its directory in the checkout.
@@ -13,13 +14,30 @@ use crate::source::Reason;
 pub struct Target {
     project: ProjectName,
     directory: RepoPath,
+    exposure: Option<Exposure>,
 }
 
 impl Target {
     /// The stack in `directory`, run as `project`.
     #[must_use]
     pub const fn new(project: ProjectName, directory: RepoPath) -> Self {
-        Self { project, directory }
+        Self {
+            project,
+            directory,
+            exposure: None,
+        }
+    }
+
+    /// The same target that exposes a service on the tailnet.
+    #[must_use]
+    pub fn with_exposure(self, exposure: Option<Exposure>) -> Self {
+        Self { exposure, ..self }
+    }
+
+    /// What the stack exposes on the tailnet, if anything.
+    #[must_use]
+    pub const fn exposure(&self) -> Option<&Exposure> {
+        self.exposure.as_ref()
     }
 
     /// The Compose project name.
@@ -91,6 +109,13 @@ impl Environment {
         Self(variables)
     }
 
+    /// The same variables with `name` set to `value`.
+    #[must_use]
+    pub fn with_variable(mut self, name: &str, value: &str) -> Self {
+        self.0.insert(name.to_owned(), value.to_owned());
+        self
+    }
+
     /// The variables, by name.
     #[must_use]
     pub const fn variables(&self) -> &BTreeMap<String, String> {
@@ -129,6 +154,15 @@ impl Extras {
     #[must_use]
     pub fn with_files(self, files: ExtraFiles) -> Self {
         Self { files, ..self }
+    }
+
+    /// The same extras that run Compose with `environment`.
+    #[must_use]
+    pub fn with_environment(self, environment: Environment) -> Self {
+        Self {
+            environment,
+            ..self
+        }
     }
 
     /// The same extras with the decrypted `.env` at `dotenv`, which Compose reads instead of the

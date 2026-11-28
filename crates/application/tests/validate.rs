@@ -8,15 +8,17 @@ use aegis_application::{
 };
 use aegis_domain::{
     Access, Build, ComposeSource, ComposeSummary, ContainerPath, DeclaredPath, DesiredState,
-    EnvFile, EnvFiles, Host, HostName, HostPath, Hosts, Mount, Mounts, Presence, Problem,
-    Rejection, Rejections, RepoPath, Service, ServiceName, ServiceSource, Services, Stack,
-    StackDefinition, StackIdentity, StackKind, StackName, StackPolicy, Stacks, Violations,
-    VolumeName, Volumes,
+    EnvFile, EnvFiles, Expose, Host, HostName, HostPath, Hosts, Mount, Mounts, Port, Presence,
+    Problem, Rejection, Rejections, RepoPath, Service, ServiceName, ServiceSource, Services, Stack,
+    StackDefinition, StackIdentity, StackKind, StackName, StackPolicy, StackState, Stacks,
+    TailnetTags, Violations, VolumeName, Volumes,
 };
 
 /// A repository of files; a file is "encrypted" when its text starts with `ENC`.
+#[cfg(test)]
 struct Memory(BTreeMap<String, String>);
 
+#[cfg(test)]
 impl Memory {
     fn with(files: &[(&str, &str)]) -> Self {
         let files = files
@@ -26,6 +28,7 @@ impl Memory {
     }
 }
 
+#[cfg(test)]
 impl RepoSource for Memory {
     fn contains(&self, path: &RepoPath) -> Result<bool, SourceError> {
         Ok(self.0.contains_key(path.as_str()))
@@ -41,14 +44,17 @@ impl RepoSource for Memory {
     }
 }
 
+#[cfg(test)]
 struct Prefix;
 
+#[cfg(test)]
 impl EncryptionCheck for Prefix {
     fn is_encrypted(&self, _file: &RepoPath, text: &str) -> bool {
         text.starts_with("ENC")
     }
 }
 
+#[cfg(test)]
 fn service(mounts: Vec<Option<Mount>>, env_files: Vec<Option<EnvFile>>) -> Option<Service> {
     let name = ServiceName::new("app").ok()?;
     let mounts: Option<Vec<Mount>> = mounts.into_iter().collect();
@@ -60,10 +66,12 @@ fn service(mounts: Vec<Option<Mount>>, env_files: Vec<Option<EnvFile>>) -> Optio
     )
 }
 
+#[cfg(test)]
 fn outcome_of(service: Service) -> Option<Outcome> {
     outcome_with(service, Volumes::default())
 }
 
+#[cfg(test)]
 fn outcome_with(service: Service, volumes: Volumes) -> Option<Outcome> {
     let services = Services::new(vec![service]);
     let compose = ComposeSummary::new(services, volumes);
@@ -76,6 +84,7 @@ fn outcome_with(service: Service, volumes: Volumes) -> Option<Outcome> {
     Some(Outcome::new(state, Rejections::default()))
 }
 
+#[cfg(test)]
 fn relative(path: &str, access: Access) -> Option<Mount> {
     Some(Mount::Relative {
         source: RepoPath::new(path).ok()?,
@@ -84,10 +93,12 @@ fn relative(path: &str, access: Access) -> Option<Mount> {
     })
 }
 
+#[cfg(test)]
 fn env(path: &str, presence: Presence) -> Option<EnvFile> {
     Some(EnvFile::new(RepoPath::new(path).ok()?, presence))
 }
 
+#[cfg(test)]
 fn validated(
     files: &[(&str, &str)],
     mounts: Vec<Option<Mount>>,
@@ -101,6 +112,7 @@ fn validated(
     ))
 }
 
+#[cfg(test)]
 fn problems(
     files: &[(&str, &str)],
     mounts: Vec<Option<Mount>>,
@@ -173,6 +185,7 @@ fn a_rejected_stack_leaves_the_state() {
     assert_eq!(outcome.rejected().len(), 1);
 }
 
+#[cfg(test)]
 fn built(context: &str, dockerfile: Option<&str>) -> Option<Service> {
     let build = Build::new(
         DeclaredPath::new(context).ok()?,
@@ -182,6 +195,7 @@ fn built(context: &str, dockerfile: Option<&str>) -> Option<Service> {
     Some(Service::new(name, ServiceSource::new(None, Some(build))))
 }
 
+#[cfg(test)]
 fn build_problems(files: &[(&str, &str)], service: Option<Service>) -> Option<Vec<Problem>> {
     let outcome = validate_desired_state(&outcome_of(service?)?, &Memory::with(files), &Prefix);
     let found = outcome.rejected().iter().flat_map(Rejection::violations);
@@ -220,6 +234,7 @@ fn a_dockerfile_that_leaves_the_stack_is_a_violation() {
     assert!(inside.is_empty());
 }
 
+#[cfg(test)]
 fn named_mount(volume: &str) -> Option<Mount> {
     Some(Mount::Named {
         volume: VolumeName::new(volume).ok()?,
@@ -228,10 +243,12 @@ fn named_mount(volume: &str) -> Option<Mount> {
     })
 }
 
+#[cfg(test)]
 fn mount_service(mounts: Vec<Option<Mount>>) -> Option<Service> {
     service(mounts, vec![])
 }
 
+#[cfg(test)]
 fn volume_problems(declared: &[&str]) -> Option<Vec<Problem>> {
     let volumes: Option<Vec<VolumeName>> = declared
         .iter()
@@ -300,8 +317,10 @@ fn a_failing_repository_read_is_a_violation() {
     );
 }
 
+#[cfg(test)]
 struct Broken;
 
+#[cfg(test)]
 impl RepoSource for Broken {
     fn contains(&self, path: &RepoPath) -> Result<bool, SourceError> {
         Err(SourceError::new(path.clone(), Reason::new(&"boom")))
@@ -323,4 +342,83 @@ fn an_escaping_context_and_dockerfile_report_one_violation() {
         found.as_slice(),
         [Problem::BuildOutsideStack { .. }]
     ));
+}
+
+#[cfg(test)]
+fn exposing(service_names: &[&str], exposed: &str) -> Vec<Problem> {
+    exposing_with(service_names, exposed, &[])
+}
+
+#[cfg(test)]
+fn exposing_with(service_names: &[&str], exposed: &str, volumes: &[&str]) -> Vec<Problem> {
+    let names = service_names
+        .iter()
+        .map(|name| Service::new(ServiceName::new(*name).unwrap(), ServiceSource::default()));
+    let declared = volumes.iter().map(|name| VolumeName::new(*name).unwrap());
+    let compose = ComposeSummary::new(
+        Services::new(names.collect()),
+        Volumes::new(declared.collect()),
+    );
+    let expose = Expose::new(ServiceName::new(exposed).unwrap(), Port::new(80).unwrap());
+    let policy = StackPolicy::new(Some(expose), TailnetTags::default(), StackState::Active);
+    let definition = StackDefinition::new(policy, ComposeSource::new("a\nb\n"), compose);
+    let identity = StackIdentity::new(StackName::new("stack").unwrap(), StackKind::Host);
+    let stack = Stack::new(identity, definition);
+    let host = Host::new(HostName::new("host").unwrap(), Stacks::new(vec![stack]));
+    let state = DesiredState::new(Hosts::new(vec![host]), Stacks::default());
+    let outcome = Outcome::new(state, Rejections::default());
+    let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    let found = validated.rejected().iter().flat_map(Rejection::violations);
+    found.map(|violation| violation.problem().clone()).collect()
+}
+
+#[test]
+fn an_exposed_service_the_compose_file_defines_passes() {
+    assert!(exposing(&["web"], "web").is_empty());
+}
+
+#[test]
+fn an_exposed_service_the_compose_file_lacks_is_a_violation() {
+    let found = exposing(&["web"], "api");
+    assert!(matches!(
+        found.as_slice(),
+        [Problem::UnknownExposedService { .. }]
+    ));
+}
+
+#[test]
+fn a_stack_that_exposes_a_service_may_not_define_tailscale_or_caddy() {
+    let found = exposing(&["web", "tailscale", "caddy"], "web");
+    assert_eq!(found.len(), 2);
+    assert!(
+        found
+            .iter()
+            .all(|problem| matches!(problem, Problem::ReservedSidecarService { .. }))
+    );
+}
+
+#[test]
+fn a_stack_without_exposure_may_define_a_service_called_caddy() {
+    let outcome = outcome_of(Service::new(
+        ServiceName::new("caddy").unwrap(),
+        ServiceSource::default(),
+    ))
+    .unwrap();
+    let validated = validate_desired_state(&outcome, &Memory::with(&[]), &Prefix);
+    assert!(validated.rejected().is_empty());
+}
+
+#[test]
+fn a_stack_that_exposes_a_service_may_not_declare_the_sidecar_volumes() {
+    let found = exposing_with(
+        &["web"],
+        "web",
+        &["tailscale-state", "tailscale-socket", "data"],
+    );
+    assert_eq!(found.len(), 2);
+    assert!(
+        found
+            .iter()
+            .all(|problem| matches!(problem, Problem::ReservedSidecarVolume { .. }))
+    );
 }

@@ -15,17 +15,24 @@ use axum::{Json, Router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use super::ApiClient;
 use super::server::{Guard, LISTEN_VAR, ListenAddress, ServeError, listen_from, serve_routes};
 use super::wire::status_report;
+use super::{ApiClient, ControllerDesk};
 use crate::http::BaseUrl;
 use crate::{
-    DecryptingCompose, DockerCompose, FsRepo, GitCheckout, SecretPorts, SerdeStackParser,
-    SopsCheck, SopsDecrypt, TailscaleWhois, TmpfsStore,
+    DecryptingCompose, DockerCompose, DockerStateProbe, FsRepo, GitCheckout, SecretPorts,
+    SerdeStackParser, SidecarCompose, SidecarPorts, SopsCheck, SopsDecrypt, TailscaleWhois,
+    TmpfsStore,
 };
 
-/// The compose runner of the agent: `docker compose` behind the per-host SOPS decryption.
-type Compose = DecryptingCompose<DockerCompose, SopsDecrypt, TmpfsStore>;
+/// The compose runner of the agent: `docker compose` behind the per-host SOPS decryption, with the
+/// tailscale sidecar added to the stacks that expose a service.
+type Compose = SidecarCompose<
+    DecryptingCompose<DockerCompose, SopsDecrypt, TmpfsStore>,
+    DockerStateProbe,
+    ControllerDesk,
+    TmpfsStore,
+>;
 
 const HOST_VAR: &str = "AEGIS_HOST";
 const CHECKOUT_VAR: &str = "AEGIS_CHECKOUT";
@@ -166,17 +173,25 @@ impl Settings {
         })
     }
 
-    fn compose(&self) -> Compose {
+    fn compose(&self) -> Result<Compose, ServeError> {
         let secrets = SecretPorts::new(SopsDecrypt::default(), TmpfsStore::from_environment());
-        DecryptingCompose::new(DockerCompose::new(&self.checkout), secrets, &self.checkout)
+        let docker = DockerCompose::new(&self.checkout);
+        let decrypting = DecryptingCompose::new(docker, secrets, &self.checkout);
+        let desk = ControllerDesk::new(ApiClient::new(self.controller.clone())?);
+        let ports = SidecarPorts::new(
+            DockerStateProbe::default(),
+            desk,
+            TmpfsStore::from_environment(),
+        );
+        Ok(SidecarCompose::new(decrypting, ports))
     }
 
-    fn reconciler(&self) -> Reconciler<GitCheckout, Compose> {
+    fn reconciler(&self) -> Result<Reconciler<GitCheckout, Compose>, ServeError> {
         let repository = Repository::new(FsRepo::new(&self.checkout), SerdeStackParser, SopsCheck);
         let git = GitCheckout::new(&self.checkout);
-        let ports = ReconcilePorts::new(git, self.compose(), repository);
-        Reconciler::new(self.hosting.host.clone(), ports)
-            .with_reserved(self.hosting.reserved.clone())
+        let ports = ReconcilePorts::new(git, self.compose()?, repository);
+        let reconciler = Reconciler::new(self.hosting.host.clone(), ports);
+        Ok(reconciler.with_reserved(self.hosting.reserved.clone()))
     }
 }
 
@@ -205,7 +220,7 @@ async fn run(settings: Settings) -> Result<(), ServeError> {
     let controller = ApiClient::new(settings.controller.clone())?;
     let swept = TmpfsStore::from_environment().sweep().await;
     swept.map_err(ServeError::Sweep)?;
-    let routes = reconcile_routes(settings.reconciler(), controller);
+    let routes = reconcile_routes(settings.reconciler()?, controller);
     serve_agent(listener, TailscaleWhois::new(), routes).await
 }
 

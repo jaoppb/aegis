@@ -1,8 +1,8 @@
 //! The client side of the `/v1` API.
 
 use aegis_api::version_1::{
-    ControllerStatus, HEALTH_PATH, Health, RECONCILE_PATH, ReconcileRequest, STATUS_PATH,
-    StatusReport,
+    ControllerStatus, ENROLL_PATH, EnrollRequest, EnrollResponse, HEALTH_PATH, Health,
+    RECONCILE_PATH, ReconcileRequest, STATUS_PATH, StatusReport,
 };
 use std::time::Duration;
 
@@ -84,6 +84,16 @@ impl ApiClient {
     /// The same as [`ApiClient::health`].
     pub async fn report_status(&self, report: &StatusReport) -> Result<(), ClientError> {
         self.post(STATUS_PATH, report).await.map(drop)
+    }
+
+    /// Ask the controller to enrol the node of `request`.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ApiClient::health`].
+    pub async fn enroll(&self, request: &EnrollRequest) -> Result<EnrollResponse, ClientError> {
+        let response = self.post(ENROLL_PATH, request).await?;
+        Ok(response.json().await?)
     }
 
     async fn post<Body: Serialize + Sync>(

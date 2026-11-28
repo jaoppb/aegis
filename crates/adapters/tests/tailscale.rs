@@ -1,24 +1,10 @@
 //! The Tailscale adapter against a fake API served on a local socket.
 
-use std::future::{Future, ready};
-
-use aegis_application::{Reason, SidecarState, StateVolume};
-use aegis_domain::HostName;
-
-struct Volume(StateVolume);
-
-impl SidecarState for Volume {
-    fn volume(&self, _node: &HostName) -> impl Future<Output = Result<StateVolume, Reason>> + Send {
-        ready(Ok(self.0))
-    }
-}
-
 #[cfg(test)]
 mod cases {
     use std::future::IntoFuture;
     use std::sync::{Arc, Mutex};
 
-    use super::Volume;
     use aegis_adapters::BaseUrl;
     use aegis_adapters::tailscale::{ClientId, ClientSecret, OAuthCredentials, TailscaleApi};
     use aegis_application::{
@@ -442,17 +428,13 @@ mod cases {
         assert_eq!(result, Err(TailnetError::NoSuchDevice));
     }
 
-    fn app_node() -> HostName {
-        HostName::new("app").unwrap()
-    }
-
     fn enroll(
         runtime: &tokio::runtime::Runtime,
         harness: Harness,
         volume: StateVolume,
     ) -> Result<Enrolled, EnrollError> {
-        let enrollment = Enrollment::new(Volume(volume), harness.api);
-        runtime.block_on(enrollment.enroll(&app_node(), &app_tags()))
+        let enrollment = Enrollment::new(harness.api);
+        runtime.block_on(enrollment.enroll(&app_tags(), volume))
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::deploy::{
 use crate::loader::load_desired_state;
 use crate::outcome::Outcome;
 use crate::parse::StackParser;
+use crate::sidecar::Exposure;
 use crate::source::RepoSource;
 use crate::validate::{EncryptionCheck, validate_desired_state};
 
@@ -234,7 +235,8 @@ async fn run_stack<Docker: ComposeRunner + Sync>(
 
 fn request_for(unit: &Unit<'_>, commit: &CommitSha) -> Result<DeployRequest, ValueError> {
     let project = ProjectName::of(unit.stack.name())?;
-    let target = Target::new(project, unit.directory.clone());
+    let target = Target::new(project, unit.directory.clone())
+        .with_exposure(Exposure::of(unit.stack.policy()));
     let sources = Extras::default().with_sources(unit.stack.compose().clone());
     let request = DeployRequest::new(target, commit.clone(), built_by(unit.stack));
     Ok(request.with_extras(sources))

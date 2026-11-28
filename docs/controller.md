@@ -1,6 +1,6 @@
 # Running the controller
 
-The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it and serves the status of the fleet. It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
+The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it, serves the status of the fleet and enrols the Tailscale sidecars of exposed stacks (`POST /v1/enroll`, see [exposure.md](exposure.md)). One router serves `/v1/status` and `/v1/enroll`, both behind the tag check that admits only `tag:aegis-agent` peers. It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
 
 ## Configuration
 
@@ -11,6 +11,8 @@ The controller polls the GitOps repository, loads and validates each new commit,
 | `AEGIS_WORKDIR` | yes | An absolute path for the disposable checkout. It is rebuilt when missing or damaged, and everything in it that the commit does not hold is deleted, so give it a directory of its own: a non-empty directory, or a git repository the controller did not create (it marks its own with `.git/aegis-managed`), is refused. |
 | `AEGIS_REPO_BRANCH` | no | The branch to follow. Default `main`. |
 | `AEGIS_POLL_SECS` | no | Seconds between two looks at the repository. Default `60`, at least `5`. |
+| `AEGIS_TS_CLIENT_ID`, `AEGIS_TS_CLIENT_SECRET` | yes | The Tailscale OAuth client the controller mints sidecar keys with for `POST /v1/enroll` ([exposure.md](exposure.md)). The controller does not start without them. |
+| `AEGIS_ENROLL_TAGS` | yes | Comma-separated ACL tags a stack's node may carry, such as `tag:app` ([exposure.md](exposure.md)). The controller does not start without it. |
 | `AEGIS_AGENTS` | no | The agents, as comma-separated `host=url` pairs such as `jao-server=http://100.64.0.7:7480`. A URL with credentials is refused. A host of the repository without an entry is never told to reconcile. |
 
 Git authenticates with what it inherits from the controller's environment: a deploy key through the SSH agent or `~/.ssh/config`, or a git credential helper. Aegis never reads, stores or logs a token. Only the `https`, `ssh` and `file` transports are allowed. Write access is not needed.

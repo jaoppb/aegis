@@ -26,6 +26,8 @@ pub enum ValueError {
     ZeroPort,
     /// A commit id is not 7 to 64 characters long.
     BadCommit,
+    /// A DNS name is not made of non-empty lower-case labels of letters, digits and inner `-`.
+    BadDnsName,
 }
 
 impl fmt::Display for ValueError {
@@ -41,6 +43,7 @@ impl fmt::Display for ValueError {
             Self::BadTag => formatter.write_str("tailnet tag must look like `tag:<name>`"),
             Self::ZeroPort => formatter.write_str("port must not be zero"),
             Self::BadCommit => formatter.write_str("commit must be 7 to 64 hex digits"),
+            Self::BadDnsName => formatter.write_str("name must be lower-case DNS labels"),
         }
     }
 }
@@ -114,6 +117,35 @@ const fn validate_non_empty(value: &str) -> Result<(), ValueError> {
 fn validate_tag(value: &str) -> Result<(), ValueError> {
     let name = value.strip_prefix("tag:").ok_or(ValueError::BadTag)?;
     validate_name(name).map_err(|_| ValueError::BadTag)
+}
+
+fn is_dns_label(label: &str) -> bool {
+    let edge = |candidate: char| candidate.is_ascii_lowercase() || candidate.is_ascii_digit();
+    let inner = |candidate: char| edge(candidate) || candidate == '-';
+    let bounded = label.starts_with(edge) && label.ends_with(edge);
+    bounded && label.chars().all(inner) && label.len() <= 63
+}
+
+/// One DNS label, such as a node hostname.
+fn validate_label(value: &str) -> Result<(), ValueError> {
+    if value.is_empty() {
+        return Err(ValueError::Empty);
+    }
+    is_dns_label(value)
+        .then_some(())
+        .ok_or(ValueError::BadDnsName)
+}
+
+/// A dotted DNS name, such as the `taildfab0.ts.net` suffix of a tailnet.
+fn validate_dns_name(value: &str) -> Result<(), ValueError> {
+    if value.is_empty() {
+        return Err(ValueError::Empty);
+    }
+    value
+        .split('.')
+        .all(is_dns_label)
+        .then_some(())
+        .ok_or(ValueError::BadDnsName)
 }
 
 macro_rules! string_newtype {
@@ -204,6 +236,17 @@ string_newtype!(
     /// A Tailscale ACL tag such as `tag:aegis-agent`.
     TailnetTag,
     validate_tag
+);
+
+string_newtype!(
+    /// The DNS label of a tailnet node: its hostname.
+    NodeLabel,
+    validate_label
+);
+string_newtype!(
+    /// The `MagicDNS` suffix of a tailnet, such as `taildfab0.ts.net`.
+    TailnetName,
+    validate_dns_name
 );
 
 string_newtype!(

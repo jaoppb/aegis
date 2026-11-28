@@ -1,18 +1,24 @@
 //! The controller end to end: a real git origin, the polling adapters, the status routes on a real
 //! socket and a fake agent that answers `POST /v1/reconcile`.
 
+use std::future::{Future, ready};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aegis_adapters::api::{AgentAddress, ApiClient, Hub};
+use aegis_adapters::api::{
+    AgentAddress, ApiClient, ClientError, Hub, enroll_routes, serve_controller,
+};
 use aegis_adapters::{BaseUrl, FsRepo, GitFollower, Remote, SerdeStackParser, SopsCheck};
 use aegis_api::version_1::{
-    Agent as Wire, Confirmation, ControllerStatus, HostStatus, RECONCILE_PATH, ReconcileRequest,
-    STATUS_PATH, StackState, StackStatus, StatusReport,
+    Agent as Wire, Confirmation, ControllerStatus, EnrollRequest, HostStatus, RECONCILE_PATH,
+    ReconcileRequest, STATUS_PATH, SidecarVolume, StackState, StackStatus, StatusReport,
 };
-use aegis_application::{Poller, Repository};
-use aegis_domain::HostName;
+use aegis_application::{
+    EnrollError, EnrollmentRequest, Grant, PeerAddress, Poller, Reason, Repository,
+    SidecarEnroller, WhoIs, WhoIsError,
+};
+use aegis_domain::{HostName, PeerIdentity, TailnetTag};
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -563,5 +569,75 @@ fn an_unreachable_agent_is_reported_by_status_without_its_address() {
         let reason = reason_of(&world.failing("h").await);
         assert_eq!(reason, "the agent is unreachable");
         assert!(!reason.contains("127.0.0.1"));
+    });
+}
+
+/// Resolves every peer to one fixed tag, or to none.
+#[cfg(test)]
+struct Peer(Option<&'static str>);
+
+#[cfg(test)]
+impl WhoIs for Peer {
+    fn identify(
+        &self,
+        _peer: &PeerAddress,
+    ) -> impl Future<Output = Result<PeerIdentity, WhoIsError>> + Send {
+        let tags = self.0.map(|name| TailnetTag::new(name).unwrap());
+        ready(Ok(PeerIdentity::new(tags.into_iter().collect())))
+    }
+}
+
+/// An enrolment desk that always fails, so a request is known to have reached it.
+#[cfg(test)]
+struct Closed;
+
+#[cfg(test)]
+impl SidecarEnroller for Closed {
+    fn enroll(
+        &self,
+        _request: &EnrollmentRequest,
+    ) -> impl Future<Output = Result<Grant, EnrollError>> + Send {
+        ready(Err(EnrollError::Controller(Reason::new(&"closed"))))
+    }
+}
+
+/// A controller serving the status and enrolment routes behind the guard, for `caller`.
+#[cfg(test)]
+async fn guarded(caller: Option<&'static str>) -> String {
+    let hub = Hub::new(&[]).unwrap();
+    let routes = hub.routes().merge(enroll_routes(Closed));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(serve_controller(listener, Peer(caller), routes));
+    url
+}
+
+/// The HTTP status the controller answered to a status read and to an enrolment request.
+#[cfg(test)]
+async fn statuses_of(url: &str) -> (Option<StatusCode>, Option<StatusCode>) {
+    let client = ApiClient::new(BaseUrl::new(url)).unwrap();
+    let request = EnrollRequest::new("x", vec!["tag:app".to_owned()], SidecarVolume::Empty);
+    let status = client.controller_status().await.err();
+    let enroll = client.enroll(&request).await.err();
+    (refused(status.as_ref()), refused(enroll.as_ref()))
+}
+
+#[cfg(test)]
+const fn refused(error: Option<&ClientError>) -> Option<StatusCode> {
+    match error {
+        Some(ClientError::Rejected(status)) => Some(*status),
+        _ => None,
+    }
+}
+
+#[test]
+fn one_router_serves_status_and_enrolment_to_agents_only() {
+    runtime().block_on(async {
+        let (status, enroll) = statuses_of(&guarded(Some("tag:aegis-agent")).await).await;
+        assert_eq!(status, None);
+        assert_eq!(enroll, Some(StatusCode::BAD_GATEWAY));
+        let (status, enroll) = statuses_of(&guarded(None).await).await;
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+        assert_eq!(enroll, Some(StatusCode::FORBIDDEN));
     });
 }
