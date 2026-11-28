@@ -92,8 +92,9 @@ the sidecar container still shows it until the container is recreated. Nothing w
 or an error.
 
 The `--repo` URL must not carry credentials (bootstrap refuses `https://token@host` and
-`user:password@host`): they would show in the process list and be written to the checkout's git config.
-Use a public remote, an SSH key or a git credential helper. The
+`https://user:password@host`): they would show in the process list and be written to the checkout's git config.
+Use a public remote, or an SSH key or credential helper together with the agent mounts described in
+"Before you run it". The
 images are pinned by tag; `--image-tag` takes the tag you trust, and the agent holds the Docker socket, so
 a re-pushed tag runs on the host.
 

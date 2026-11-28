@@ -401,6 +401,18 @@ mod cases {
             aegis_domain::ValueError::EmbeddedPassword
         );
         assert!(RepoUrl::new("https://host?x=a:b@c").is_ok());
+    }
+
+    #[test]
+    fn a_repository_url_hiding_credentials_in_another_form_is_refused() {
+        let sneaky = [
+            "HTTPS://token@host/r",
+            "ftps://token@host/r",
+            "https::https://token@host/r",
+            "ssh://git:secret@host/r",
+        ];
+        let accepted = sneaky.iter().filter(|url| RepoUrl::new(**url).is_ok());
+        assert_eq!(accepted.count(), 0);
         assert!(RepoUrl::new("https://host/r?x=a:b").is_ok());
     }
 

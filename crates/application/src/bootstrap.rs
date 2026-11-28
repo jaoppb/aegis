@@ -91,18 +91,22 @@ fn validate_repo_url(value: &str) -> Result<(), ValueError> {
     reject_password(value)
 }
 
-/// Refuse credentials in an `http(s)` URL (`https://token@host`, `https://user:password@host`):
-/// they would be visible in the process list and written to the checkout's git config. An SSH
-/// user (`ssh://git@host`) and scp-style remotes (`git@host:path`) carry none and pass.
+/// The schemes whose userinfo is a login name, not a secret: `ssh://git@host`.
+const SSH_SCHEMES: [&str; 3] = ["ssh", "git+ssh", "ssh+git"];
+
+/// Refuse credentials in a URL: a token or `user:password` before the `@` would be visible in the
+/// process list and written to the checkout's git config. Only the user of an SSH URL is
+/// allowed, scp-style remotes (`git@host:path`) have no scheme and carry no secret, and the
+/// `helper::url` transport syntax is refused outright because it hides the real scheme.
 fn reject_password(value: &str) -> Result<(), ValueError> {
-    let web = value.starts_with("http://") || value.starts_with("https://");
-    let rest = value.split_once("://").map_or("", |(_, rest)| rest);
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return Ok(());
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let userinfo = web && authority.contains('@');
-    let password = authority
-        .rsplit_once('@')
-        .is_some_and(|(user, _)| user.contains(':'));
-    if userinfo || password {
+    let secret = authority.rsplit_once('@').is_some_and(|(user, _)| {
+        user.contains(':') || !SSH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+    });
+    if secret || scheme.contains("::") {
         return Err(ValueError::EmbeddedPassword);
     }
     Ok(())
