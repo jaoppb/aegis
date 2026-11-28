@@ -1,6 +1,6 @@
 # Running the controller
 
-The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it, serves the status of the fleet and enrols the Tailscale sidecars of exposed stacks (`POST /v1/enroll`, see [exposure.md](exposure.md)). One router serves `/v1/status` and `/v1/enroll`, both behind the tag check that admits only `tag:aegis-agent` peers. It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
+The controller polls the GitOps repository, loads and validates each new commit, tells every agent to converge to it, serves the status of the fleet and enrols the Tailscale sidecars of exposed stacks (`POST /v1/enroll`, see [exposure.md](exposure.md)) and deletes the node of a purged stack (`DELETE /v1/nodes/{hostname}`, see [agent.md](agent.md)). One router serves `/v1/status`, `/v1/enroll` and `/v1/nodes/{hostname}`, all behind the tag check that admits only `tag:aegis-agent` peers. It keeps no state on disk: a restart looks at the repository again and tells the agents again, and a reconcile is idempotent.
 
 ## Configuration
 

@@ -63,4 +63,15 @@ The answer is the status report: the host, the commit and one entry per stack wi
 
 Only one reconcile runs at a time; a second request waits for the first.
 
-The agent also posts the same report to the controller's `POST /v1/status` ([controller.md](controller.md)). The post is best effort: a failure is ignored, and the answer above is the report either way. Stacks with `state = "purged"` are skipped (#20).
+The agent also posts the same report to the controller's `POST /v1/status` ([controller.md](controller.md)). The post is best effort: a failure is ignored, and the answer above is the report either way.
+
+## Removing stacks
+
+Removal is declarative and never deletes data on its own.
+
+- **A stack directory deleted from git.** The agent finds the stacks it used to run from Docker labels, so nothing is stored and a restart forgets nothing: a compose project named `aegis-*` that has a container started from under `<AEGIS_CHECKOUT>/hosts/<AEGIS_HOST>/`, or that keeps labelled volumes, and whose stack the repository no longer declares. It runs `docker compose -p aegis-<stack> down` (containers and networks, never `-v`) and reports the stack as `orphaned`, listing the volumes it kept. Reserved `aegis/` stacks, the agent's own container (`HOSTNAME`) and stacks that fail validation are never taken down, and nothing is taken down when the `hosts/` directory itself cannot be read. Host paths a removed stack mounted are kept but not listed, because its compose file is gone.
+- **`state = "purged"` in `aegis.toml`.** The tombstone stays in git. The agent, in order: refuses unsafe paths before touching anything, runs `compose down`, asks the controller to delete the tailnet node (`DELETE /v1/nodes/{hostname}`, the exposed service's name; `404` counts as already gone and `409` for an ambiguous hostname fails), deletes the named volumes labelled `com.docker.compose.project=aegis-<stack>` (never `external` volumes or another project's), then deletes the stack's read-write absolute host paths. Any failure stops the chain and reports `failed`; the tombstone is still in git, so the next reconcile retries. When it finishes the stack reports `purged` ("purged, safe to delete dir"); delete the directory in a later commit. Only a user stack can be purged, and a tombstone on a stack that fails validation does nothing.
+- **Host path safety.** A path is deleted only if it has at least three segments, is plain (no `.`, empty segment or `:`), is not the checkout or inside or above it, and is not inside or above a path another stack of the repository mounts. Host paths are not deleted while another stack of the host is rejected, because its mounts are unknown. The delete runs in a throw-away container that mounts the path's parent and refuses a symlink, so it also reaches files a rootless daemon owns and never follows a link out.
+- **Reporting.** `orphaned` and `purged` are stack states in the status report, carried like `running`; `aegis status` (#21) shows them.
+
+The controller needs the `devices` scope on its Tailscale OAuth client for the node delete.

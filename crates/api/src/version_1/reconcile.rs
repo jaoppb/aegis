@@ -42,6 +42,11 @@ pub enum StackState {
     Failed,
     /// The stack broke a rule and was not deployed.
     Invalid,
+    /// The stack left the repository: it was taken down and its volumes are kept. The details
+    /// list what was kept; `directory` is where the stack used to live.
+    Orphaned,
+    /// The stack's tombstone was carried out and its directory can be deleted from the repository.
+    Purged,
 }
 
 /// The result for one stack.
@@ -137,6 +142,16 @@ mod tests {
     fn a_reconcile_request_has_a_stable_wire_shape() {
         let json = serde_json::to_string(&ReconcileRequest::new("abc1234")).unwrap();
         assert_eq!(json, r#"{"commit":"abc1234"}"#);
+    }
+
+    #[test]
+    fn the_removal_states_have_a_stable_wire_shape() {
+        let orphaned = serde_json::to_string(&StackState::Orphaned).unwrap();
+        let purged = serde_json::to_string(&StackState::Purged).unwrap();
+        assert_eq!(
+            (orphaned.as_str(), purged.as_str()),
+            (r#""orphaned""#, r#""purged""#)
+        );
     }
 
     #[test]

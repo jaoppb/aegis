@@ -123,6 +123,10 @@ impl ControllerDesk {
     pub const fn new(client: super::ApiClient) -> Self {
         Self { client }
     }
+
+    pub(super) const fn client(&self) -> &super::ApiClient {
+        &self.client
+    }
 }
 
 fn controller_failure(error: &ClientError) -> EnrollError {
@@ -175,7 +179,7 @@ fn allowed_tags(variable: &str) -> Result<TailnetTags, ServeError> {
     })
 }
 
-/// The `POST /v1/enroll` route of a controller, configured from its environment.
+/// The `POST /v1/enroll` and `DELETE /v1/nodes/{hostname}` routes of a controller, configured from its environment.
 ///
 /// The Tailscale OAuth client is in `AEGIS_TS_CLIENT_ID` and `AEGIS_TS_CLIENT_SECRET` (decrypted
 /// by the deployment that runs the controller), and the tags a stack's node may carry are in
@@ -195,5 +199,6 @@ pub(super) fn enroll_routes_from_env() -> Result<Router, ServeError> {
         variable: CLIENT_ID_VAR,
         cause: error.to_string(),
     })?;
-    Ok(enroll_routes(Enroller::new(api.clone(), api, allowed)))
+    let enroll = enroll_routes(Enroller::new(api.clone(), api.clone(), allowed));
+    Ok(enroll.merge(super::node_routes(api)))
 }

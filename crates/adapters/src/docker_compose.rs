@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
 
-use aegis_application::{ComposeError, ComposeRunner, DeployRequest, Environment, Reason};
+use aegis_application::{
+    ComposeError, ComposeRunner, DeployRequest, Environment, Reason, Teardown,
+};
+use aegis_domain::ProjectName;
 use tokio::process::Command;
 
 use crate::cli;
@@ -123,5 +126,25 @@ impl ComposeRunner for DockerCompose {
         run(command, input, request)
             .await
             .map_err(ComposeError::new)
+    }
+}
+
+/// How long a `down` may take.
+const DOWN_TIMEOUT: Duration = Duration::from_mins(5);
+
+impl Teardown for DockerCompose {
+    async fn down(&self, project: &ProjectName) -> Result<(), Reason> {
+        let mut command = Command::new(&self.program);
+        command.current_dir(&self.checkout);
+        cli::inherit_only(&mut command, &cli::COMPOSE_INHERITED);
+        command.args(["compose", "-p", project.as_str(), "down"]);
+        let output = cli::run(command, String::new(), DOWN_TIMEOUT).await?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let failed = Reason::new(&format!(
+            "docker exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+        output.status.success().then_some(()).ok_or(failed)
     }
 }

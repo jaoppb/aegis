@@ -208,7 +208,7 @@ fn built_services_are_handed_to_compose_with_the_commit() {
 }
 
 #[test]
-fn another_hosts_stacks_and_purged_stacks_are_left_alone() {
+fn another_hosts_stacks_are_left_alone() {
     let report = reconcile(&FakeGit::default(), &FakeCompose::default()).unwrap();
     let listed: Vec<&str> = report
         .stacks()
@@ -220,7 +220,17 @@ fn another_hosts_stacks_and_purged_stacks_are_left_alone() {
             .iter()
             .any(|directory| directory.contains("elsewhere") || directory.contains("host2"))
     );
-    assert!(!listed.contains(&"hosts/host/gone"));
+}
+
+#[test]
+fn a_purged_stack_is_refused_not_deployed_when_removal_is_not_configured() {
+    let compose = FakeCompose::default();
+    let report = reconcile(&FakeGit::default(), &compose).unwrap();
+    assert!(matches!(
+        stack(&report, "hosts/host/gone"),
+        Deployment::Failed(_)
+    ));
+    assert!(!compose.projects().iter().any(|name| name == "aegis-gone"));
 }
 
 #[test]

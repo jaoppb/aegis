@@ -7,6 +7,7 @@ pub mod compose;
 pub mod deployment;
 pub mod peer;
 pub mod policy;
+pub mod removal;
 pub mod state;
 pub mod value;
 pub mod violation;
@@ -22,6 +23,9 @@ pub use deployment::{
 };
 pub use peer::{AegisRole, PeerIdentity};
 pub use policy::{Expose, StackPolicy, StackState, TailnetTags, UpdatePolicy};
+pub use removal::{
+    HostPaths, Leftover, Leftovers, ProjectNames, Remains, Tombstone, TombstoneError, mounted_paths,
+};
 pub use state::{
     DesiredState, Host, Hosts, Stack, StackDefinition, StackIdentity, StackKind, Stacks,
 };

@@ -96,6 +96,14 @@ impl ApiClient {
         Ok(response.json().await?)
     }
 
+    pub(super) const fn base(&self) -> &BaseUrl {
+        &self.base
+    }
+
+    pub(super) const fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     async fn post<Body: Serialize + Sync>(
         &self,
         path: &str,

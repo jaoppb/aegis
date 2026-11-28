@@ -8,6 +8,7 @@ pub mod cli;
 pub mod compose;
 mod decrypting;
 mod docker_compose;
+mod docker_projects;
 mod docker_state;
 mod filesystem;
 mod git;
@@ -23,6 +24,7 @@ mod whois;
 
 pub use decrypting::{DecryptingCompose, SecretPorts};
 pub use docker_compose::DockerCompose;
+pub use docker_projects::{DockerProjects, DockerPurger};
 pub use docker_state::DockerStateProbe;
 pub use filesystem::FsRepo;
 pub use git::{GitCheckout, GitFollower, Remote, RemoteError};
