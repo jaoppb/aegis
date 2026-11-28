@@ -1,0 +1,4 @@
+tailnet_tags = ["tag:app"]
+
+[node]
+service = "files"

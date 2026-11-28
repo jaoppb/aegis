@@ -11,6 +11,7 @@ Nothing here changes a host by itself: you edit files in a checkout, and the onl
 | `~/containers/<stack>/docker-compose.yml` | `hosts/<host>/<stack>/compose.yaml` in git |
 | Project name from the directory | Project `aegis-<stack>` ([agent.md](agent.md)) |
 | A `tailscale` and a `caddy` service in every stack | `[expose]` in `aegis.toml`; Aegis injects both ([exposure.md](exposure.md)) |
+| A hand-written `tailscale` sidecar for a stack that serves raw TCP or UDP (NFS, SMB, DNS) | `[node]` in `aegis.toml`; Aegis injects the sidecar and the service shares its network namespace ([exposure.md](exposure.md#a-node-for-raw-tcp-and-udp)) |
 | Plaintext `.env` on the host | `.env` encrypted with SOPS, decrypted onto tmpfs per deploy ([sops.md](sops.md)) |
 | `TS_AUTHKEY` pasted by hand | Single-use key minted by the controller, only when the node's state volume is empty |
 | `docker compose up -d` over SSH | A commit; the agent converges the host |
@@ -45,7 +46,7 @@ port = 80
 
 `service` is the compose service that serves HTTP, and its name is the tailnet hostname: `vaultwarden` is served at `https://vaultwarden.<tailnet>.ts.net`. If the old node was called something else, rename the service (or pick the name you want) so the hostname stays what your bookmarks use. `tailnet_tags` must be tags the controller allows (`AEGIS_ENROLL_TAGS`) and are exactly the tags of the node. An app that listens on HTTPS itself or that needs raw certificate files is not covered: v0.1.0 serves ts.net HTTPS through the injected Caddy only (`PRODUCT.md`). The app must speak plain HTTP to Caddy, so turn off its own TLS.
 
-Stacks with no `expose` (an internal service, a database, a DNS server) need no `aegis.toml`.
+A stack that serves raw TCP or UDP on its own tailnet node (NFS, SMB, DNS) takes `[node] service = "<name>"` instead of `[expose]`; the service's name is the node's hostname, and it may not set `network_mode`, `networks`, `ports` or `hostname` ([exposure.md](exposure.md#a-node-for-raw-tcp-and-udp)). Stacks that need no tailnet node (an internal service, a database) need no `aegis.toml`.
 
 ### 3. Put data in named volumes or absolute paths
 
@@ -81,7 +82,7 @@ Copy secrets between machines over a channel you trust, and never paste them int
 
 This is the step that breaks hostnames when it is skipped. Tailscale keeps node names unique, so if the old node `vaultwarden` still exists when Aegis enrols a new one, the new node becomes `vaultwarden-1`, and the certificate, the bookmarks and every ACL rule that names the host break.
 
-For a stack with `expose`, in this order:
+For a stack with `expose` or `node`, in this order:
 
 1. Stop the old stack so it does not reconnect and so its ports are free: `docker compose down` in the old directory, **without `-v`**, which would delete its volumes.
 2. Delete the old node in the Tailscale admin console (Machines, the node, Delete). Check that the name is free before you go on.
@@ -101,7 +102,7 @@ aegis diff                     # the stack is "same", and the override of an exp
 aegis status                   # the host confirmed the target commit and the stack is running
 ```
 
-Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack that exposes a service and has a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again.
+Then check what a user sees: the service answers at its previous `https://<hostname>.<tailnet>.ts.net`, the hostname has no `-1` suffix in the admin console, the data is there, and `docker compose ls` shows `aegis-<stack>`. A stack that is `failed` reports the file and the reason (never a secret); fix it in git and push. A stack with `expose` or `node` and a node that is `<name>-1` means step 5 was skipped: delete the old node, delete the `-1` node, remove the volume `aegis-<stack>_tailscale-state` (the sidecar's state only, never a data volume), and let the next reconcile mint again.
 
 ## Rolling back
 
@@ -109,7 +110,7 @@ Until you delete it, the old directory is the way back. To return a stack to han
 
 ## Removing a stack for good
 
-Deleting the directory only stops the stack. To wipe it, set `state = "purged"` in its `aegis.toml`, commit, and delete the directory in a later commit once the agent reports it purged. Purging deletes the stack's named volumes, its read-write absolute host paths and its tailnet node. Its path guard has limits: it crosses a filesystem mounted under a purged path and cannot see `driver_opts` bind devices or a volume another stack uses as `external`, so keep mount points and shared data out of a purged stack's volumes and paths ([agent.md](agent.md), "Known limits"). Check the paths before you commit: this is the one operation that deletes data. For an exposed stack Aegis calls `DELETE /v1/nodes/{hostname}` on the controller, whose OAuth client needs the `devices:core` scope.
+Deleting the directory only stops the stack. To wipe it, set `state = "purged"` in its `aegis.toml`, commit, and delete the directory in a later commit once the agent reports it purged. Purging deletes the stack's named volumes, its read-write absolute host paths and its tailnet node. Its path guard has limits: it crosses a filesystem mounted under a purged path and cannot see `driver_opts` bind devices or a volume another stack uses as `external`, so keep mount points and shared data out of a purged stack's volumes and paths ([agent.md](agent.md), "Known limits"). Check the paths before you commit: this is the one operation that deletes data. For a stack with `expose` or `node` Aegis calls `DELETE /v1/nodes/{hostname}` on the controller, whose OAuth client needs the `devices:core` scope.
 
 ## Controller routes
 

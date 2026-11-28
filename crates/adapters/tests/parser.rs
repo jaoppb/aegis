@@ -2,7 +2,7 @@
 
 use aegis_adapters::{compose, policy};
 use aegis_application::ParseError;
-use aegis_domain::{Access, Mount, Networking, StackState, ValueError};
+use aegis_domain::{Access, Mount, Networking, Reach, StackState, ValueError};
 
 fn first_mount(mount: &str) -> Result<Mount, ParseError> {
     let text = format!("services:\n  app:\n    volumes:\n      - {mount}\n");
@@ -142,7 +142,9 @@ fn an_unknown_key_under_expose_is_a_typed_error() {
 #[test]
 fn a_node_names_the_service_that_joins_the_tailnet_node() {
     let found = policy::parse("[node]\nservice = \"sharefile\"\n").unwrap();
-    assert_eq!(found.node().unwrap().service().as_str(), "sharefile");
+    assert!(
+        matches!(found.reach(), Some(Reach::Raw(node)) if node.service().as_str() == "sharefile")
+    );
     assert_eq!(found.expose(), None);
     assert_eq!(found.tailnet_service().unwrap().as_str(), "sharefile");
 }

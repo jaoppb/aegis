@@ -22,7 +22,7 @@ pub use deployment::{
     StackReport, StackReports,
 };
 pub use peer::{AegisRole, Login, Logins, PeerIdentity};
-pub use policy::{Expose, Node, StackPolicy, StackState, TailnetTags, UpdatePolicy};
+pub use policy::{Expose, Node, Reach, StackPolicy, StackState, TailnetTags, UpdatePolicy};
 pub use removal::{
     HostPaths, Leftover, Leftovers, ProjectNames, Remains, Tombstone, TombstoneError, exposed_node,
     mounted_paths,

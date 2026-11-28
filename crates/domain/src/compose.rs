@@ -314,7 +314,8 @@ pub struct Service {
     mounts: Mounts,
 }
 
-/// What a service is made from and how it is networked.
+/// What a service is made from and how it is networked, kept together because both decide how the
+/// service starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Shape {
     source: ServiceSource,

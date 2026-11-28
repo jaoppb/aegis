@@ -2,8 +2,8 @@
 
 use aegis_domain::{
     Access, Build, DeclaredPath, DesiredState, EnvFile, FileReference, FileRole, Host, Hosts, Line,
-    Location, Mount, Networking, Presence, Problem, ReferenceKind, Rejection, Rejections, RepoPath,
-    Service, ServiceName, Stack, Stacks, ValueError, Violation, Violations, VolumeName,
+    Location, Mount, Networking, Presence, Problem, Reach, ReferenceKind, Rejection, Rejections,
+    RepoPath, Service, ServiceName, Stack, Stacks, ValueError, Violation, Violations, VolumeName,
 };
 
 use crate::loader::unreadable;
@@ -135,7 +135,7 @@ fn exposure_violations(context: &Context<'_>) -> Vec<Violation> {
 
 /// A service that joins the node's network namespace and sets a network of its own.
 fn own_network(context: &Context<'_>, service: &Service) -> Option<Violation> {
-    let joins = context.stack.policy().node().is_some();
+    let joins = matches!(context.stack.policy().reach(), Some(Reach::Raw(_)));
     let own = service.networking() == Networking::Own;
     (joins && own).then(|| {
         let problem = Problem::OwnNetworkOnNodeService {

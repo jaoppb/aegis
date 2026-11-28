@@ -7,7 +7,7 @@ use std::fmt;
 
 use aegis_domain::ValueError;
 use aegis_domain::{
-    Expose, Node, NodeLabel, Port, ProjectName, ServiceName, StackPolicy, TailnetName, TailnetTags,
+    Expose, Node, NodeLabel, Port, ProjectName, Reach, StackPolicy, TailnetName, TailnetTags,
 };
 
 /// The name of the environment variable that carries the minted auth key to Compose.
@@ -53,38 +53,11 @@ pub fn state_volume_of(project: &ProjectName) -> String {
     format!("{project}_{STATE_VOLUME}")
 }
 
-/// How the node of a stack serves its service.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Serving {
-    /// HTTPS, through Caddy.
-    Https(Expose),
-    /// Raw TCP and UDP: the service shares the node's network namespace and no Caddy runs.
-    Raw(Node),
-}
-
-impl Serving {
-    const fn https(&self) -> Option<&Expose> {
-        match self {
-            Self::Https(expose) => Some(expose),
-            Self::Raw(_) => None,
-        }
-    }
-
-    /// The compose service the node serves.
-    #[must_use]
-    pub const fn service(&self) -> &ServiceName {
-        match self {
-            Self::Https(expose) => expose.service(),
-            Self::Raw(node) => node.service(),
-        }
-    }
-}
-
 /// What a stack's `aegis.toml` asks of the tailnet: how to serve a service and the ACL tags of its
 /// node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exposure {
-    serving: Serving,
+    reach: Reach,
     tags: TailnetTags,
 }
 
@@ -93,7 +66,7 @@ impl Exposure {
     #[must_use]
     pub const fn new(expose: Expose, tags: TailnetTags) -> Self {
         Self {
-            serving: Serving::Https(expose),
+            reach: Reach::Https(expose),
             tags,
         }
     }
@@ -102,7 +75,7 @@ impl Exposure {
     #[must_use]
     pub const fn raw(node: Node, tags: TailnetTags) -> Self {
         Self {
-            serving: Serving::Raw(node),
+            reach: Reach::Raw(node),
             tags,
         }
     }
@@ -110,17 +83,17 @@ impl Exposure {
     /// The exposure `policy` asks for, if it asks for one.
     #[must_use]
     pub fn of(policy: &StackPolicy) -> Option<Self> {
-        let tags = policy.tailnet_tags().clone();
-        let https = policy
-            .expose()
-            .map(|expose| Self::new(expose.clone(), tags.clone()));
-        https.or_else(|| policy.node().map(|node| Self::raw(node.clone(), tags)))
+        let reach = policy.reach()?.clone();
+        Some(Self {
+            reach,
+            tags: policy.tailnet_tags().clone(),
+        })
     }
 
     /// How the node serves its service.
     #[must_use]
-    pub const fn serving(&self) -> &Serving {
-        &self.serving
+    pub const fn reach(&self) -> &Reach {
+        &self.reach
     }
 
     /// The ACL tags of the node.
@@ -136,7 +109,7 @@ impl Exposure {
     /// Returns a [`ValueError`] when the service name is not a valid DNS label, for example
     /// because it holds an underscore or an upper-case letter.
     pub fn node(&self) -> Result<NodeLabel, ValueError> {
-        NodeLabel::new(self.serving.service().as_str())
+        NodeLabel::new(self.reach.service().as_str())
     }
 }
 
@@ -205,7 +178,7 @@ impl RenderedSidecar {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarSpec {
     node: NodeLabel,
-    serving: Serving,
+    reach: Reach,
     tailnet: TailnetName,
 }
 
@@ -218,7 +191,7 @@ impl SidecarSpec {
     pub fn new(exposure: &Exposure, tailnet: TailnetName) -> Result<Self, ValueError> {
         Ok(Self {
             node: exposure.node()?,
-            serving: exposure.serving().clone(),
+            reach: exposure.reach().clone(),
             tailnet,
         })
     }
@@ -233,7 +206,7 @@ impl SidecarSpec {
     /// has none.
     #[must_use]
     pub fn caddyfile(&self) -> Option<Caddyfile> {
-        let upstream = self.serving.https()?;
+        let upstream = https_upstream(&self.reach)?;
         let service = upstream.service();
         let port: Port = upstream.port();
         Some(Caddyfile(format!(
@@ -247,12 +220,14 @@ impl SidecarSpec {
     #[must_use]
     pub fn render(&self, key: KeyUse) -> RenderedSidecar {
         let caddyfile = self.caddyfile();
-        let compose = OverrideYaml(self.compose_text(key, caddyfile.as_ref()));
-        RenderedSidecar { compose, caddyfile }
-    }
-
-    fn compose_text(&self, key: KeyUse, caddyfile: Option<&Caddyfile>) -> String {
-        caddyfile.map_or_else(|| self.raw_text(key), |found| self.https_text(key, found))
+        let raw = || self.raw_text(key);
+        let text = caddyfile
+            .as_ref()
+            .map_or_else(raw, |found| self.https_text(key, found));
+        RenderedSidecar {
+            compose: OverrideYaml(text),
+            caddyfile,
+        }
     }
 
     fn https_text(&self, key: KeyUse, caddyfile: &Caddyfile) -> String {
@@ -267,7 +242,7 @@ impl SidecarSpec {
     /// The override of a raw node: the sidecar, and the service joined to its network namespace.
     fn raw_text(&self, key: KeyUse) -> String {
         let tailscale = self.tailscale_service(key, Socket::Absent);
-        let service = self.serving.service();
+        let service = self.reach.service();
         format!(
             "services:\n{tailscale}  {service}:
     network_mode: service:{TAILSCALE_SERVICE}
@@ -300,6 +275,14 @@ volumes:\n  {STATE_VOLUME}:\n"
     }
 }
 
+/// The service Caddy proxies to, when the node serves HTTPS.
+const fn https_upstream(reach: &Reach) -> Option<&Expose> {
+    match reach {
+        Reach::Https(expose) => Some(expose),
+        Reach::Raw(_) => None,
+    }
+}
+
 /// The directory of the tailscale socket, shared with Caddy.
 const SOCKET_DIRECTORY: &str = "/var/run/tailscale";
 
@@ -316,17 +299,17 @@ enum Socket {
 }
 
 impl Socket {
-    const fn environment(self) -> &'static str {
+    fn environment(self) -> String {
         match self {
-            Self::Shared => "      TS_SOCKET: /var/run/tailscale/tailscaled.sock\n",
-            Self::Absent => "",
+            Self::Shared => format!("      TS_SOCKET: {SOCKET_DIRECTORY}/tailscaled.sock\n"),
+            Self::Absent => String::new(),
         }
     }
 
-    const fn volume(self) -> &'static str {
+    fn volume(self) -> String {
         match self {
-            Self::Shared => "      - tailscale-socket:/var/run/tailscale\n",
-            Self::Absent => "",
+            Self::Shared => format!("      - {SOCKET_VOLUME}:{SOCKET_DIRECTORY}\n"),
+            Self::Absent => String::new(),
         }
     }
 }

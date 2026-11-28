@@ -49,17 +49,25 @@ impl Node {
     }
 }
 
-/// How a stack reaches the tailnet. A stack has at most one node, so the two ways exclude each
-/// other.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum Reach {
-    /// The stack has no tailnet node.
-    #[default]
-    Private,
+/// How a stack's tailnet node serves a service. A stack has at most one node, so the two ways
+/// exclude each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
     /// HTTPS through Caddy.
     Https(Expose),
     /// Raw TCP and UDP.
     Raw(Node),
+}
+
+impl Reach {
+    /// The compose service the node serves; its name is the node's hostname.
+    #[must_use]
+    pub const fn service(&self) -> &ServiceName {
+        match self {
+            Self::Https(expose) => expose.service(),
+            Self::Raw(node) => node.service(),
+        }
+    }
 }
 
 /// How image updates are applied. A placeholder until the update policy is designed.
@@ -89,7 +97,7 @@ collection!(
 /// Everything `aegis.toml` can say about a stack. A missing file means all defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackPolicy {
-    reach: Reach,
+    reach: Option<Reach>,
     update: UpdatePolicy,
     tailnet_tags: TailnetTags,
     state: StackState,
@@ -100,7 +108,7 @@ impl StackPolicy {
     #[must_use]
     pub fn new(expose: Option<Expose>, tailnet_tags: TailnetTags, state: StackState) -> Self {
         Self {
-            reach: expose.map_or(Reach::Private, Reach::Https),
+            reach: expose.map(Reach::Https),
             update: UpdatePolicy::default(),
             tailnet_tags,
             state,
@@ -111,7 +119,7 @@ impl StackPolicy {
     #[must_use]
     pub fn with_node(self, node: Node) -> Self {
         Self {
-            reach: Reach::Raw(node),
+            reach: Some(Reach::Raw(node)),
             ..self
         }
     }
@@ -122,33 +130,26 @@ impl StackPolicy {
         Self { update, ..self }
     }
 
-    /// What to expose on the tailnet, if anything.
+    /// What to expose on the tailnet over HTTPS, if anything.
     #[must_use]
     pub const fn expose(&self) -> Option<&Expose> {
         match &self.reach {
-            Reach::Https(expose) => Some(expose),
-            Reach::Private | Reach::Raw(_) => None,
+            Some(Reach::Https(expose)) => Some(expose),
+            Some(Reach::Raw(_)) | None => None,
         }
     }
 
-    /// The raw tailnet node, if the stack asks for one.
+    /// How the stack's tailnet node serves a service, if the stack has a node.
     #[must_use]
-    pub const fn node(&self) -> Option<&Node> {
-        match &self.reach {
-            Reach::Raw(node) => Some(node),
-            Reach::Private | Reach::Https(_) => None,
-        }
+    pub const fn reach(&self) -> Option<&Reach> {
+        self.reach.as_ref()
     }
 
     /// The service whose name is the tailnet hostname, whichever way the stack reaches the
     /// tailnet.
     #[must_use]
-    pub const fn tailnet_service(&self) -> Option<&ServiceName> {
-        match &self.reach {
-            Reach::Https(expose) => Some(expose.service()),
-            Reach::Raw(node) => Some(node.service()),
-            Reach::Private => None,
-        }
+    pub fn tailnet_service(&self) -> Option<&ServiceName> {
+        self.reach.as_ref().map(Reach::service)
     }
 
     /// How image updates are applied.

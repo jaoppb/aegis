@@ -134,6 +134,6 @@ fn the_exposure_of_a_policy_with_a_node_is_raw() {
     let node = Node::new(ServiceName::new("sharefile").unwrap());
     let policy = aegis_domain::StackPolicy::default().with_node(node.clone());
     let exposure = Exposure::of(&policy).unwrap();
-    assert_eq!(exposure.serving(), &aegis_application::Serving::Raw(node));
+    assert_eq!(exposure.reach(), &aegis_domain::Reach::Raw(node));
     assert_eq!(exposure.node().unwrap().as_str(), "sharefile");
 }
