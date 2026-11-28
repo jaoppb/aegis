@@ -92,7 +92,7 @@ mod cases {
     const POLLS: usize = 30;
     const PAUSE: Duration = Duration::from_secs(2);
     const SETTLE: Duration = Duration::from_secs(20);
-    const IMAGE: &str = "tailscale/tailscale:v1.104.6";
+    const IMAGE: &str = "tailscale/tailscale:v1.104.7";
 
     fn variable(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| panic!("set {name}"))
