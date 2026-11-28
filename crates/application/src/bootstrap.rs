@@ -91,17 +91,21 @@ fn validate_repo_url(value: &str) -> Result<(), ValueError> {
     reject_password(value)
 }
 
-/// Refuse `scheme://user:password@host`: a password in the URL would be visible in the process
-/// list and written to the checkout's git config. `ssh://git@host` and scp-style remotes pass.
+/// Refuse credentials in an `http(s)` URL (`https://token@host`, `https://user:password@host`):
+/// they would be visible in the process list and written to the checkout's git config. An SSH
+/// user (`ssh://git@host`) and scp-style remotes (`git@host:path`) carry none and pass.
 fn reject_password(value: &str) -> Result<(), ValueError> {
-    let authority = value
-        .split_once("://")
-        .map(|(_, rest)| rest.split('/').next().unwrap_or_default());
-    let userinfo = authority.and_then(|found| found.rsplit_once('@'));
-    let password = userinfo.is_some_and(|(user, _)| user.contains(':'));
-    password
-        .then_some(())
-        .map_or(Ok(()), |()| Err(ValueError::EmbeddedPassword))
+    let web = value.starts_with("http://") || value.starts_with("https://");
+    let rest = value.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let userinfo = web && authority.contains('@');
+    let password = authority
+        .rsplit_once('@')
+        .is_some_and(|(user, _)| user.contains(':'));
+    if userinfo || password {
+        return Err(ValueError::EmbeddedPassword);
+    }
+    Ok(())
 }
 
 fn validate_controller_url(value: &str) -> Result<(), ValueError> {

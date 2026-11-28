@@ -12,6 +12,12 @@ the `PATH`. Run it as root, or as a user who can reach the Docker socket and own
 `/root/.config/sops/age/keys.txt` for root. Under `sudo`, `HOME` may still be the caller's, so check where
 the key ends up before you rely on the path.
 
+The agent container fetches the repository itself on every reconcile, and the rendered stack mounts no SSH
+key, agent socket or `known_hosts` into it (`docs/agent.md` lists what the agent needs). So `--repo` must be
+a remote the container can read without credentials, such as a public HTTPS URL. For a private repository,
+add the mounts your remote needs to `aegis/agent/compose.yaml` yourself and commit them; bootstrap does not
+do it. A URL with credentials in it (`https://token@host/...`) is refused.
+
 You also need a Tailscale OAuth client with the `auth_keys` (write) scope and both `tag:aegis-agent` and
 `tag:aegis-controller` selected as its tags, so it can mint keys for them (`docs/tailscale-acl.md` has the
 ACL snippet and how the tags are owned). Every bootstrap needs it in the environment, including an
@@ -23,7 +29,7 @@ the process list:
 ```sh
 export TS_OAUTH_CLIENT_ID=...
 export TS_OAUTH_CLIENT_SECRET=...
-aegis bootstrap --repo git@github.com:me/infra.git --host jao-server \
+aegis bootstrap --repo https://github.com/me/infra.git --host jao-server \
   --controller http://jao-server-aegis-controller:7480 --with-controller
 ```
 
@@ -55,7 +61,7 @@ aegis bootstrap --repo git@github.com:me/infra.git --host jao-server \
 
 Copy the rendered `aegis/` directory into your repository and commit it. Aegis never commits for you.
 Until then the agent reconciles no `aegis/` stack, and the `up` that bootstrap ran is all that keeps them
-running. A `repo` clone that does not hold `aegis/` yet is fine.
+running. A `--repo` repository that does not hold `aegis/` yet is fine.
 
 Rerunning it creates nothing twice: the age key and the encrypted credentials are reused, no key is
 minted while a sidecar's state volume holds a node, and the files are left alone when they have not
@@ -85,15 +91,17 @@ it from there. It is consumed when the node first joins and is useless afterward
 the sidecar container still shows it until the container is recreated. Nothing writes it to a file, a log
 or an error.
 
-The `--repo` URL must not carry a password (bootstrap refuses it): it would show in the process list and be
-written to the checkout's git config. Use an SSH remote with a key, or a git credential helper. The
+The `--repo` URL must not carry credentials (bootstrap refuses `https://token@host` and
+`user:password@host`): they would show in the process list and be written to the checkout's git config.
+Use a public remote, an SSH key or a git credential helper. The
 images are pinned by tag; `--image-tag` takes the tag you trust, and the agent holds the Docker socket, so
 a re-pushed tag runs on the host.
 
 ## Limits
 
 The agent also reconciles its own `aegis/agent` stack once it is committed. If that stack changes (a new
-image tag), the agent recreates itself in the middle of a reconcile. The safe handoff is #26 (v0.2.0).
+image tag), the agent recreates itself in the middle of a reconcile; the first reconcile of the committed
+`aegis/agent` does the same once, as described above. The safe handoff is #26 (v0.2.0).
 Until then, to upgrade, re-render with `aegis bootstrap --image-tag <tag>` on the host, copy the new
 `aegis/` files into the repository and commit them: running bootstrap alone is not enough, because the
 agent redeploys the committed files, which still name the old tag. The `aegis/controller` stack stays on

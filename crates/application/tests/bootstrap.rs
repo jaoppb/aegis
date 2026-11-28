@@ -303,6 +303,10 @@ mod cases {
     fn a_recipient_must_be_an_age_public_key() {
         assert!(AgeRecipient::new(RECIPIENT).is_ok());
         assert!(AgeRecipient::new("age1").is_err());
+        assert_eq!(
+            AgeRecipient::new("abc").unwrap_err(),
+            aegis_domain::ValueError::BadPrefix
+        );
         assert!(AgeRecipient::new("AGE-SECRET-KEY-1ABC").is_err());
         assert!(AgeRecipient::new("age1abc\nevil").is_err());
     }
@@ -319,7 +323,10 @@ mod cases {
     #[test]
     fn a_controller_url_is_http_without_quotes_or_interpolation() {
         assert!(ControllerUrl::new("http://controller:7480").is_ok());
-        assert!(ControllerUrl::new("ftp://controller").is_err());
+        assert_eq!(
+            ControllerUrl::new("ftp://controller").unwrap_err(),
+            aegis_domain::ValueError::BadScheme
+        );
         assert!(ControllerUrl::new("http://a\"b").is_err());
         assert!(ControllerUrl::new("http://a/$HOME").is_err());
     }
@@ -388,6 +395,13 @@ mod cases {
         );
         assert!(RepoUrl::new("ssh://git@github.com/me/infra.git").is_ok());
         assert!(RepoUrl::new("https://github.com/me/infra.git").is_ok());
+        assert!(RepoUrl::new("git@github.com:me/infra.git").is_ok());
+        assert_eq!(
+            RepoUrl::new("https://ghp_token@github.com/me/infra.git").unwrap_err(),
+            aegis_domain::ValueError::EmbeddedPassword
+        );
+        assert!(RepoUrl::new("https://host?x=a:b@c").is_ok());
+        assert!(RepoUrl::new("https://host/r?x=a:b").is_ok());
     }
 
     #[test]

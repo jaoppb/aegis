@@ -1,10 +1,9 @@
 //! The `git` CLI adapter of the [`Checkout`] port. The controller's git polling reuses it.
 
 use std::path::PathBuf;
-use std::process::Output;
 use std::time::Duration;
 
-use aegis_application::{Checkout, GitError, Reason};
+use aegis_application::{Checkout, GitError};
 use aegis_domain::CommitSha;
 use tokio::process::Command;
 
@@ -53,16 +52,9 @@ impl GitCheckout {
     async fn step(&self, arguments: &[&str]) -> Result<(), GitError> {
         let output = cli::run(self.command(arguments), String::new(), GIT_TIMEOUT).await;
         output
-            .and_then(|finished| succeeded(&finished))
+            .and_then(|finished| cli::succeeded(&finished, "git"))
             .map_err(GitError::new)
     }
-}
-
-fn succeeded(output: &Output) -> Result<(), Reason> {
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(Reason::new(&format!("git exited with {}", output.status)))
 }
 
 impl Checkout for GitCheckout {

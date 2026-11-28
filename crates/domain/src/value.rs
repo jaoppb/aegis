@@ -30,7 +30,7 @@ pub enum ValueError {
     BadPrefix,
     /// A URL has a scheme the value does not accept.
     BadScheme,
-    /// A URL carries a password, which would end up in a process list or a git config.
+    /// A URL carries credentials, which would end up in a process list or a git config.
     EmbeddedPassword,
 }
 
@@ -50,7 +50,7 @@ impl fmt::Display for ValueError {
             Self::BadPrefix => formatter.write_str("value does not start with the expected prefix"),
             Self::BadScheme => formatter.write_str("URL must start with http:// or https://"),
             Self::EmbeddedPassword => formatter
-                .write_str("URL must not carry a password; use an SSH key or a credential helper"),
+                .write_str("URL must not carry credentials; use an SSH key or a credential helper"),
         }
     }
 }
