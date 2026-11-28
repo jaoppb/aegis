@@ -249,6 +249,38 @@ fn a_dotenv_or_ini_file_with_anything_but_age_metadata_is_refused() {
 }
 
 #[test]
+fn an_ini_header_with_trailing_text_or_a_joined_line_cannot_hide_a_group() {
+    runtime().block_on(async {
+        let group = "hc_vault__list_0__map_vault_address = http://x\n";
+        assert_refused("a.ini", &format!("[sops] ; c\nmac = m\n{group}")).await;
+        assert_refused("b.ini", &format!("[sops]x\nmac = m\n{group}")).await;
+        assert_refused(
+            "c.ini",
+            &format!("[sops]\nunencrypted_suffix = _u \\\n[a]\n{group}"),
+        )
+        .await;
+        assert_refused(
+            "d.ini",
+            &format!("[sops]\nunencrypted_suffix = \"\"\"x\n[a]\n\"\"\"\n{group}"),
+        )
+        .await;
+        assert_refused("e.ini", "[sops]\nmac = `x\n[a]\n`\nhckms__x = 1\n").await;
+        assert_refused("f.ini", "[a]b]\nx = 1\n").await;
+        assert_refused("g.ini", "[sops]\nhckms__x = 1\n[a]\nx = 1\n").await;
+    });
+}
+
+#[test]
+fn flat_keys_are_trimmed_and_key_groups_need_an_age_group() {
+    runtime().block_on(async {
+        assert_refused("a.env", "A=1\n  sops_bogus=1\n").await;
+        assert_refused("b.env", "A=1\nsops_bogus = 1\n").await;
+        assert_refused("c.env", "A=1\nsops_key_groups=1\n").await;
+        assert_refused("d.env", "A=1\nsops_key_groups__list_0=1\n").await;
+    });
+}
+
+#[test]
 fn tags_directives_decoys_and_merge_keys_cannot_supply_the_metadata() {
     runtime().block_on(async {
         let age = r#""sops":{"age":[]}"#;
@@ -300,6 +332,8 @@ fn every_metadata_key_and_age_only_key_groups_are_accepted() {
         accepted("comment.env", "# note\n\nA=ENC[x]\nsops_mac=m\n").await;
         let groups = "A=ENC[x]\nsops_key_groups__list_0__map_age__list_0__map_recipient=age1a\nsops_key_groups__list_1__map_age__list_0__map_enc=e\nsops_shamir_threshold=2\nsops_lastmodified=t\nsops_mac=m\n";
         accepted("groups.env", groups).await;
+        accepted("data.env", "APP_KMS__ARN=x\nsops_mac=m\n").await;
+        accepted("notes.ini", "[sops]\n; note\n\n# n\nmac = m\n").await;
         let ini = "[a]\nkms__x = data\n\n[sops]\nkey_groups__list_0__map_age__list_0__map_recipient = a\nshamir_threshold = 2\nmac = m\nversion = 3\n";
         accepted("groups.ini", ini).await;
     });

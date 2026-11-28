@@ -141,58 +141,70 @@ fn dotenv_is_age_only(text: &str) -> bool {
     metadata.all(|key| flat_key_is_age_only(&key))
 }
 
-/// Where an INI scan is: outside or inside a `[sops]` section, or already refused.
+/// Whether an INI line is one physical line for every reader. The INI reader in `sops` joins a line
+/// that ends with `\` to the next one and reads `"""`, `'''` and backtick values over several lines,
+/// so a `[section]` or a key can hide inside a value for a line-based scan. `sops` writes none of
+/// these (its values are `ENC[...]`), so a file with any is refused.
+fn is_plain_ini_line(line: &str) -> bool {
+    !line.ends_with('\\')
+        && !["\"\"\"", "\'\'\'", "`"]
+            .iter()
+            .any(|quote| line.contains(quote))
+}
+
+/// The name of a section header that is exactly `[name]`, which is how every INI reader takes it.
+/// A header followed by anything (`[sops] ; c`, `[sops]x`) is read differently by different
+/// readers, so it has no name here.
+fn section_name(line: &str) -> Option<&str> {
+    let name = line.strip_prefix('[')?.strip_suffix(']')?;
+    (!name.contains(']')).then_some(name.trim())
+}
+
+/// Which INI section a scan is in.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum IniScan {
-    Outside,
-    Inside,
-    Refused,
+enum Section {
+    Sops,
+    Other,
 }
 
-const fn section_scan(name: &str) -> IniScan {
+const fn section_named(name: &str) -> Section {
     if name.eq_ignore_ascii_case("sops") {
-        IniScan::Inside
+        Section::Sops
     } else {
-        IniScan::Outside
+        Section::Other
     }
 }
 
-fn ini_step(scan: IniScan, line: &str) -> IniScan {
+/// One INI line, in `section`. `None` refuses the file: a line that is not plain, a header that is
+/// not exactly `[name]`, or a key of the `[sops]` section that is not age metadata.
+fn ini_step(section: Section, line: &str) -> Option<Section> {
     let line = line.trim();
-    if scan == IniScan::Refused {
-        return scan;
+    if !is_plain_ini_line(line) {
+        return None;
     }
-    if let Some(section) = line.strip_prefix('[') {
-        let named = section.trim_end_matches(']').trim();
-        return section_scan(named);
+    if line.starts_with('[') {
+        return section_name(line).map(section_named);
     }
     let key = line.split(['=', ':']).next().unwrap_or_default().trim();
     let skipped = key.is_empty() || key.starts_with([';', '#']);
     let fine =
-        scan == IniScan::Outside || skipped || flat_key_is_age_only(&key.to_ascii_lowercase());
-    if fine { scan } else { IniScan::Refused }
+        section == Section::Other || skipped || flat_key_is_age_only(&key.to_ascii_lowercase());
+    fine.then_some(section)
 }
 
-/// INI: every key of a `[sops]` section (in any case) must be age-only metadata.
+/// INI: every key of a `[sops]` section (in any case) must be age-only metadata, and no line may
+/// be one that readers could split or join differently.
 fn ini_is_age_only(text: &str) -> bool {
-    text.lines().fold(IniScan::Outside, ini_step) != IniScan::Refused
+    text.lines().try_fold(Section::Other, ini_step).is_some()
 }
 
-/// Dotenv and INI: ASCII only, because a non-ASCII key could fold into a name `sops` knows, and
-/// only age metadata in the flattened `sops` entries.
-fn flat_is_age_only(layout: Layout, text: &str) -> bool {
-    let metadata = match layout {
-        Layout::Ini => ini_is_age_only(text),
-        _ => dotenv_is_age_only(text),
-    };
-    text.is_ascii() && metadata
-}
-
-/// Whether the file read as `layout` uses only age recipients.
+/// Whether the file read as `layout` uses only age recipients. Dotenv and INI files must also be
+/// ASCII, because a non-ASCII key could fold into a name `sops` knows.
 fn is_age_only(layout: Layout, text: &str) -> bool {
     match layout {
         Layout::Json | Layout::Yaml => structured_is_age_only(text),
-        Layout::Ini | Layout::Dotenv => flat_is_age_only(layout, text),
+        Layout::Ini => text.is_ascii() && ini_is_age_only(text),
+        Layout::Dotenv => text.is_ascii() && dotenv_is_age_only(text),
     }
 }
 
