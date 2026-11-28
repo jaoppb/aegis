@@ -62,7 +62,7 @@ build-release:
         # An image package is a script that streams the tarball: run it, as release.yml does.
         case "$package" in *-image) "$out" >/dev/null ;; esac
         # The binaries must stay static: a dynamic one would still compile.
-        case "$package" in *-image) ;; *) file -L "$out/bin/$package" | grep -q 'static' ;; esac
+        case "$package" in *-image) ;; *) file -b -L "$out/bin/$package" | grep -qE '(statically|static-pie) linked' || { echo "$package is not statically linked" >&2; exit 1; } ;; esac
     done
 
 # Fail on unpinned or mismatched action references (reads action versions through `gh`, so it needs network).
