@@ -74,7 +74,7 @@ The tailscale sidecar and Caddy boilerplate that each stack used to hand-write i
 
 - **Image update policy granularity:** per stack or per service, and is semver range syntax needed? It affects the `aegis.toml` schema in v0.2.0. Per-stack is simpler; per-service handles mixed stacks such as monitoring.
 - **Controller state:** is it purely derived (git plus a live query to agents), or is there a local store for event history? Derived means nothing to back up; a store gives history for the UI.
-- **Apps that need raw cert files** (clip-cascade today): should Aegis export certs into a volume, or should such apps sit behind the injected Caddy? Export keeps the app as it is; Caddy means less code.
+- **Apps that need raw cert files** (none in v0.1.0; the one that did, clip-cascade, is dropped): should Aegis export certs into a volume, or should such apps sit behind the injected Caddy? Export keeps the app as it is; Caddy means less code. Still open: it is decided with the raw cert export planned for v0.3.0.
 - **Poll interval and per-host reconcile concurrency:** set the defaults during implementation.
 
 ### Risks
