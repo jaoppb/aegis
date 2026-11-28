@@ -23,7 +23,7 @@ The checkout must already exist: the agent runs `git fetch origin` and `git chec
 
 ## Docker
 
-The agent runs `docker compose` against the local daemon. The socket comes from `DOCKER_HOST` (also `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); apart from `PATH`, `HOME` and `SSL_CERT_FILE`, no other variable of the agent reaches Compose, so `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME` in its environment have no effect.
+The agent runs `docker compose` against the local daemon. The socket comes from `DOCKER_HOST` (also `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`); apart from `PATH`, `HOME`, `XDG_RUNTIME_DIR` and `SSL_CERT_FILE`, no other variable of the agent reaches Compose, so `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME` in its environment have no effect.
 
 - Rootful: `DOCKER_HOST=unix:///var/run/docker.sock`.
 - Rootless: `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`.
