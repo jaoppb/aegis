@@ -4,7 +4,6 @@
 //! and nothing it prints is ever kept: a failure names the file and the reason (an exit status, a
 //! launch error or the refusal of a foreign key group), never the output.
 
-use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
@@ -31,9 +30,11 @@ const INHERITED: [&str; 7] = [
     "SOPS_AGE_SSH_PRIVATE_KEY_FILE",
 ];
 
-/// The key groups `sops` can use besides age. The file's author picks them, and `sops` would act on
-/// them (a request to a URL of the author's choosing, `gpg`, cloud credentials of the host), so a
-/// file that uses any is refused.
+/// The key groups `sops` can use besides age, which older `sops` wrote as empty `null` entries.
+/// The file's author picks the groups, and `sops` would act on them (a request to a URL of the
+/// author's choosing, `gpg`, cloud credentials of the host). Only these names are tolerated when
+/// empty; every other name, and every non-empty group, is refused, so a group a newer `sops` adds
+/// (such as `hckms`) is refused too.
 const FOREIGN_KEYS: [&str; 5] = ["kms", "gcp_kms", "azure_kv", "hc_vault", "pgp"];
 
 /// The keys of the `sops` metadata of a YAML or JSON file that are accepted. A foreign group is
@@ -89,8 +90,9 @@ fn masquerades_as_metadata(key: &str) -> bool {
 }
 
 /// YAML tags (`!!binary sops`) and directives (`%TAG`) that change how the parser in `sops` reads
-/// a key, but that this parser drops silently. Real `sops` output has none: its values are
-/// `ENC[...]` and its comments are encrypted.
+/// a key, but that this parser drops silently. `sops` writes none, and its encrypted values and
+/// comments are `ENC[...]`; a plaintext part of a file, such as a key name or a value left
+/// unencrypted by an `unencrypted_*` option, must avoid `!` and a leading `%` too.
 fn has_tag_or_directive(text: &str) -> bool {
     text.contains('!') || text.lines().any(|line| line.starts_with('%'))
 }
@@ -121,21 +123,76 @@ fn structured_is_age_only(text: &str) -> bool {
     })
 }
 
-/// Dotenv and INI: ASCII only, because a non-ASCII key could fold into a group name, and no
-/// flattened `sops_<group>__...` or `<group>__...` entry. Real `sops` output is ASCII.
-fn flat_is_age_only(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    text.is_ascii()
-        && !FOREIGN_KEYS
-            .iter()
-            .any(|group| lower.contains(&format!("{group}__")))
+/// Whether the flattened metadata key `key` (lowercase, without any `sops_` prefix) is one that
+/// `sops` writes for age: a known metadata key, or `key_groups__list_<n>__map_age__...`.
+fn flat_key_is_age_only(key: &str) -> bool {
+    let mut parts = key.split("__");
+    match parts.next().unwrap_or_default() {
+        "key_groups" => parts.nth(1) == Some("map_age"),
+        name => METADATA_KEYS.contains(&name),
+    }
 }
 
-/// Whether the file at `file`, read as its extension says, uses only age recipients.
-fn is_age_only(file: &Path, text: &str) -> bool {
-    match Layout::of(&file.to_string_lossy()) {
+/// Dotenv: every `sops_<key>=` entry must be age-only metadata. Other entries are the file's data.
+fn dotenv_is_age_only(text: &str) -> bool {
+    let entries = text.lines().filter_map(|line| line.split_once('='));
+    let keys = entries.map(|(key, _)| key.trim().to_ascii_lowercase());
+    let mut metadata = keys.filter_map(|key| key.strip_prefix("sops_").map(str::to_owned));
+    metadata.all(|key| flat_key_is_age_only(&key))
+}
+
+/// Where an INI scan is: outside or inside a `[sops]` section, or already refused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IniScan {
+    Outside,
+    Inside,
+    Refused,
+}
+
+const fn section_scan(name: &str) -> IniScan {
+    if name.eq_ignore_ascii_case("sops") {
+        IniScan::Inside
+    } else {
+        IniScan::Outside
+    }
+}
+
+fn ini_step(scan: IniScan, line: &str) -> IniScan {
+    let line = line.trim();
+    if scan == IniScan::Refused {
+        return scan;
+    }
+    if let Some(section) = line.strip_prefix('[') {
+        let named = section.trim_end_matches(']').trim();
+        return section_scan(named);
+    }
+    let key = line.split(['=', ':']).next().unwrap_or_default().trim();
+    let skipped = key.is_empty() || key.starts_with([';', '#']);
+    let fine =
+        scan == IniScan::Outside || skipped || flat_key_is_age_only(&key.to_ascii_lowercase());
+    if fine { scan } else { IniScan::Refused }
+}
+
+/// INI: every key of a `[sops]` section (in any case) must be age-only metadata.
+fn ini_is_age_only(text: &str) -> bool {
+    text.lines().fold(IniScan::Outside, ini_step) != IniScan::Refused
+}
+
+/// Dotenv and INI: ASCII only, because a non-ASCII key could fold into a name `sops` knows, and
+/// only age metadata in the flattened `sops` entries.
+fn flat_is_age_only(layout: Layout, text: &str) -> bool {
+    let metadata = match layout {
+        Layout::Ini => ini_is_age_only(text),
+        _ => dotenv_is_age_only(text),
+    };
+    text.is_ascii() && metadata
+}
+
+/// Whether the file read as `layout` uses only age recipients.
+fn is_age_only(layout: Layout, text: &str) -> bool {
+    match layout {
         Layout::Json | Layout::Yaml => structured_is_age_only(text),
-        Layout::Ini | Layout::Dotenv => flat_is_age_only(text),
+        Layout::Ini | Layout::Dotenv => flat_is_age_only(layout, text),
     }
 }
 
@@ -160,8 +217,8 @@ impl SopsDecrypt {
         }
     }
 
-    fn command(&self, file: &HostPath) -> Command {
-        let format = Layout::of(file.as_str()).sops_type();
+    fn command(&self, file: &HostPath, layout: Layout) -> Command {
+        let format = layout.sops_type();
         let mut command = Command::new(&self.program);
         cli::inherit_only(&mut command, &INHERITED);
         command.args(["decrypt", "--input-type", format, "--output-type", format]);
@@ -189,12 +246,13 @@ impl SecretDecryptor for SopsDecrypt {
         let present = tokio::fs::try_exists(file.as_str()).await;
         let present = present.map_err(|cause| failed(file, &cause.kind()))?;
         present.then_some(()).ok_or(DecryptError::Missing)?;
+        let layout = Layout::of(file.as_str());
         let text = tokio::fs::read_to_string(file.as_str()).await;
         let text = text.map_err(|cause| failed(file, &cause.kind()))?;
-        is_age_only(Path::new(file.as_str()), &text)
+        is_age_only(layout, &text)
             .then_some(())
             .ok_or_else(|| failed(file, &"only age recipients are accepted"))?;
-        let output = cli::run(self.command(file), String::new(), SOPS_TIMEOUT)
+        let output = cli::run(self.command(file, layout), String::new(), SOPS_TIMEOUT)
             .await
             .map_err(|reason| failed(file, &reason))?;
         plaintext(file, &output)

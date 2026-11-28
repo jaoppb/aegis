@@ -95,3 +95,32 @@ impl EncryptionCheck for SopsCheck {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Layout;
+
+    #[test]
+    fn structured_extensions_have_their_layout() {
+        assert_eq!(Layout::of("a.json"), Layout::Json);
+        assert_eq!(Layout::of("a.yaml"), Layout::Yaml);
+        assert_eq!(Layout::of("dir/a.yml"), Layout::Yaml);
+    }
+
+    #[test]
+    fn the_other_extensions_are_ini_or_dotenv() {
+        assert_eq!(Layout::of("a.ini"), Layout::Ini);
+        assert_eq!(Layout::of("a.env"), Layout::Dotenv);
+        assert_eq!(Layout::of(".env"), Layout::Dotenv);
+        assert_eq!(Layout::of("secrets"), Layout::Dotenv);
+        assert_eq!(Layout::of("a.pem"), Layout::Dotenv);
+    }
+
+    #[test]
+    fn each_layout_has_its_sops_type() {
+        assert_eq!(Layout::Json.sops_type(), "json");
+        assert_eq!(Layout::Yaml.sops_type(), "yaml");
+        assert_eq!(Layout::Ini.sops_type(), "ini");
+        assert_eq!(Layout::Dotenv.sops_type(), "dotenv");
+    }
+}

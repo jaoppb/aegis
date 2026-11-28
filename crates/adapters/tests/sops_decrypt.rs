@@ -56,7 +56,9 @@ impl Sandbox {
 #[cfg(test)]
 fn sealed_text(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some("yaml") => "a: ENC[x]\nsops:\n  age: []\n  mac: m\n  version: 3.13.3\n",
+        Some("yaml" | "yml") => "a: ENC[x]\nsops:\n  age: []\n  mac: m\n  version: 3.13.3\n",
+        Some("json") => r#"{"a": "ENC[x]", "sops": {"age": [], "mac": "m", "version": "3"}}"#,
+        Some("ini") => "[a]\nx = ENC[x]\n\n[sops]\nmac = m\nversion = 3\n",
         _ => "A=ENC[x]\nsops_mac=m\n",
     }
 }
@@ -225,11 +227,24 @@ fn escapes_aliases_explicit_keys_and_unicode_folding_cannot_hide_a_group() {
 }
 
 #[test]
-fn a_flattened_group_name_or_a_non_ascii_key_refuses_a_dotenv_or_ini_file() {
+fn a_dotenv_or_ini_file_with_anything_but_age_metadata_is_refused() {
     runtime().block_on(async {
-        assert_refused("a.env", "APP_KMS__ARN=x\nsops_mac=m\n").await;
-        assert_refused("b.env", "K\u{212a}MS=1\nsops_mac=m\n").await;
-        assert_refused("c.ini", "[sops]\nKMS__list_0__map_arn = x\n").await;
+        assert_refused(
+            "a.env",
+            "A=1\nsops_hckms__list_0__map_key_id=x\nsops_mac=m\n",
+        )
+        .await;
+        assert_refused("b.env", "A=1\nSOPS_HC_VAULT__list_0__map_vault_address=x\n").await;
+        assert_refused("c.env", "A=1\nsops_bogus=1\nsops_mac=m\n").await;
+        let kms_group = "sops_key_groups__list_0__map_kms__list_0__map_arn=x\n";
+        assert_refused("d.env", &format!("A=1\n{kms_group}")).await;
+        assert_refused("e.ini", "[sops]\nhckms__list_0__map_key_id = x\nmac = m\n").await;
+        assert_refused("f.ini", "[SOPS ]\nbogus = 1\n").await;
+        assert_refused(
+            "g.ini",
+            "[a]\nx = 1\n[sops]\nmac = m\n[sops]\npgp__list_0__map_fp = A\n",
+        )
+        .await;
     });
 }
 
@@ -283,15 +298,58 @@ fn every_metadata_key_and_age_only_key_groups_are_accepted() {
         let all = "a: ENC[x]\nsops:\n  age: []\n  mac: m\n  version: 3.13.3\n  lastmodified: t\n  unencrypted_suffix: _u\n  encrypted_suffix: _e\n  unencrypted_regex: r\n  encrypted_regex: r\n  unencrypted_comment_regex: r\n  encrypted_comment_regex: r\n  mac_only_encrypted: true\n  shamir_threshold: 2\n  key_groups:\n    - age:\n        - recipient: age1abc\n    - age: []\n";
         accepted("all.yaml", all).await;
         accepted("comment.env", "# note\n\nA=ENC[x]\nsops_mac=m\n").await;
+        let groups = "A=ENC[x]\nsops_key_groups__list_0__map_age__list_0__map_recipient=age1a\nsops_key_groups__list_1__map_age__list_0__map_enc=e\nsops_shamir_threshold=2\nsops_lastmodified=t\nsops_mac=m\n";
+        accepted("groups.env", groups).await;
+        let ini = "[a]\nkms__x = data\n\n[sops]\nkey_groups__list_0__map_age__list_0__map_recipient = a\nshamir_threshold = 2\nmac = m\nversion = 3\n";
+        accepted("groups.ini", ini).await;
     });
 }
 
 #[test]
-fn a_non_ascii_key_or_colon_delimited_group_refuses_a_flat_file() {
+fn non_ascii_text_or_a_colon_delimited_group_refuses_a_flat_file() {
     runtime().block_on(async {
         assert_refused("a.ini", "[sops]\n\u{212a}ms__list_0__map_arn: x\n").await;
         assert_refused("b.ini", "[sops]\nkms__list_0__map_arn: x\n").await;
         assert_refused("c.env", "A=ENC[x]\nsops_azure_\u{212a}v__x=y\n").await;
+        assert_refused("d.env", "A=ENC[x]\nB=\u{e9}\nsops_mac=m\n").await;
+        assert_refused("e.ini", "[a]\nx = \u{e9}\n[sops]\nmac = m\n").await;
+    });
+}
+
+#[test]
+fn a_yaml_directive_and_a_yaml_tag_are_each_refused_on_their_own() {
+    runtime().block_on(async {
+        assert_refused("a.yaml", "%YAML 1.2\n---\nsops: {age: []}\n").await;
+        assert_refused("b.yaml", "a: !!str x\nsops: {age: []}\n").await;
+        assert_refused("c.yaml", "sops: {age: []}\n!!binary x: 1\n").await;
+    });
+}
+
+#[test]
+fn a_metadata_that_is_not_a_mapping_of_names_is_refused() {
+    runtime().block_on(async {
+        assert_refused("a.yaml", "sops: {age: [], 1: x}\n").await;
+        assert_refused("b.yaml", "sops: scalar\n").await;
+        assert_refused("c.yaml", "sops: [age]\n").await;
+    });
+}
+
+#[cfg(test)]
+async fn assert_type(name: &str, kind: &str) {
+    let sandbox = Sandbox::new(&format!("type-{kind}"), 0).await;
+    let file = sandbox.encrypted(name).await;
+    sandbox.decryptor().decrypt(&file).await.unwrap();
+    let log = tokio::fs::read_to_string(sandbox.log()).await.unwrap();
+    let expected = format!("--input-type {kind} --output-type {kind}");
+    assert!(log.contains(&expected), "{name}: {log}");
+}
+
+#[test]
+fn every_format_is_decrypted_with_its_own_type() {
+    runtime().block_on(async {
+        assert_type("a.json", "json").await;
+        assert_type("a.ini", "ini").await;
+        assert_type("a.yml", "yaml").await;
     });
 }
 
