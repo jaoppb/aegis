@@ -10,6 +10,10 @@ use tokio::process::Command;
 
 use crate::cli;
 
+/// The environment git inherits from the agent, and nothing else: no `GIT_DIR`, `GIT_WORK_TREE`
+/// or `GIT_SSH_COMMAND` can redirect it.
+const INHERITED: [&str; 4] = ["PATH", "HOME", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME"];
+
 /// How long one git command may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -45,6 +49,11 @@ impl GitCheckout {
     fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new(&self.program);
         command.arg("-C").arg(&self.directory).args(arguments);
+        command.env_clear();
+        let inherited = INHERITED
+            .iter()
+            .filter_map(|name| std::env::var_os(name).map(|value| (*name, value)));
+        command.envs(inherited);
         command.env("GIT_TERMINAL_PROMPT", "0");
         command
     }

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use aegis_adapters::{FsRepo, SerdeStackParser, SopsCheck};
 use aegis_application::{
-    Checkout, ComposeError, ComposeRunner, DeployRequest, GitError, Ports, Reason, Reconcile,
-    ReconcileError, Reconciler, Repository,
+    Checkout, ComposeError, ComposeRunner, DeployRequest, GitError, Reason, Reconcile,
+    ReconcileError, ReconcilePorts, Reconciler, Repository,
 };
 use aegis_domain::{
     CommitSha, Deployment, HostName, Report, ReservedStacks, ServiceName, StackName, StackReport,
@@ -84,7 +84,7 @@ fn reconciler_with(
 ) -> Reconciler<FakeGit, FakeCompose> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/reconcile");
     let repository = Repository::new(FsRepo::new(root), SerdeStackParser, SopsCheck);
-    let ports = Ports::new(git.clone(), compose.clone(), repository);
+    let ports = ReconcilePorts::new(git.clone(), compose.clone(), repository);
     let names = reserved.iter().map(|name| StackName::new(*name).unwrap());
     Reconciler::new(HostName::new("host").unwrap(), ports)
         .with_reserved(ReservedStacks::new(names.collect()))
@@ -136,14 +136,27 @@ fn only_the_valid_active_stacks_of_the_host_are_deployed() {
 }
 
 #[test]
-fn applying_the_same_state_twice_deploys_the_same_requests() {
+fn applying_the_same_state_twice_sends_the_same_requests_and_reports_the_same() {
     let compose = FakeCompose::default();
     let first = reconcile(&FakeGit::default(), &compose).unwrap();
     let second = reconcile(&FakeGit::default(), &compose).unwrap();
     let requests = compose.requests();
-    let (earlier, later) = requests.split_at(requests.len() / 2);
+    let (earlier, later) = requests.split_at(2);
+    assert_eq!(requests.len(), 4);
     assert_eq!(first, second);
     assert_eq!(earlier, later);
+}
+
+#[test]
+fn a_stacks_override_file_is_never_handed_to_compose() {
+    let compose = FakeCompose::default();
+    reconcile(&FakeGit::default(), &compose).unwrap();
+    let requests = compose.requests();
+    let web = requests
+        .iter()
+        .find(|request| request.target().project().as_str() == "aegis-web")
+        .unwrap();
+    assert!(web.extras().files().as_slice().is_empty());
 }
 
 #[test]
@@ -205,7 +218,7 @@ fn another_hosts_stacks_and_purged_stacks_are_left_alone() {
     assert!(
         !listed
             .iter()
-            .any(|directory| directory.contains("elsewhere"))
+            .any(|directory| directory.contains("elsewhere") || directory.contains("host2"))
     );
     assert!(!listed.contains(&"hosts/host/gone"));
 }

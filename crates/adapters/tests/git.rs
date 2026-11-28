@@ -10,7 +10,17 @@ use tokio::process::Command;
 #[cfg(test)]
 async fn git(directory: &Path, arguments: &[&str]) -> String {
     let output = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-C"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-C",
+        ])
         .arg(directory)
         .args(arguments)
         .output()

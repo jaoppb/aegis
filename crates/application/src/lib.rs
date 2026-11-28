@@ -18,6 +18,6 @@ pub use deploy::{
 pub use loader::load_desired_state;
 pub use outcome::Outcome;
 pub use parse::{ParseError, StackParser};
-pub use reconcile::{Ports, Reconcile, ReconcileError, Reconciler, Repository};
+pub use reconcile::{Reconcile, ReconcileError, ReconcilePorts, Reconciler, Repository};
 pub use source::{DirEntry, EntryKind, EntryName, Reason, RepoSource, SourceError};
 pub use validate::{EncryptionCheck, validate_desired_state};

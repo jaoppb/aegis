@@ -5,8 +5,8 @@ use std::fmt;
 use std::future::Future;
 
 use aegis_domain::{
-    CommitSha, Deployment, Detail, Host, HostName, Origin, Rejection, RepoPath, Report,
-    ReservedStacks, Stack, StackReport, StackReports, StackState,
+    CommitSha, Deployment, Detail, Host, HostName, Origin, ProjectName, Rejection, RepoPath,
+    Report, ReservedStacks, Stack, StackReport, StackReports, StackState, ValueError,
 };
 
 use crate::deploy::{BuiltServices, Checkout, ComposeRunner, DeployRequest, GitError, Target};
@@ -71,13 +71,13 @@ impl Repository {
 
 /// The ports a reconcile works through.
 #[derive(Debug)]
-pub struct Ports<Git, Docker> {
+pub struct ReconcilePorts<Git, Docker> {
     git: Git,
     compose: Docker,
     repository: Repository,
 }
 
-impl<Git, Docker> Ports<Git, Docker> {
+impl<Git, Docker> ReconcilePorts<Git, Docker> {
     /// The ports: `git` moves the checkout, `compose` runs stacks, `repository` reads them.
     #[must_use]
     pub const fn new(git: Git, compose: Docker, repository: Repository) -> Self {
@@ -106,14 +106,14 @@ pub trait Reconcile {
 #[derive(Debug)]
 pub struct Reconciler<Git, Docker> {
     host: HostName,
-    ports: Ports<Git, Docker>,
+    ports: ReconcilePorts<Git, Docker>,
     reserved: ReservedStacks,
 }
 
 impl<Git, Docker> Reconciler<Git, Docker> {
     /// A reconciler for `host` working through `ports`.
     #[must_use]
-    pub const fn new(host: HostName, ports: Ports<Git, Docker>) -> Self {
+    pub const fn new(host: HostName, ports: ReconcilePorts<Git, Docker>) -> Self {
         Self {
             host,
             ports,
@@ -215,7 +215,7 @@ async fn deploy<Docker: ComposeRunner + Sync>(
 ) -> StackReport {
     let deployment = match request_for(unit, commit) {
         Ok(request) => run_stack(compose, &request).await,
-        Err(failed) => failed,
+        Err(error) => Deployment::Failed(Detail::new(&error.to_string())),
     };
     StackReport::new(unit.directory.clone(), deployment)
 }
@@ -230,9 +230,8 @@ async fn run_stack<Docker: ComposeRunner + Sync>(
     }
 }
 
-fn request_for(unit: &Unit<'_>, commit: &CommitSha) -> Result<DeployRequest, Deployment> {
-    let project = aegis_domain::ProjectName::of(unit.stack.name())
-        .map_err(|error| Deployment::Failed(Detail::new(&error.to_string())))?;
+fn request_for(unit: &Unit<'_>, commit: &CommitSha) -> Result<DeployRequest, ValueError> {
+    let project = ProjectName::of(unit.stack.name())?;
     let target = Target::new(project, unit.directory.clone());
     Ok(DeployRequest::new(
         target,
@@ -266,10 +265,12 @@ fn invalid(outcome: &Outcome, scope: &Scope<'_>) -> StackReports {
 /// Whether `rejection` is about the host directory, one of its stacks or an opted-in reserved
 /// stack.
 fn belongs(rejection: &Rejection, scope: &Scope<'_>) -> bool {
-    let directory = rejection.directory().as_str();
-    let own = format!("hosts/{}", scope.host);
-    let reserved = scope.reserved.iter().map(|name| format!("aegis/{name}"));
-    directory == own
-        || directory.starts_with(&format!("{own}/"))
-        || reserved.into_iter().any(|path| path == directory)
+    let directory = rejection.directory();
+    let own = RepoPath::hosts_root().listed(scope.host.as_str());
+    let reserved = RepoPath::reserved_root();
+    let opted = scope
+        .reserved
+        .iter()
+        .any(|name| *directory == reserved.listed(name.as_str()));
+    directory.is_within(&own) || opted
 }

@@ -41,7 +41,7 @@ impl Sandbox {
 
     async fn install_fake(&self, exit_code: i32) {
         let script = format!(
-            "#!/bin/sh\n{{\necho \"ARGS:$*\"\necho \"PWD:$(pwd)\"\necho \"COMPOSE_FILE:${{COMPOSE_FILE-unset}}\"\n\
+            "#!/bin/sh\n{{\necho \"ARGS:$*\"\necho \"PWD:$(pwd)\"\necho \"COMPOSE_FILE:${{COMPOSE_FILE-unset}}\"\necho \"DOCKER_HOST:${{DOCKER_HOST-unset}}\"\necho \"ENVNAMES:$(env | cut -d= -f1 | sort | tr '\\n' ' ')\"\n\
              echo \"TOKEN:${{TOKEN-unset}}\"\necho \"STDIN:\"\ncat\n}} >> {log}\n\
              echo \"boom $TOKEN\" >&2\nexit {exit_code}\n",
             log = self.log().display()
@@ -103,12 +103,40 @@ fn a_stack_is_brought_up_under_its_project_with_only_its_own_compose_file() {
     });
 }
 
+/// Runs only inside the child process the next test starts, where the parent has set variables
+/// that must not reach Compose.
 #[test]
-fn the_agents_compose_variables_do_not_reach_compose() {
+fn inherited_environment_child() {
+    let Ok(root) = std::env::var("AEGIS_CHILD_SANDBOX") else {
+        return;
+    };
+    let sandbox = Sandbox {
+        root: PathBuf::from(root),
+    };
+    runtime().block_on(async {
+        run(&sandbox.runner(), &request(&[])).await.unwrap();
+    });
+}
+
+#[test]
+fn only_the_docker_socket_and_search_path_variables_reach_compose() {
     runtime().block_on(async {
         let sandbox = Sandbox::new("env", 0).await;
-        run(&sandbox.runner(), &request(&[])).await.unwrap();
-        assert!(sandbox.recorded().await.contains("COMPOSE_FILE:unset"));
+        let socket = "unix:///run/user/1000/docker.sock";
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "inherited_environment_child"])
+            .env("AEGIS_CHILD_SANDBOX", &sandbox.root)
+            .env("DOCKER_HOST", socket)
+            .env("COMPOSE_FILE", "evil.yaml")
+            .env("COMPOSE_PROJECT_NAME", "evil")
+            .status()
+            .unwrap();
+        let recorded = sandbox.recorded().await;
+        assert!(status.success());
+        assert!(recorded.contains(&format!("DOCKER_HOST:{socket}")));
+        assert!(recorded.contains("COMPOSE_FILE:unset"));
+        assert!(!recorded.contains("COMPOSE_PROJECT_NAME"));
+        assert!(!recorded.contains("AEGIS_CHILD_SANDBOX"));
     });
 }
 

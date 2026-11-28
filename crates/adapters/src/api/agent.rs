@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aegis_api::version_1::{RECONCILE_PATH, ReconcileRequest, Role, StatusReport};
-use aegis_application::{Ports, Reconcile, Reconciler, Repository, WhoIs};
+use aegis_application::{Reconcile, ReconcilePorts, Reconciler, Repository, WhoIs};
 use aegis_domain::{CommitSha, HostName, ReservedStacks, StackName};
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use tokio::net::TcpListener;
@@ -48,17 +49,40 @@ where
         .with_state(Arc::new(agent))
 }
 
+/// A refused reconcile: a status and a short plain-text reason that holds no secrets.
+struct Refusal {
+    status: StatusCode,
+    reason: String,
+}
+
+impl Refusal {
+    fn new(status: StatusCode, reason: &impl std::fmt::Display) -> Self {
+        Self {
+            status,
+            reason: reason.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for Refusal {
+    fn into_response(self) -> Response {
+        (self.status, self.reason).into_response()
+    }
+}
+
 async fn reconcile<Run>(
     State(agent): State<Arc<Agent<Run>>>,
     Json(request): Json<ReconcileRequest>,
-) -> Result<Json<StatusReport>, StatusCode>
+) -> Result<Json<StatusReport>, Refusal>
 where
     Run: Reconcile + Send + Sync + 'static,
 {
-    let commit = CommitSha::new(request.commit()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let commit = CommitSha::new(request.commit())
+        .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
     let _turn = agent.turn.lock().await;
     let done = agent.reconciler.reconcile(commit).await;
-    let report = status_report(&done.map_err(|_| StatusCode::BAD_GATEWAY)?);
+    let report =
+        status_report(&done.map_err(|error| Refusal::new(StatusCode::BAD_GATEWAY, &error))?);
     // Reporting is best effort: the controller also gets the report as the answer.
     agent.controller.report_status(&report).await.ok();
     Ok(Json(report))
@@ -117,7 +141,7 @@ impl Settings {
     fn reconciler(&self) -> Reconciler<GitCheckout, DockerCompose> {
         let repository = Repository::new(FsRepo::new(&self.checkout), SerdeStackParser, SopsCheck);
         let git = GitCheckout::new(&self.checkout);
-        let ports = Ports::new(git, DockerCompose::new(&self.checkout), repository);
+        let ports = ReconcilePorts::new(git, DockerCompose::new(&self.checkout), repository);
         Reconciler::new(self.hosting.host.clone(), ports)
             .with_reserved(self.hosting.reserved.clone())
     }

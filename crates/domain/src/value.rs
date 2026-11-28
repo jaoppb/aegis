@@ -299,6 +299,13 @@ impl RepoPath {
 }
 
 impl RepoPath {
+    /// Whether this path is `parent` or lies below it, compared by whole segments.
+    #[must_use]
+    pub fn is_within(&self, parent: &Self) -> bool {
+        let below = self.0.strip_prefix(parent.as_str());
+        below.is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
+
     /// The `hosts` directory that holds the user stacks.
     #[must_use]
     pub fn hosts_root() -> Self {

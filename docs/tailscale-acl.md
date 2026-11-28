@@ -38,7 +38,7 @@ Tag the nodes when they join the tailnet, for example `tailscale up --advertise-
 
 ## Running a server
 
-Both binaries read one environment variable and fail at start-up when it is missing or is not a socket address:
+Both binaries read `AEGIS_LISTEN` and fail at start-up when it is missing or is not a socket address. The agent needs more variables, listed in [agent.md](agent.md):
 
 ```sh
 AEGIS_LISTEN=100.64.0.7:7480 aegis-agent

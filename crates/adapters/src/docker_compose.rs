@@ -31,9 +31,6 @@ const INHERITED: [&str; 8] = [
     "XDG_RUNTIME_DIR",
 ];
 
-/// The longest slice of Compose's error output a failure keeps.
-const STDERR_BYTES: usize = 4000;
-
 /// Runs `docker compose` against the local Docker daemon, rootless or rootful: the socket comes
 /// from the inherited `DOCKER_HOST`.
 #[derive(Debug, Clone)]
@@ -66,7 +63,7 @@ impl DockerCompose {
         let mut command = Command::new(&self.program);
         command.current_dir(directory).env_clear();
         inherit(&mut command);
-        inject(&mut command, request.extras().environment());
+        command.envs(request.extras().environment().variables());
         command.args(arguments(request));
         command
     }
@@ -77,10 +74,6 @@ fn inherit(command: &mut Command) {
         .iter()
         .filter_map(|name| std::env::var_os(name).map(|value| (*name, value)));
     command.envs(set);
-}
-
-fn inject(command: &mut Command, environment: &Environment) {
-    command.envs(environment.variables());
 }
 
 /// The arguments: `compose -p <project> -f compose.yaml [-f <extra>]... [-f -] up -d --build`.
@@ -121,14 +114,9 @@ fn redact(text: &str, environment: &Environment) -> String {
     secret.fold(text.to_owned(), |clean, value| clean.replace(value, "***"))
 }
 
-fn tail(text: &str) -> &str {
-    let start = text.len().saturating_sub(STDERR_BYTES);
-    text.get(start..).unwrap_or(text)
-}
-
 fn failure(output: &Output, environment: &Environment) -> Reason {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let message = redact(tail(&stderr), environment);
+    let message = redact(&stderr, environment);
     Reason::new(&format!(
         "docker exited with {}: {}",
         output.status,

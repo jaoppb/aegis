@@ -28,6 +28,8 @@
         docker-compose
         sops
         tailscale
+        git
+        openssh
       ];
       # The static (musl) workspace binaries: one package per binary crate.
       binaries = system:
@@ -86,7 +88,10 @@
           extraCommands = "mkdir -m 1777 tmp";
           config = {
             Entrypoint = [ "/bin/${name}" ];
-            Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
+            Env = [
+              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              "HOME=/tmp"
+            ];
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/jaoppb/aegis";
               "org.opencontainers.image.licenses" = "Apache-2.0";
@@ -125,7 +130,6 @@
               # Issue workflow and repository config (tools.toml).
               tools.packages.${system}.tools
               jq
-              git
               # The adapters' `docker`, `sops` and `tailscale` CLIs come from `runtimeClis`, the
               # same pinned versions the container images ship; the devShell adds the engine.
               docker

@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 /// The path of the reconcile endpoint, served by agents.
 pub const RECONCILE_PATH: &str = "/v1/reconcile";
 
-/// The path of the status endpoint, served by the controller.
+/// The path of the status endpoint, served by the controller (the route is pending #14; agents
+/// report to it best effort until then).
 pub const STATUS_PATH: &str = "/v1/status";
 
-/// The body of `POST /v1/reconcile`: converge the host to one commit of the repository.
+/// The body of `POST /v1/reconcile`: converge the host to one commit of the repository. The
+/// commit is 7 to 64 lower-case hex digits; anything else is answered `400`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconcileRequest {
     commit: String,
