@@ -104,23 +104,18 @@ impl TailscaleApi {
     }
 
     async fn find(&self, hostname: &HostName, token: &str) -> Result<DeviceId, TailnetError> {
-        let url = self.base.join(DEVICES_PATH);
-        let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
+        let list = self.devices(token).await?;
         only_one(&list.ids_of(hostname.as_str()))
+    }
+
+    async fn devices(&self, token: &str) -> Result<DeviceList, TailnetError> {
+        let url = self.base.join(DEVICES_PATH);
+        fetch(self.http.get(url).bearer_auth(token)).await
     }
 
     async fn delete_device(&self, device: &DeviceId, token: String) -> Result<(), TailnetError> {
         let url = self.base.join(&format!("/api/v2/device/{device}"));
         delete(self.http.delete(url).bearer_auth(token)).await
-    }
-}
-
-fn hostname_of(node: &DeviceRef) -> Result<&HostName, TailnetError> {
-    match node {
-        DeviceRef::Hostname(hostname) => Ok(hostname),
-        DeviceRef::Identifier(_) => Err(TailnetError::Rejected(Reason::new(
-            &"only a hostname is accepted",
-        ))),
     }
 }
 
@@ -141,12 +136,17 @@ pub struct StackNodes {
     allowed: TailnetTags,
 }
 
-impl NodeRemover for StackNodes {
-    async fn remove(&self, node: &DeviceRef) -> Result<(), TailnetError> {
-        let hostname = hostname_of(node)?;
+impl StackNodes {
+    /// Delete the node called `hostname` among the devices a stack may own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TailnetError::NoSuchDevice`] when nothing matches,
+    /// [`TailnetError::AmbiguousHostname`] when several devices do, and another [`TailnetError`]
+    /// when Tailscale refuses or cannot be reached.
+    pub async fn remove(&self, hostname: &HostName) -> Result<(), TailnetError> {
         let token = self.api.token(Scope::Devices).await?;
-        let url = self.api.base.join(DEVICES_PATH);
-        let list: DeviceList = fetch(self.api.http.get(url).bearer_auth(&token)).await?;
+        let list = self.api.devices(&token).await?;
         let device = only_one(&list.ids_of_allowed(hostname.as_str(), &self.allowed))?;
         self.api.delete_device(&device, token).await
     }
@@ -166,8 +166,7 @@ impl KeyMinter for TailscaleApi {
 impl TailnetNames for TailscaleApi {
     async fn tailnet(&self) -> Result<TailnetName, TailnetError> {
         let token = self.token(Scope::Devices).await?;
-        let url = self.base.join(DEVICES_PATH);
-        let list: DeviceList = fetch(self.http.get(url).bearer_auth(token)).await?;
+        let list = self.devices(&token).await?;
         list.tailnet()
             .ok_or_else(|| unavailable(&"no device names the tailnet"))
     }

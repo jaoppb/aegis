@@ -228,7 +228,7 @@ async fn carry_out<Removing: Removal + Sync>(
         return StackReport::new(directory, Deployment::Failed(Detail::new(reason)));
     }
     let taken = taken_by_others(pass.outcome, &tombstone);
-    let tombstone = if node_is_claimed(pass.outcome, &tombstone) {
+    let tombstone = if node_must_stay(pass.outcome, &tombstone) {
         tombstone.keeping_node()
     } else {
         tombstone
@@ -263,7 +263,7 @@ fn paths_unverifiable(outcome: &Outcome, tombstone: &Tombstone, scope: &Scope<'_
 /// Whether a stack that is not purged exposes the hostname the tombstone's node has, on this host
 /// or another, or a stack is rejected and may still run with it: the node is then someone's, and
 /// deleting it would break the owner.
-fn node_is_claimed(outcome: &Outcome, tombstone: &Tombstone) -> bool {
+fn node_must_stay(outcome: &Outcome, tombstone: &Tombstone) -> bool {
     let state = outcome.state();
     let hosted = state.hosts().iter().flat_map(|host| host.stacks().iter());
     let live = hosted
@@ -294,25 +294,29 @@ fn tombstones(outcome: &Outcome, scope: &Scope<'_>) -> Vec<Result<Tombstone, Ref
     let listed = own.flat_map(unit_stacks);
     let purged = listed.filter(|unit| unit.stack.policy().state() == StackState::Purged);
     let reserved = reserved_projects(outcome);
-    purged.map(|unit| attempt(unit, &reserved)).collect()
+    let unknown = outcome
+        .rejected()
+        .iter()
+        .any(|each| *each.directory() == RepoPath::reserved_root());
+    let known = (!unknown).then_some(reserved.as_slice());
+    purged.map(|unit| attempt(&unit, known)).collect()
 }
 
-/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own: a user stack
+/// The tombstone of a purged `unit`, refused when its project is one of Aegis's own, or when
+/// they are unknown (`reserved` is `None`): a user stack
 /// named like a reserved stack shares its project, and purging it would delete the reserved
 /// stack's data.
-fn attempt(unit: Unit<'_>, reserved: &[ProjectName]) -> Result<Tombstone, Refused> {
+fn attempt(unit: &Unit<'_>, reserved: Option<&[ProjectName]>) -> Result<Tombstone, Refused> {
     let project = ProjectName::of(unit.stack.name()).ok();
-    let shared = project.is_some_and(|name| reserved.contains(&name));
-    let made = Tombstone::of(unit.directory.clone(), unit.stack);
-    let allowed = if shared {
-        Err(TombstoneError::Reserved)
-    } else {
-        made
-    };
-    allowed.map_err(|reason| Refused {
-        directory: unit.directory,
+    let shared = reserved.is_none_or(|known| project.is_some_and(|name| known.contains(&name)));
+    let refused = |reason| Refused {
+        directory: unit.directory.clone(),
         reason,
-    })
+    };
+    if shared {
+        return Err(refused(TombstoneError::Reserved));
+    }
+    Tombstone::of(unit.directory.clone(), unit.stack).map_err(refused)
 }
 
 /// The projects of Aegis's own stacks, loaded or rejected, whether or not this host runs them.

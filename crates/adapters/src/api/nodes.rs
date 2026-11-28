@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use aegis_api::version_1::{NODE_GONE, NODE_PATH};
-use aegis_application::{DeviceRef, NodeRemover, TailnetError};
-
-use crate::tailscale::StackNodes;
+use aegis_application::TailnetError;
 use aegis_domain::{HostName, NodeLabel};
 use axum::Router;
 use axum::extract::{Path, State};
@@ -15,9 +13,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::delete;
 
+use crate::tailscale::StackNodes;
+
 /// The `DELETE /v1/nodes/{hostname}` route: delete the stack node with `remover`, which refuses
-/// any device a stack may not own. It is meant to be
-/// served behind the tag check of the controller.
+/// any device a stack may not own. It is meant to be served behind the tag check of the
+/// controller.
 pub fn node_routes(remover: StackNodes) -> Router {
     Router::new()
         .route(NODE_PATH, delete(remove))
@@ -53,14 +53,14 @@ const fn status_of(error: &TailnetError) -> StatusCode {
     }
 }
 
-fn device_of(hostname: &str) -> Result<DeviceRef, Refusal> {
+fn device_of(hostname: &str) -> Result<HostName, Refusal> {
     let invalid = |error: aegis_domain::ValueError| Refusal {
         status: StatusCode::BAD_REQUEST,
         reason: error.to_string(),
     };
     let label = NodeLabel::new(hostname).map_err(invalid)?;
     let name = HostName::new(label.as_str()).map_err(invalid)?;
-    Ok(DeviceRef::Hostname(name))
+    Ok(name)
 }
 
 async fn remove(

@@ -745,3 +745,53 @@ fn the_node_is_kept_while_any_stack_is_rejected() {
         assert!(!fake.events().iter().any(|event| event.starts_with("node")));
     });
 }
+
+#[test]
+fn a_user_stack_named_like_a_broken_reserved_stack_is_never_purged() {
+    runtime().block_on(async {
+        let broken = (
+            "aegis/old/compose.yaml",
+            "services:\n  x:\n    volumes:\n      - ./missing:/x\n",
+        );
+        let files = checkout(
+            "brokennamesake",
+            &[
+                WEB,
+                broken,
+                ("hosts/host/old/aegis.toml", PURGED),
+                ("hosts/host/old/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().is_empty());
+        assert!(matches!(
+            deployment(&report, "hosts/host/old"),
+            Deployment::Failed(_)
+        ));
+    });
+}
+
+#[test]
+fn nothing_is_purged_while_the_reserved_directory_cannot_be_read() {
+    runtime().block_on(async {
+        let files = checkout(
+            "reservedunknown",
+            &[
+                WEB,
+                ("aegis", "not a directory"),
+                ("hosts/host/controller/aegis.toml", PURGED),
+                ("hosts/host/controller/compose.yaml", APP),
+            ],
+        )
+        .await;
+        let fake = Fake::default();
+        let report = reconcile(&files, &fake, &FakeCompose::default()).await;
+        assert!(fake.events().is_empty());
+        assert!(matches!(
+            deployment(&report, "hosts/host/controller"),
+            Deployment::Failed(_)
+        ));
+    });
+}
